@@ -52,28 +52,28 @@
         "database",
         "storage"
       ],
-      "updated_at": "2026-09-18T21:53:35Z",
+      "updated_at": "2026-09-18T21:54:11Z",
       "files": [
-        "packages/database/src/schema.ts",
-        "packages/database/src/storage",
-        "packages/database/src/migrate.ts",
-        "packages/database/src/index.ts",
+        ".env.example",
+        "AGENTS.md",
+        "package-lock.json",
+        "package.json",
         "packages/database/drizzle",
         "packages/database/drizzle.config.ts",
-        "packages/database/test",
         "packages/database/package.json",
-        "packages/database/tsconfig.json",
-        "package.json",
-        "package-lock.json",
-        ".env.example",
-        "AGENTS.md"
+        "packages/database/src/index.ts",
+        "packages/database/src/migrate.ts",
+        "packages/database/src/schema.ts",
+        "packages/database/src/storage",
+        "packages/database/test",
+        "packages/database/tsconfig.json"
       ]
     },
     {
       "id": "T003",
       "title": "Implement startup recovery-generation controls",
       "priority": 1,
-      "status": "todo",
+      "status": "done",
       "details": "Block workers and mail mutations unless deployment and database recovery state match. Implement recovery modes and generation checks before idempotency lookup.",
       "depends_on": [
         "T002"
@@ -81,6 +81,21 @@
       "tags": [
         "recovery",
         "safety"
+      ],
+      "updated_at": "2026-09-18T22:15:34Z",
+      "files": [
+        ".env.example",
+        "AGENTS.md",
+        "apps/admin",
+        "apps/api/src/main.ts",
+        "apps/api/src/recovery.ts",
+        "apps/api/test/recovery-gate.test.ts",
+        "apps/worker/src/main.ts",
+        "package.json",
+        "package-lock.json",
+        "packages/contracts/src/index.ts",
+        "packages/database/src/index.ts",
+        "packages/recovery"
       ]
     },
     {

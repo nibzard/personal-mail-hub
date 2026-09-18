@@ -1,18 +1,16 @@
 {
-  "name": "@mail-hub/api",
+  "name": "@mail-hub/admin",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
+    "admin": "tsx src/main.ts",
     "check": "tsc --noEmit --pretty false",
-    "dev": "tsx watch src/main.ts",
-    "start": "tsx src/main.ts",
     "test": "vitest run"
   },
   "dependencies": {
-    "@mail-hub/contracts": "0.1.0",
-    "@mail-hub/recovery": "0.1.0",
-    "fastify": "5.12.5"
+    "@mail-hub/database": "0.1.0",
+    "@mail-hub/recovery": "0.1.0"
   },
   "devDependencies": {
     "@types/node": "26.6.1",

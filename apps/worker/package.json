@@ -9,7 +9,8 @@
     "start": "tsx src/main.ts"
   },
   "dependencies": {
-    "@mail-hub/database": "0.1.0"
+    "@mail-hub/database": "0.1.0",
+    "@mail-hub/recovery": "0.1.0"
   },
   "devDependencies": {
     "@types/node": "26.6.1",

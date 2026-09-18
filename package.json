@@ -13,6 +13,7 @@
     "packages/*"
   ],
   "scripts": {
+    "admin": "npm run admin --workspace=@mail-hub/admin",
     "build": "npm run build --workspaces --if-present",
     "check": "npm run check --workspaces --if-present",
     "db:generate": "npm run db:generate --workspace=@mail-hub/database",
