@@ -1,0 +1,24 @@
+{
+  "name": "@mail-hub/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "check": "tsc --noEmit --pretty false",
+    "dev": "vite",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@mail-hub/contracts": "0.1.0",
+    "@vitejs/plugin-react": "6.1.1",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "vite": "8.3.0"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.13",
+    "@types/react-dom": "19.2.3",
+    "typescript": "5.9.3"
+  }
+}

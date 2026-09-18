@@ -1,0 +1,549 @@
+{
+  "schema_version": 1,
+  "project": {
+    "name": "Personal mail hub",
+    "root": "."
+  },
+  "source_files": [
+    "INDEX.md",
+    "PRODUCT.md",
+    "SPEC.md",
+    "research/json-render-experimental.md",
+    "research/modern-email-report-pdf.md",
+    "research/research-1.md",
+    "research/research-2.md",
+    "research/research-3.md",
+    "research/research.md"
+  ],
+  "tasks": [
+    {
+      "id": "T001",
+      "title": "Create the TypeScript application foundation",
+      "priority": 1,
+      "status": "done",
+      "details": "Set up the React, Vite, Fastify, PostgreSQL, Drizzle, and pg-boss application structure with pinned dependencies and shared type checking.",
+      "tags": [
+        "foundation",
+        "architecture"
+      ],
+      "updated_at": "2026-09-18T21:34:12Z",
+      "files": [
+        "package.json",
+        "package-lock.json",
+        "apps/api",
+        "apps/web",
+        "apps/worker",
+        "packages/contracts",
+        "packages/database",
+        "tsconfig.base.json",
+        "AGENTS.md"
+      ]
+    },
+    {
+      "id": "T002",
+      "title": "Implement database migrations and storage interfaces",
+      "priority": 1,
+      "status": "todo",
+      "details": "Create the specified PostgreSQL schema, indexes, constraints, and durable versus disposable storage interfaces.",
+      "depends_on": [
+        "T001"
+      ],
+      "tags": [
+        "database",
+        "storage"
+      ]
+    },
+    {
+      "id": "T003",
+      "title": "Implement startup recovery-generation controls",
+      "priority": 1,
+      "status": "todo",
+      "details": "Block workers and mail mutations unless deployment and database recovery state match. Implement recovery modes and generation checks before idempotency lookup.",
+      "depends_on": [
+        "T002"
+      ],
+      "tags": [
+        "recovery",
+        "safety"
+      ]
+    },
+    {
+      "id": "T004",
+      "title": "Implement passkey owner authentication and recovery",
+      "priority": 1,
+      "status": "todo",
+      "details": "Provide console bootstrap enrollment, WebAuthn passkeys, session revocation, recent verification, last-credential protection, and operator recovery.",
+      "depends_on": [
+        "T002",
+        "T003"
+      ],
+      "tags": [
+        "authentication",
+        "security"
+      ]
+    },
+    {
+      "id": "T005",
+      "title": "Implement encrypted account and identity management",
+      "priority": 1,
+      "status": "todo",
+      "details": "Store mailbox credentials with AES-256-GCM, manage account labels and colors, discover folders, map roles, and manage validated send identities.",
+      "depends_on": [
+        "T002",
+        "T004"
+      ],
+      "tags": [
+        "accounts",
+        "security"
+      ]
+    },
+    {
+      "id": "T006",
+      "title": "Implement verified IMAP and SMTP connection tests",
+      "priority": 1,
+      "status": "todo",
+      "details": "Require validated TLS for IMAP and SMTP, test each protocol separately, discover IMAP capabilities, and never send credentials before encryption succeeds.",
+      "depends_on": [
+        "T005"
+      ],
+      "tags": [
+        "transport",
+        "security"
+      ]
+    },
+    {
+      "id": "T007",
+      "title": "Build durable MIME ingestion and parsing",
+      "priority": 1,
+      "status": "todo",
+      "details": "Store original bytes before processing, parse headers and bodies, sanitize HTML, index text, and persist verified attachment locators and hashes.",
+      "depends_on": [
+        "T002"
+      ],
+      "tags": [
+        "mime",
+        "storage"
+      ]
+    },
+    {
+      "id": "T008",
+      "title": "Build resumable IMAP backfill",
+      "priority": 1,
+      "status": "todo",
+      "details": "Import header ranges newest first with transactional checkpoints, UIDVALIDITY checks, bounded batches, and background body jobs.",
+      "depends_on": [
+        "T005",
+        "T007"
+      ],
+      "tags": [
+        "sync",
+        "imap"
+      ]
+    },
+    {
+      "id": "T009",
+      "title": "Build steady-state synchronization and reconciliation",
+      "priority": 1,
+      "status": "todo",
+      "details": "Poll folders, capture arrival bounds, refresh flags, detect expunges, handle folder generation changes, and run nightly inventory reconciliation.",
+      "depends_on": [
+        "T008"
+      ],
+      "tags": [
+        "sync",
+        "imap"
+      ]
+    },
+    {
+      "id": "T010",
+      "title": "Implement logical-message merging and thread reconciliation",
+      "priority": 1,
+      "status": "todo",
+      "details": "Deduplicate verified copies within an account and safely link parents using message identifiers while preserving ambiguous and pending cases.",
+      "depends_on": [
+        "T007",
+        "T008"
+      ],
+      "tags": [
+        "sync",
+        "threading"
+      ]
+    },
+    {
+      "id": "T011",
+      "title": "Build the recovery-aware mail action service",
+      "priority": 1,
+      "status": "todo",
+      "details": "Create immutable action records, per-target receipts, idempotency handling, remote-state checks, and restart reconciliation for all mail mutations.",
+      "depends_on": [
+        "T003",
+        "T009"
+      ],
+      "tags": [
+        "actions",
+        "safety"
+      ]
+    },
+    {
+      "id": "T012",
+      "title": "Implement two-way flag and move actions",
+      "priority": 1,
+      "status": "todo",
+      "details": "Support explicit read, unread, star, unstar, archive, move, and bulk targets with revision checks, conditional writes, conflicts, and unknown move outcomes.",
+      "depends_on": [
+        "T011"
+      ],
+      "tags": [
+        "actions",
+        "imap"
+      ]
+    },
+    {
+      "id": "T013",
+      "title": "Implement full-text search and query operators",
+      "priority": 2,
+      "status": "todo",
+      "details": "Provide cross-account PostgreSQL search for headers and bodies, filters, ranking, highlights, saved-search query state, and a 500 ms p95 target at 100k messages.",
+      "depends_on": [
+        "T007",
+        "T008"
+      ],
+      "tags": [
+        "search"
+      ]
+    },
+    {
+      "id": "T014",
+      "title": "Create shared interface components and design tokens",
+      "priority": 2,
+      "status": "todo",
+      "details": "Set up shadcn and Radix components, semantic Tailwind tokens, light and dark themes, icons, focus states, and reduced-motion behavior.",
+      "depends_on": [
+        "T001"
+      ],
+      "tags": [
+        "ui",
+        "accessibility"
+      ]
+    },
+    {
+      "id": "T015",
+      "title": "Build responsive mail navigation and message list",
+      "priority": 2,
+      "status": "todo",
+      "details": "Create desktop three-pane and mobile single-pane layouts with account views, unified inbox, rows, state markers, account indicators, and bounded rendering.",
+      "depends_on": [
+        "T009",
+        "T014"
+      ],
+      "tags": [
+        "ui",
+        "reading"
+      ]
+    },
+    {
+      "id": "T016",
+      "title": "Build the safe message reader and attachment routes",
+      "priority": 2,
+      "status": "todo",
+      "details": "Render sanitized mail, collapse quotes, block remote images by default, resolve safe inline images, and provide authenticated attachment downloads and cache regeneration.",
+      "depends_on": [
+        "T007",
+        "T015"
+      ],
+      "tags": [
+        "ui",
+        "reading",
+        "security"
+      ]
+    },
+    {
+      "id": "T017",
+      "title": "Implement clean view and reply quote extraction",
+      "priority": 3,
+      "status": "todo",
+      "details": "Integrate pinned Defuddle and DOMPurify with safe fallback paths, redacted diagnostics, snapshot fixtures, and no implicit remote extraction.",
+      "depends_on": [
+        "T007",
+        "T016"
+      ],
+      "tags": [
+        "reading",
+        "content"
+      ]
+    },
+    {
+      "id": "T018",
+      "title": "Implement the command palette and keyboard controls",
+      "priority": 2,
+      "status": "todo",
+      "details": "Add discoverable commands, nested choices, platform labels, shortcut scope, focus restoration, and touch alternatives.",
+      "depends_on": [
+        "T014",
+        "T015"
+      ],
+      "tags": [
+        "ui",
+        "accessibility"
+      ]
+    },
+    {
+      "id": "T019",
+      "title": "Implement draft editing and durable uploads",
+      "priority": 1,
+      "status": "todo",
+      "details": "Create the Markdown editor, revision-aware autosave, attachment upload verification, identity selection, and immutable draft locking for queued sends.",
+      "depends_on": [
+        "T002",
+        "T005",
+        "T014"
+      ],
+      "tags": [
+        "compose",
+        "drafts"
+      ]
+    },
+    {
+      "id": "T020",
+      "title": "Implement reply addressing and frozen reply headers",
+      "priority": 1,
+      "status": "todo",
+      "details": "Derive reply and reply-all recipients safely, require account and identity choices when needed, remove duplicates and identities, and freeze References headers.",
+      "depends_on": [
+        "T010",
+        "T019"
+      ],
+      "tags": [
+        "compose",
+        "email"
+      ]
+    },
+    {
+      "id": "T021",
+      "title": "Implement immutable outbound snapshots and SMTP sending",
+      "priority": 1,
+      "status": "todo",
+      "details": "Generate and store exact MIME bytes, validate queued requests, enforce one submission, preserve recipient-level SMTP results, and create local sent records after acceptance.",
+      "depends_on": [
+        "T003",
+        "T007",
+        "T019",
+        "T020"
+      ],
+      "tags": [
+        "send",
+        "safety"
+      ]
+    },
+    {
+      "id": "T022",
+      "title": "Implement sent-copy append and uncertain-send recovery",
+      "priority": 1,
+      "status": "todo",
+      "details": "Append confirmed mail to Sent in a separate job, reconcile lost responses using durable evidence, preserve unknown outcomes, and prohibit automatic resends.",
+      "depends_on": [
+        "T021"
+      ],
+      "tags": [
+        "send",
+        "recovery"
+      ]
+    },
+    {
+      "id": "T023",
+      "title": "Implement PWA offline data and replay controls",
+      "priority": 2,
+      "status": "todo",
+      "details": "Use Dexie for recent mail, drafts, uploads, and queued actions. Preserve target revisions and recovery generations. Show sync state and require review after a restore.",
+      "depends_on": [
+        "T003",
+        "T012",
+        "T019"
+      ],
+      "tags": [
+        "pwa",
+        "offline"
+      ]
+    },
+    {
+      "id": "T024",
+      "title": "Implement settings and synchronization status",
+      "priority": 3,
+      "status": "todo",
+      "details": "Provide settings for density, shortcuts, account folders, identities, classification, and a visible per-account synchronization and queue status.",
+      "depends_on": [
+        "T005",
+        "T009",
+        "T014"
+      ],
+      "tags": [
+        "settings",
+        "ui"
+      ]
+    },
+    {
+      "id": "T025",
+      "title": "Integrate Jev classification in shadow mode",
+      "priority": 3,
+      "status": "todo",
+      "details": "Add a pinned-model adapter, minimized message input, decisions storage, deterministic precedence, circuit breaker, monthly cost cap, and visible non-routing suggestions.",
+      "depends_on": [
+        "T007",
+        "T009",
+        "T024"
+      ],
+      "tags": [
+        "classification",
+        "jev"
+      ]
+    },
+    {
+      "id": "T026",
+      "title": "Create classification evaluation and correction flows",
+      "priority": 3,
+      "status": "todo",
+      "details": "Build the evaluation command and correction events for one message, a sender, or a deterministic rule. Enforce the zero-critical-false-negative routing gate.",
+      "depends_on": [
+        "T025"
+      ],
+      "tags": [
+        "classification",
+        "evaluation"
+      ]
+    },
+    {
+      "id": "T027",
+      "title": "Implement health checks, audit events, and metrics",
+      "priority": 2,
+      "status": "todo",
+      "details": "Expose health state for the database, synchronization lag, queue age, classifier state, and recovery mode. Record required audit events and account metrics.",
+      "depends_on": [
+        "T003",
+        "T009",
+        "T011"
+      ],
+      "tags": [
+        "observability"
+      ]
+    },
+    {
+      "id": "T028",
+      "title": "Create Coolify deployment and backup procedures",
+      "priority": 2,
+      "status": "todo",
+      "details": "Package the API, worker, database, volumes, environment checks, proxy settings, off-box backup, hash verification, and documented restore commands.",
+      "depends_on": [
+        "T003",
+        "T027"
+      ],
+      "tags": [
+        "deployment",
+        "recovery"
+      ]
+    },
+    {
+      "id": "T029",
+      "title": "Build the fake mailbox and SMTP test harness",
+      "priority": 1,
+      "status": "todo",
+      "details": "Provide scripted IMAP and SMTP scenarios for protocol faults, UID changes, expunges, malicious mail, attachment cases, interrupted sends, and session expiry.",
+      "depends_on": [
+        "T001"
+      ],
+      "tags": [
+        "testing",
+        "harness"
+      ]
+    },
+    {
+      "id": "T030",
+      "title": "Add sync, storage, threading, and search acceptance tests",
+      "priority": 1,
+      "status": "todo",
+      "details": "Verify backfill restarts, copies, generation changes, thread ambiguity, attachment regeneration, concurrent flags, and header and body search behavior.",
+      "depends_on": [
+        "T008",
+        "T009",
+        "T010",
+        "T013",
+        "T029"
+      ],
+      "tags": [
+        "testing",
+        "sync"
+      ]
+    },
+    {
+      "id": "T031",
+      "title": "Add authentication, transport, and recovery tests",
+      "priority": 1,
+      "status": "todo",
+      "details": "Test encrypted transport failures, enrollment races, credential recovery, restore generation handling, held operations, and client replay rejection.",
+      "depends_on": [
+        "T003",
+        "T004",
+        "T006",
+        "T028",
+        "T029"
+      ],
+      "tags": [
+        "testing",
+        "security",
+        "recovery"
+      ]
+    },
+    {
+      "id": "T032",
+      "title": "Add compose and send safety acceptance tests",
+      "priority": 1,
+      "status": "todo",
+      "details": "Test reply recipients and headers, snapshot immutability, SMTP outcomes, partial acceptance, append recovery, sent import, duplicate prevention, and restore behavior.",
+      "depends_on": [
+        "T020",
+        "T021",
+        "T022",
+        "T029"
+      ],
+      "tags": [
+        "testing",
+        "send"
+      ]
+    },
+    {
+      "id": "T033",
+      "title": "Add interface accessibility and performance validation",
+      "priority": 2,
+      "status": "todo",
+      "details": "Automate browser and visual checks for keyboard and screen-reader flows, mobile and zoom layouts, focus, reduced motion, offline states, and palette responsiveness.",
+      "depends_on": [
+        "T015",
+        "T016",
+        "T018",
+        "T023"
+      ],
+      "tags": [
+        "testing",
+        "ui",
+        "accessibility"
+      ]
+    },
+    {
+      "id": "T034",
+      "title": "Run the release validation gate",
+      "priority": 1,
+      "status": "todo",
+      "details": "Require type checks, migrations, integration tests, browser workflows, action permissions, and applicable interface checks before each release.",
+      "depends_on": [
+        "T026",
+        "T030",
+        "T031",
+        "T032",
+        "T033"
+      ],
+      "tags": [
+        "testing",
+        "release"
+      ]
+    }
+  ]
+}

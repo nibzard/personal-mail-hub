@@ -1,0 +1,28 @@
+{
+  "name": "personal-mail-hub",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A self-hosted personal mail hub.",
+  "engines": {
+    "node": ">=24.0.0",
+    "npm": ">=11.0.0"
+  },
+  "packageManager": "npm@11.16.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "check": "npm run check --workspaces --if-present",
+    "dev": "npm run dev --workspace=@mail-hub/web",
+    "dev:api": "npm run dev --workspace=@mail-hub/api",
+    "dev:worker": "npm run dev --workspace=@mail-hub/worker",
+    "start": "npm run start --workspace=@mail-hub/api",
+    "start:worker": "npm run start --workspace=@mail-hub/worker",
+    "test": "npm run test --workspaces --if-present"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}
