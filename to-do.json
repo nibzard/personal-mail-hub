@@ -26,24 +26,24 @@
         "foundation",
         "architecture"
       ],
-      "updated_at": "2026-09-18T21:34:12Z",
+      "updated_at": "2026-09-18T21:34:31Z",
       "files": [
-        "package.json",
-        "package-lock.json",
+        "AGENTS.md",
         "apps/api",
         "apps/web",
         "apps/worker",
+        "package-lock.json",
+        "package.json",
         "packages/contracts",
         "packages/database",
-        "tsconfig.base.json",
-        "AGENTS.md"
+        "tsconfig.base.json"
       ]
     },
     {
       "id": "T002",
       "title": "Implement database migrations and storage interfaces",
       "priority": 1,
-      "status": "todo",
+      "status": "done",
       "details": "Create the specified PostgreSQL schema, indexes, constraints, and durable versus disposable storage interfaces.",
       "depends_on": [
         "T001"
@@ -51,6 +51,22 @@
       "tags": [
         "database",
         "storage"
+      ],
+      "updated_at": "2026-09-18T21:53:35Z",
+      "files": [
+        "packages/database/src/schema.ts",
+        "packages/database/src/storage",
+        "packages/database/src/migrate.ts",
+        "packages/database/src/index.ts",
+        "packages/database/drizzle",
+        "packages/database/drizzle.config.ts",
+        "packages/database/test",
+        "packages/database/package.json",
+        "packages/database/tsconfig.json",
+        "package.json",
+        "package-lock.json",
+        ".env.example",
+        "AGENTS.md"
       ]
     },
     {

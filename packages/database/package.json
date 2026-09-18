@@ -7,7 +7,10 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "check": "tsc --noEmit --pretty false"
+    "check": "tsc --noEmit --pretty false",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "test": "vitest run"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",
@@ -15,6 +18,8 @@
     "pg-boss": "12.33.2"
   },
   "devDependencies": {
-    "@types/pg": "8.16.0"
+    "@types/pg": "8.16.0",
+    "drizzle-kit": "0.31.2",
+    "vitest": "5.0.1"
   }
 }
