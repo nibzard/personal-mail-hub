@@ -1,6 +1,8 @@
 import { createDatabase, createPool } from "@mail-hub/database";
 import { RecoveryControls, describeControlStatus } from "@mail-hub/recovery";
 import { PasskeyAuthService, parseAuthConfig } from "@mail-hub/auth";
+import { AccountService, createCredentialCipher, parseCredentialsKey } from "@mail-hub/accounts";
+import { registerAccountRoutes } from "./account-routes.ts";
 import { registerAuthRoutes } from "./auth-routes.ts";
 import { buildApp } from "./app.ts";
 
@@ -46,6 +48,24 @@ if (authConfig === null) {
   const authService = new PasskeyAuthService(db, authConfig, controls);
   await registerAuthRoutes(app, { service: authService, origin: authConfig.origin });
   app.log.info(`Passkey authentication ready for origin ${authConfig.origin}.`);
+
+  // Account management seals mailbox passwords with CREDENTIALS_KEY (SPEC
+  // section 9). Without a usable key the routes stay closed: storing plaintext
+  // or guessing a key would silently corrupt every stored credential.
+  const credentialsKey = parseCredentialsKey(process.env.CREDENTIALS_KEY);
+  if (credentialsKey === null) {
+    app.log.warn(
+      "CREDENTIALS_KEY must hold 32 bytes as base64 or hex. Account management stays closed until it is set.",
+    );
+  } else {
+    const accountService = new AccountService(db, createCredentialCipher(credentialsKey), controls);
+    await registerAccountRoutes(app, {
+      service: accountService,
+      origin: authConfig.origin,
+      verifySession: (token) => authService.verifySession(token),
+    });
+    app.log.info("Account and identity management ready.");
+  }
 }
 
 await app.listen({ host, port });

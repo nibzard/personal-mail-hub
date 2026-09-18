@@ -11,17 +11,22 @@ import { RecoveryBlockedError, type MutationGate } from "@mail-hub/recovery";
 export const RECOVERY_GENERATION_HEADER = "x-recovery-generation";
 
 /**
+ * Read the recovery generation a client captured for its request. Returns
+ * `undefined` when the header is absent or blank.
+ */
+export function readRequestGeneration(request: FastifyRequest): string | undefined {
+  const header = request.headers[RECOVERY_GENERATION_HEADER];
+  return typeof header === "string" && header.trim() !== "" ? header.trim() : undefined;
+}
+
+/**
  * Build a preHandler that enforces the recovery gate before the route runs.
  * The gate executes before any idempotency lookup.
  */
 export function mailMutationGate(gate: MutationGate) {
   return async (request: FastifyRequest, reply: FastifyReply) => {
-    const header = request.headers[RECOVERY_GENERATION_HEADER];
-    const requestGeneration =
-      typeof header === "string" && header.trim() !== "" ? header.trim() : undefined;
-
     try {
-      await gate.gateMutation(requestGeneration);
+      await gate.gateMutation(readRequestGeneration(request));
     } catch (error) {
       if (!(error instanceof RecoveryBlockedError)) {
         throw error;

@@ -70,6 +70,8 @@ export interface ActionItemTarget {
 
 export type RecoveryMode = "ready" | "reconciling";
 export type FolderRole = "inbox" | "sent" | "drafts" | "archive" | "trash" | "junk";
+/** SMTP security modes. Plaintext and optional upgrades are unavailable (SPEC F1). */
+export type SmtpSecurityMode = "starttls_required" | "implicit_tls";
 export type ThreadLinkState = "root" | "pending" | "linked" | "ambiguous";
 export type OutboundStatus = "queued" | "sending" | "sent" | "failed" | "outcome_unknown";
 export type SentCopyStatus = "pending" | "appending" | "stored" | "failed" | "unknown";
@@ -119,7 +121,7 @@ export const accounts = pgTable(
     imapSecurity: text("imap_security").notNull().default("implicit_tls"),
     smtpHost: text("smtp_host").notNull().default("smtp.purelymail.com"),
     smtpPort: integer("smtp_port").notNull().default(587),
-    smtpSecurity: text("smtp_security").notNull().default("starttls_required"),
+    smtpSecurity: text("smtp_security").$type<SmtpSecurityMode>().notNull().default("starttls_required"),
     username: text("username").notNull(),
     /** AES-256-GCM ciphertext; the key comes from `CREDENTIALS_KEY` and never enters the database. */
     passwordEnc: text("password_enc").notNull(),

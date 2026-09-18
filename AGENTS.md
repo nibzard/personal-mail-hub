@@ -9,6 +9,9 @@
 - `packages/contracts` contains shared API contracts.
 - `packages/auth` contains passkey authentication: enrollment grants,
   WebAuthn ceremonies, owner sessions, and the `auth` admin commands.
+- `packages/accounts` contains account and identity management: the
+  AES-256-GCM credential cipher, folder discovery imports, role mapping,
+  and send identities.
 - `packages/recovery` contains the recovery control state, the mutation
   generation gate, and the operator recovery commands.
 - `packages/database` contains the Drizzle schema, SQL migrations, object

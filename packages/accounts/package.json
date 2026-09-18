@@ -1,26 +1,22 @@
 {
-  "name": "@mail-hub/api",
+  "name": "@mail-hub/accounts",
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
     "check": "tsc --noEmit --pretty false",
-    "dev": "tsx watch src/main.ts",
-    "start": "tsx src/main.ts",
     "test": "vitest run"
   },
   "dependencies": {
-    "@fastify/cookie": "11.1.2",
-    "@mail-hub/accounts": "0.1.0",
-    "@mail-hub/auth": "0.1.0",
     "@mail-hub/contracts": "0.1.0",
     "@mail-hub/database": "0.1.0",
-    "@mail-hub/recovery": "0.1.0",
-    "fastify": "5.12.5"
+    "@mail-hub/recovery": "0.1.0"
   },
   "devDependencies": {
     "@types/node": "26.6.1",
-    "tsx": "4.21.0",
     "vitest": "5.0.1"
   }
 }
