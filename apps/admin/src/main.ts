@@ -6,10 +6,12 @@ import {
   type CompleteOutcome,
   type InitializeOutcome,
 } from "@mail-hub/recovery";
+import { AuthError, ConsoleAuthService, createRecoveryHooks } from "@mail-hub/auth";
 
 /**
- * The operator command line for recovery control (SPEC sections 9 and 10).
- * Run it inside the app container: `npm run admin -- recovery status`.
+ * The operator command line (SPEC sections 9 and 10). Run it inside the app
+ * container: `npm run admin -- recovery status` or `npm run admin -- auth
+ * bootstrap`. Enrollment tokens print once, to this terminal only.
  */
 
 const USAGE = `Usage: npm run admin -- <command>
@@ -19,17 +21,20 @@ Commands:
   recovery init       Initialize control state on a fresh installation.
   recovery begin      Record the deployment generation and enter reconciling.
   recovery complete   Finish recovery and reopen normal work.
+  auth bootstrap      Issue the first-passkey enrollment token.
+  auth recover        Revoke all access and issue a replacement token.
 `;
 
 interface AdminEnvironment {
   DATABASE_URL?: string;
   RECOVERY_GENERATION?: string;
+  BASE_URL?: string;
 }
 
 /** Run one admin command. Returns the process exit code. */
 export async function runAdminCommand(args: string[], env: AdminEnvironment = process.env): Promise<number> {
   const [group, command] = args;
-  if (group !== "recovery" || command === undefined) {
+  if ((group !== "recovery" && group !== "auth") || command === undefined) {
     process.stdout.write(USAGE);
     return 1;
   }
@@ -42,26 +47,64 @@ export async function runAdminCommand(args: string[], env: AdminEnvironment = pr
 
   const pool = createPool(connectionString);
   try {
-    const controls = new RecoveryControls(createDatabase(pool), {
+    const db = createDatabase(pool);
+    const controls = new RecoveryControls(db, {
       deploymentGeneration: env.RECOVERY_GENERATION,
+      hooks: createRecoveryHooks(),
     });
+    if (group === "recovery") {
+      switch (command) {
+        case "status":
+          await runStatus(controls);
+          return 0;
+        case "init":
+          return printInitialize(await controls.initialize());
+        case "begin":
+          return printBegin(await controls.beginRecovery());
+        case "complete":
+          return printComplete(await controls.completeRecovery());
+        default:
+          process.stdout.write(USAGE);
+          return 1;
+      }
+    }
+
+    const consoleAuth = new ConsoleAuthService(db, controls);
     switch (command) {
-      case "status":
-        await runStatus(controls);
-        return 0;
-      case "init":
-        return printInitialize(await controls.initialize());
-      case "begin":
-        return printBegin(await controls.beginRecovery());
-      case "complete":
-        return printComplete(await controls.completeRecovery());
+      case "bootstrap":
+        return printGrant(await consoleAuth.issueBootstrapGrant(), env, "first passkey");
+      case "recover":
+        return printGrant(await consoleAuth.issueRecoveryGrant(), env, "replacement passkey");
       default:
         process.stdout.write(USAGE);
         return 1;
     }
+  } catch (error) {
+    if (error instanceof AuthError) {
+      process.stderr.write(`${error.message}\n`);
+      return 1;
+    }
+    throw error;
   } finally {
     await pool.end();
   }
+}
+
+function printGrant(
+  grant: { token: string; expiresAt: Date },
+  env: AdminEnvironment,
+  kind: string,
+): number {
+  const where = env.BASE_URL === undefined || env.BASE_URL === "" ? "the setup form" : `the setup form at ${env.BASE_URL}`;
+  process.stdout.write(
+    `Enrollment token for the ${kind} (expires ${grant.expiresAt.toISOString()}):\n` +
+      `\n  ${grant.token}\n` +
+      "\nPaste this token into " +
+      where +
+      ". Never put it in a URL.\n" +
+      "This is the only time the token is shown; only its hash is stored.\n",
+  );
+  return 0;
 }
 
 async function runStatus(controls: RecoveryControls): Promise<void> {

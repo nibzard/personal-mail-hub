@@ -7,6 +7,8 @@
 - `apps/worker` contains background job entry points.
 - `apps/admin` contains the operator command line (`npm run admin -- ...`).
 - `packages/contracts` contains shared API contracts.
+- `packages/auth` contains passkey authentication: enrollment grants,
+  WebAuthn ceremonies, owner sessions, and the `auth` admin commands.
 - `packages/recovery` contains the recovery control state, the mutation
   generation gate, and the operator recovery commands.
 - `packages/database` contains the Drizzle schema, SQL migrations, object
@@ -23,10 +25,16 @@
 5. Run `npm run admin -- recovery status` to inspect the recovery control
    state. Use `recovery init` on a fresh installation and `recovery begin`
    plus `recovery complete` after a restore.
+6. Run `npm run admin -- auth bootstrap` on a fresh installation to print the
+   first-passkey enrollment token, and `npm run admin -- auth recover` after
+   all passkeys are lost. Set `BASE_URL` to the deployed origin first; the
+   token prints once and only its hash is stored.
 
 ## Rules
 
 - Keep mailbox credentials out of browser code and logs.
+- Keep enrollment tokens and session tokens out of logs and URLs; store only
+  their hashes.
 - Validate every HTTP input at the API boundary.
 - Use application services for mutations. Do not let routes or workers bypass them.
 - Keep the provider mailbox state, application work state, and agent state separate.

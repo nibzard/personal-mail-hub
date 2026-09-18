@@ -82,27 +82,30 @@
         "recovery",
         "safety"
       ],
-      "updated_at": "2026-09-18T22:15:34Z",
+      "updated_at": "2026-09-18T22:16:58Z",
       "files": [
         ".env.example",
         "AGENTS.md",
         "apps/admin",
+        "apps/api/package.json",
         "apps/api/src/main.ts",
         "apps/api/src/recovery.ts",
         "apps/api/test/recovery-gate.test.ts",
+        "apps/worker/package.json",
         "apps/worker/src/main.ts",
-        "package.json",
         "package-lock.json",
+        "package.json",
         "packages/contracts/src/index.ts",
         "packages/database/src/index.ts",
-        "packages/recovery"
+        "packages/recovery",
+        "to-do.json"
       ]
     },
     {
       "id": "T004",
       "title": "Implement passkey owner authentication and recovery",
       "priority": 1,
-      "status": "todo",
+      "status": "done",
       "details": "Provide console bootstrap enrollment, WebAuthn passkeys, session revocation, recent verification, last-credential protection, and operator recovery.",
       "depends_on": [
         "T002",
@@ -111,6 +114,36 @@
       "tags": [
         "authentication",
         "security"
+      ],
+      "updated_at": "2026-09-18T22:49:15Z",
+      "files": [
+        "packages/auth/package.json",
+        "packages/auth/tsconfig.json",
+        "packages/auth/src/config.ts",
+        "packages/auth/src/tokens.ts",
+        "packages/auth/src/errors.ts",
+        "packages/auth/src/state.ts",
+        "packages/auth/src/console.ts",
+        "packages/auth/src/service.ts",
+        "packages/auth/src/index.ts",
+        "packages/auth/test/fake-authenticator.ts",
+        "packages/auth/test/service.test.ts",
+        "packages/database/src/schema.ts",
+        "packages/database/drizzle/0001_owner_auth.sql",
+        "packages/database/drizzle/meta/0001_snapshot.json",
+        "packages/database/drizzle/meta/_journal.json",
+        "packages/database/test/migrations.test.ts",
+        "packages/contracts/src/index.ts",
+        "apps/api/src/auth-routes.ts",
+        "apps/api/src/app.ts",
+        "apps/api/src/main.ts",
+        "apps/api/package.json",
+        "apps/api/test/auth-routes.test.ts",
+        "apps/admin/src/main.ts",
+        "apps/admin/package.json",
+        "apps/admin/test/commands.test.ts",
+        ".env.example",
+        "AGENTS.md"
       ]
     },
     {

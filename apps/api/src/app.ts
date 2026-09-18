@@ -1,9 +1,11 @@
 import { API_VERSION, type HealthResponse } from "@mail-hub/contracts";
+import cookie from "@fastify/cookie";
 import Fastify from "fastify";
 
 /** Build the HTTP application without binding a network port. */
 export function buildApp() {
   const app = Fastify({ logger: true });
+  void app.register(cookie);
 
   app.get<{ Reply: HealthResponse }>("/health", {
     schema: {

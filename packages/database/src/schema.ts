@@ -21,10 +21,10 @@ import {
 } from "drizzle-orm/pg-core";
 
 /**
- * Data model for the mail hub, from `SPEC.md` section 8.
+ * Data model for the mail hub, from `SPEC.md` sections 8 and 9.
  *
- * The schema stores mail. Authentication credentials and sessions use
- * separate migrations (SPEC section 9) and are not defined here.
+ * Mail storage and owner authentication share one schema but separate
+ * migrations: `0000_mail_storage.sql` and `0001_owner_auth.sql`.
  */
 
 const tsvector = customType<{ data: string; driverData: string }>({
@@ -74,6 +74,20 @@ export type ThreadLinkState = "root" | "pending" | "linked" | "ambiguous";
 export type OutboundStatus = "queued" | "sending" | "sent" | "failed" | "outcome_unknown";
 export type SentCopyStatus = "pending" | "appending" | "stored" | "failed" | "unknown";
 export type ActionItemStatus = "queued" | "executing" | "confirmed" | "conflicted" | "failed" | "unknown";
+
+/** Why one WebAuthn challenge exists. A challenge never changes purpose. */
+export type ChallengePurpose =
+  | "first_enrollment"
+  | "recovery_enrollment"
+  | "add_credential"
+  | "login"
+  | "reverify";
+
+/** Why one enrollment grant exists. Console commands issue both kinds. */
+export type GrantPurpose = "bootstrap" | "recovery";
+
+/** Standard sessions open while service is ready; inspection sessions during recovery. */
+export type OwnerSessionKind = "standard" | "inspection";
 
 /** Singleton control row compared against `RECOVERY_GENERATION` on startup. */
 export const serviceState = pgTable(
@@ -554,6 +568,135 @@ export const settings = pgTable("settings", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * The single product owner (SPEC section 9). One row exists after the first
+ * passkey is registered. Operator recovery preserves this identifier.
+ */
+export const owner = pgTable(
+  "owner",
+  {
+    singleton: boolean("singleton").primaryKey().default(true),
+    /** Unique so credentials, sessions, and challenges can reference it. */
+    id: uuid("id").notNull().defaultRandom().unique(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  () => [check("owner_singleton_check", sql`"singleton"`)],
+);
+
+/** A registered passkey. Only the public key is stored. */
+export const ownerCredentials = pgTable(
+  "owner_credentials",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    ownerId: uuid("owner_id")
+      .notNull()
+      .references(() => owner.id),
+    /** Base64url WebAuthn credential identifier, unique across the owner. */
+    credentialId: text("credential_id").notNull().unique(),
+    /** Operator-visible name, shown in settings. */
+    label: text("label").notNull(),
+    /** Base64url COSE public key. */
+    publicKey: text("public_key").notNull(),
+    /** Signature counter from the last verified assertion. */
+    counter: bigint("counter", { mode: "number" }).notNull().default(0),
+    transports: jsonb("transports").$type<string[] | null>(),
+    deviceType: text("device_type"),
+    backedUp: boolean("backed_up").notNull().default(false),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  () => [
+    check(
+      "owner_credentials_device_type_check",
+      sql`"device_type" is null or "device_type" in ('singleDevice', 'multiDevice')`,
+    ),
+  ],
+);
+
+/**
+ * One owner session. The cookie carries the raw token; this row stores only
+ * its SHA-256 hash. Sessions are bound to the recovery generation that was
+ * current when they opened.
+ */
+export const ownerSessions = pgTable(
+  "owner_sessions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    ownerId: uuid("owner_id")
+      .notNull()
+      .references(() => owner.id),
+    tokenHash: text("token_hash").notNull().unique(),
+    recoveryGeneration: uuid("recovery_generation").notNull(),
+    kind: text("kind").$type<OwnerSessionKind>().notNull().default("standard"),
+    /** Time of the last successful passkey verification in this session. */
+    verifiedAt: timestamp("verified_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  () => [check("owner_sessions_kind_check", sql`"kind" in ('standard', 'inspection')`)],
+);
+
+/**
+ * One WebAuthn challenge. Challenges are single-use, expire after five
+ * minutes, and are bound to one purpose, one owner, and one recovery
+ * generation (SPEC section 9).
+ */
+export const webauthnChallenges = pgTable(
+  "webauthn_challenges",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    purpose: text("purpose").$type<ChallengePurpose>().notNull(),
+    /** Null only for first enrollment: the owner row does not exist yet. */
+    ownerId: uuid("owner_id").references(() => owner.id),
+    /** Base64url challenge value handed to the client. */
+    challenge: text("challenge").notNull(),
+    recoveryGeneration: uuid("recovery_generation").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (t) => [
+    check(
+      "webauthn_challenges_purpose_check",
+      sql`"purpose" in ('first_enrollment', 'recovery_enrollment', 'add_credential', 'login', 'reverify')`,
+    ),
+    check(
+      "webauthn_challenges_owner_check",
+      sql`"owner_id" is not null or "purpose" = 'first_enrollment'`,
+    ),
+    index("webauthn_challenges_challenge_idx").on(t.challenge),
+  ],
+);
+
+/**
+ * One enrollment grant issued by an operator command. Grants expire after
+ * ten minutes, are consumed by first-passkey registration, and store only
+ * the SHA-256 of the printed token (SPEC section 9).
+ */
+export const enrollmentGrants = pgTable(
+  "enrollment_grants",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    purpose: text("purpose").$type<GrantPurpose>().notNull(),
+    tokenHash: text("token_hash").notNull().unique(),
+    recoveryGeneration: uuid("recovery_generation").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (t) => [
+    check("enrollment_grants_purpose_check", sql`"purpose" in ('bootstrap', 'recovery')`),
+    // A new grant invalidates any earlier grant for the same purpose.
+    uniqueIndex("enrollment_grants_live_purpose_uidx")
+      .on(t.purpose)
+      .where(sql`"consumed_at" is null and "revoked_at" is null`),
+  ],
+);
+
 export type Account = typeof accounts.$inferSelect;
 export type Folder = typeof folders.$inferSelect;
 export type Thread = typeof threads.$inferSelect;
@@ -569,3 +712,8 @@ export type ActionItem = typeof actionItems.$inferSelect;
 export type Decision = typeof decisions.$inferSelect;
 export type Event = typeof events.$inferSelect;
 export type Setting = typeof settings.$inferSelect;
+export type Owner = typeof owner.$inferSelect;
+export type OwnerCredential = typeof ownerCredentials.$inferSelect;
+export type OwnerSession = typeof ownerSessions.$inferSelect;
+export type WebauthnChallenge = typeof webauthnChallenges.$inferSelect;
+export type EnrollmentGrant = typeof enrollmentGrants.$inferSelect;

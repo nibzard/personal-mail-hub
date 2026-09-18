@@ -5,11 +5,14 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   accounts,
   createDatabase,
+  enrollmentGrants,
   folders,
   messageOccurrences,
   messages,
+  owner,
   runMigrations,
   threads,
+  webauthnChallenges,
 } from "../src/index.ts";
 
 /**
@@ -30,17 +33,22 @@ const EXPECTED_TABLES = [
   "decisions",
   "draft_uploads",
   "drafts",
+  "enrollment_grants",
   "events",
   "folders",
   "message_occurrences",
   "messages",
   "outbound_messages",
   "outbound_uploads",
+  "owner",
+  "owner_credentials",
+  "owner_sessions",
   "sender_overrides",
   "service_state",
   "settings",
   "threads",
   "uploads",
+  "webauthn_challenges",
 ];
 
 function maintenanceUrl(): string {
@@ -136,5 +144,52 @@ suite("database migrations", () => {
     await expect(
       db.update(messages).set({ threadLinkState: "linked" }).where(eq(messages.id, row.id)),
     ).rejects.toMatchObject({ cause: { constraint: "messages_thread_link_state_parent_check" } });
+  });
+
+  it("allows only one live enrollment grant per purpose", async () => {
+    const db = createDatabase(pool);
+    const generation = "11111111-1111-4111-8111-111111111111";
+    const values = {
+      purpose: "bootstrap" as const,
+      tokenHash: `grant-${randomUUID()}`,
+      recoveryGeneration: generation,
+      expiresAt: new Date(Date.now() + 60_000),
+    };
+    await db.insert(enrollmentGrants).values(values);
+    await expect(
+      db.insert(enrollmentGrants).values({ ...values, tokenHash: `grant-${randomUUID()}` }),
+    ).rejects.toMatchObject({ cause: { constraint: "enrollment_grants_live_purpose_uidx" } });
+    // A consumed or revoked grant no longer blocks the next one.
+    await db.update(enrollmentGrants).set({ consumedAt: new Date() }).where(eq(enrollmentGrants.tokenHash, values.tokenHash));
+    await expect(
+      db.insert(enrollmentGrants).values({ ...values, tokenHash: `grant-${randomUUID()}` }),
+    ).resolves.toBeDefined();
+  });
+
+  it("enforces one owner row and owner-bound challenges", async () => {
+    const db = createDatabase(pool);
+    const [ownerRow] = await db.insert(owner).values({ singleton: true }).returning();
+    // The singleton primary key admits exactly one owner row.
+    await expect(db.insert(owner).values({ singleton: true })).rejects.toMatchObject({
+      cause: { constraint: "owner_pkey" },
+    });
+    await expect(
+      db.insert(webauthnChallenges).values({
+        purpose: "login",
+        ownerId: ownerRow!.id,
+        challenge: "challenge-1",
+        recoveryGeneration: "11111111-1111-4111-8111-111111111111",
+        expiresAt: new Date(Date.now() + 60_000),
+      }),
+    ).resolves.toBeDefined();
+    // A challenge without an owner is legal only for first enrollment.
+    await expect(
+      db.insert(webauthnChallenges).values({
+        purpose: "login",
+        challenge: "challenge-2",
+        recoveryGeneration: "11111111-1111-4111-8111-111111111111",
+        expiresAt: new Date(Date.now() + 60_000),
+      }),
+    ).rejects.toMatchObject({ cause: { constraint: "webauthn_challenges_owner_check" } });
   });
 });

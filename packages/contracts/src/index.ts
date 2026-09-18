@@ -23,3 +23,61 @@ export interface RecoveryErrorBody {
     currentGeneration?: string;
   };
 }
+
+/** Owner authentication rejection codes, from `SPEC.md` section 9. */
+export type AuthErrorCode =
+  | "invalid_request"
+  | "unauthorized"
+  | "origin_forbidden"
+  | "grant_invalid"
+  | "challenge_invalid"
+  | "webauthn_invalid"
+  | "verification_required"
+  | "last_credential"
+  | "owner_exists"
+  | "owner_missing"
+  | "login_blocked"
+  | "auth_unavailable";
+
+/** The body of an authentication route rejection. */
+export interface AuthErrorBody {
+  error: {
+    code: AuthErrorCode;
+    message: string;
+  };
+}
+
+/** How a client may authenticate right now. */
+export type AuthLoginAvailability = "available" | "inspection_only" | "blocked";
+
+/** Response of `GET /auth/status`. */
+export interface AuthStatusResponse {
+  ownerRegistered: boolean;
+  login: AuthLoginAvailability;
+  control: string;
+}
+
+/** WebAuthn ceremony options, passed to the browser unchanged. */
+export interface AuthOptionsResponse {
+  options: object;
+}
+
+/** Session state returned after a ceremony or session check. */
+export interface AuthSessionResponse {
+  kind: "standard" | "inspection";
+  verifiedAt: string;
+  expiresAt: string;
+}
+
+/** One passkey as shown in settings. */
+export interface AuthCredentialSummary {
+  id: string;
+  label: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+}
+
+/** Response of `GET /auth/credentials`. */
+export interface AuthCredentialsResponse {
+  credentials: AuthCredentialSummary[];
+}
