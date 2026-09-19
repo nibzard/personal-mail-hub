@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   attachments,
   attachmentCacheKey,
+  bodies,
   createDatabase,
   createStorage,
   dropTestDatabase,
@@ -15,7 +16,7 @@ import {
   runMigrations,
   type Storage,
 } from "@mail-hub/database";
-import { IngestionService } from "@mail-hub/ingestion";
+import { IngestionService, SANITIZER_VERSION } from "@mail-hub/ingestion";
 import { ReadingService } from "../src/index.ts";
 import { DECODED_FOOBAR, DECODED_SPAM, readerMessage, textOnlyMessage } from "./fixtures.ts";
 
@@ -36,6 +37,7 @@ suite("ReadingService", () => {
   let ingestion: IngestionService;
   let reading: ReadingService;
   let regenerationCount: number;
+  let refreshCount: number;
 
   beforeAll(async () => {
     const admin = new Pool({ connectionString: maintenanceUrl() });
@@ -51,12 +53,22 @@ suite("ReadingService", () => {
     storage = createStorage(root);
     ingestion = new IngestionService(createDatabase(pool), storage);
     // The wrapped regenerator counts calls so the tests can tell cache hits
-    // from rebuilds without touching the reader's internals.
+    // from rebuilds without touching the reader's internals; the wrapped
+    // refresher does the same for stale sanitized derivatives.
     regenerationCount = 0;
-    reading = new ReadingService(createDatabase(pool), storage, async (attachmentId) => {
-      regenerationCount += 1;
-      return ingestion.regenerateAttachment(attachmentId);
-    });
+    refreshCount = 0;
+    reading = new ReadingService(
+      createDatabase(pool),
+      storage,
+      async (attachmentId) => {
+        regenerationCount += 1;
+        return ingestion.regenerateAttachment(attachmentId);
+      },
+      async (messageId) => {
+        refreshCount += 1;
+        return ingestion.refreshSanitizedBody(messageId);
+      },
+    );
   });
 
   afterAll(async () => {
@@ -160,6 +172,39 @@ suite("ReadingService", () => {
     expect(view.html).toContain("cid:chart@reports");
     const again = await reading.readCleanView(messageId);
     expect(again).toEqual(view);
+  });
+
+  it("rebuilds a stale sanitized derivative from the original before serving it", async () => {
+    const messageId = await ingestedMessage(readerMessage());
+    const db = createDatabase(pool);
+    // A row sanitized under an older policy: stale output carrying a stale
+    // version stamp. The current sanitizer removes the script on rebuild.
+    await db
+      .update(bodies)
+      .set({
+        htmlSanitized: "<p>September metrics</p><script>steal()</script>",
+        sanitizerVersion: "dompurify@0.0.1/config-0",
+      })
+      .where(eq(bodies.messageId, messageId));
+
+    const detail = await reading.readMessage(messageId);
+    expect(detail.htmlSanitized).not.toContain("<script");
+    // The served HTML came from the stored original, not the stale row.
+    expect(detail.htmlSanitized).toContain('src="cid:chart@reports"');
+
+    const row = (await db.select().from(bodies).where(eq(bodies.messageId, messageId)))[0]!;
+    expect(row.sanitizerVersion).toBe(SANITIZER_VERSION);
+    expect(row.htmlSanitized).not.toContain("<script");
+
+    // Clean view extracts from the rebuilt derivative, never the stale one.
+    const view = await reading.readCleanView(messageId);
+    expect(view.html).not.toContain("<script");
+
+    // The stored stamp is current now, so later reads rebuild nothing.
+    expect(refreshCount).toBe(1);
+    await reading.readMessage(messageId);
+    await reading.readCleanView(messageId);
+    expect(refreshCount).toBe(1);
   });
 
   it("rejects clean view for a message without a sanitized HTML body", async () => {

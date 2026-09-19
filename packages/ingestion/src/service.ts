@@ -99,6 +99,12 @@ export interface RegeneratedAttachment {
   bytes: Uint8Array;
 }
 
+/** One message's sanitized body derivatives, rebuilt under the current sanitizer. */
+export interface SanitizedBody {
+  textPlain: string | null;
+  htmlSanitized: string | null;
+}
+
 export class IngestionService {
   private readonly sanitizer: HtmlSanitizer;
 
@@ -287,6 +293,63 @@ export class IngestionService {
       .where(eq(attachments.id, attachment.id))
       .returning();
     return { attachment: updated[0]!, bytes: part.content };
+  }
+
+  /**
+   * Rebuild one message's sanitized body from its verified original under
+   * the current sanitizer (SPEC section 8: the original is the record;
+   * derivatives rebuild). The snippet and the body index derive from the
+   * same sanitized text, so they move with the body in one transaction. A
+   * row already stamped with the current version returns as it stands, so
+   * concurrent readers rebuild at most once. `null` answers a message with
+   * no body row; a stored body without a retrievable original is an error,
+   * never a guess.
+   */
+  async refreshSanitizedBody(messageId: string): Promise<SanitizedBody | null> {
+    requireUuid("message id", messageId);
+    const rows = await this.db
+      .select({ message: messages, body: bodies })
+      .from(messages)
+      .leftJoin(bodies, eq(bodies.messageId, messages.id))
+      .where(eq(messages.id, messageId))
+      .limit(1);
+    const row = rows[0];
+    if (row === undefined) {
+      throw new IngestionError("not_found", "No message exists with this identifier.");
+    }
+    if (row.body === null) {
+      return null;
+    }
+    if (row.body.sanitizerVersion === SANITIZER_VERSION) {
+      return { textPlain: row.body.textPlain, htmlSanitized: row.body.htmlSanitized };
+    }
+    const { message } = row;
+    if (message.originalStorageKey === null || message.originalSha256 === null) {
+      throw new IngestionError("original_missing", "The message original has not been stored yet.");
+    }
+    if (!(await this.storage.durable.verify(message.originalStorageKey, message.originalSha256))) {
+      throw new IngestionError("original_mismatch", "The stored original no longer matches its recorded hash.");
+    }
+
+    const original = await this.storage.durable.get(message.originalStorageKey);
+    const parsed = await parseMime(original);
+    const derived = this.deriveBody(parsed);
+    const indexText = truncate(normalizeIndexText(derived.bodyText ?? ""), BODY_INDEX_MAX_CHARS);
+    await this.db.transaction(async (tx) => {
+      await tx
+        .update(bodies)
+        .set({
+          textPlain: derived.textPlain,
+          htmlSanitized: derived.htmlSanitized,
+          sanitizerVersion: SANITIZER_VERSION,
+        })
+        .where(eq(bodies.messageId, messageId));
+      await tx
+        .update(messages)
+        .set({ snippet: makeSnippet(derived.bodyText), bodyIndexText: indexText })
+        .where(eq(messages.id, messageId));
+    });
+    return { textPlain: derived.textPlain, htmlSanitized: derived.htmlSanitized };
   }
 
   /** Normalized body derivatives for the `bodies` row and the index text. */

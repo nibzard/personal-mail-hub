@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { join, sep } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ContentExtractor, EXTRACTION_VERSION } from "../src/index.ts";
 import { CORPUS, corpusEntry } from "./fixtures.ts";
@@ -7,6 +10,24 @@ import { CORPUS, corpusEntry } from "./fixtures.ts";
  * Snapshot tests pin the Markdown and clean-view output so a pinned-version
  * upgrade is deliberate: a changed snapshot is a review, not a surprise.
  */
+
+/**
+ * The version of the defuddle installation this suite loads. Resolved from
+ * the package entry Node loads, so a hoisted or a nested install answers
+ * alike.
+ */
+function installedDefuddleVersion(): string {
+  const entry = createRequire(import.meta.url).resolve("defuddle");
+  const marker = `${sep}node_modules${sep}`;
+  const packageDir = `${entry.slice(0, entry.lastIndexOf(marker))}${marker}defuddle`;
+  const manifest = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8")) as {
+    version?: unknown;
+  };
+  if (typeof manifest.version !== "string") {
+    throw new Error(`The defuddle manifest at ${packageDir} names no version.`);
+  }
+  return manifest.version;
+}
 
 beforeEach(() => {
   // Extraction and preview must not touch the network. Defuddle receives
@@ -18,8 +39,12 @@ beforeEach(() => {
 });
 
 describe("the pinned extraction version", () => {
-  it("names the pinned Defuddle version", () => {
-    expect(EXTRACTION_VERSION).toBe("defuddle@0.19.4/config-1");
+  it("names the installed Defuddle version", () => {
+    const version = /^defuddle@(\d+\.\d+\.\d+)\/config-\d+$/.exec(EXTRACTION_VERSION)?.[1];
+    // A dependency upgrade must move the constant with it; a mismatch here
+    // means the reported extraction behavior is wrong, whatever the code runs.
+    expect(version, EXTRACTION_VERSION).toBeDefined();
+    expect(version).toBe(installedDefuddleVersion());
   });
 });
 

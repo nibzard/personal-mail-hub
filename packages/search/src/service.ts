@@ -24,7 +24,8 @@ import { normalizeDomainValue, parseSearchQuery } from "./query.ts";
  *
  * Saved searches store their query text and scope, not results: the state is
  * the query, and running it again recomputes the answer. Their mutations
- * pass the recovery gate like every other durable client write.
+ * pass the recovery gate like every other durable client write, and each
+ * commits its effect together with its audit event.
  */
 
 /** The longest query text the service accepts, from the box or a saved search. */
@@ -383,7 +384,9 @@ export class SearchService {
   /**
    * Store one saved search. The query must parse and the scope must be
    * valid before anything is written; the recovery generation gate runs
-   * before the insert, like every durable client mutation.
+   * before the insert, like every durable client mutation. The row and its
+   * audit event commit in one transaction, so a crash between them cannot
+   * leave an untracked mutation.
    */
   async createSavedSearch(context: MutationContext, input: CreateSavedSearchInput): Promise<SavedSearchRecord> {
     const name = readSavedSearchName(input.name);
@@ -392,46 +395,54 @@ export class SearchService {
 
     await this.gate.gateMutation(context.requestGeneration);
 
-    const inserted = await this.db
-      .insert(savedSearches)
-      .values({ name, query: input.query.trim(), scope })
-      .returning()
+    return await this.db
+      .transaction(async (tx) => {
+        const inserted = await tx
+          .insert(savedSearches)
+          .values({ name, query: input.query.trim(), scope })
+          .returning();
+        const record = toSavedSearchRecord(inserted[0]!);
+        await tx.insert(events).values({
+          actor: "user",
+          type: "search.saved_created",
+          entityType: "saved_search",
+          entityId: record.id,
+          payload: { name: record.name, scope: record.scope },
+        });
+        return record;
+      })
       .catch((cause: unknown) => {
         if (isUniqueViolation(cause)) {
           throw new SearchError("name_conflict", `A saved search named "${name}" already exists.`);
         }
         throw cause;
       });
-
-    const record = toSavedSearchRecord(inserted[0]!);
-    await this.db.insert(events).values({
-      actor: "user",
-      type: "search.saved_created",
-      entityType: "saved_search",
-      entityId: record.id,
-      payload: { name: record.name, scope: record.scope },
-    });
-    return record;
   }
 
-  /** Remove one saved search. Unknown identifiers report `not_found`. */
+  /**
+   * Remove one saved search. Unknown identifiers report `not_found`. The
+   * delete and its audit event commit in one transaction, so the event can
+   * never go missing behind a mutation that happened.
+   */
   async deleteSavedSearch(context: MutationContext, id: string): Promise<void> {
     if (!UUID_PATTERN.test(id)) {
       throw new SearchError("invalid_request", `Saved-search identifier must be a UUID: ${id}`);
     }
     await this.gate.gateMutation(context.requestGeneration);
 
-    const deleted = await this.db.delete(savedSearches).where(eq(savedSearches.id, id)).returning();
-    const record = deleted[0];
-    if (record === undefined) {
-      throw new SearchError("not_found", "No saved search exists with that identifier.");
-    }
-    await this.db.insert(events).values({
-      actor: "user",
-      type: "search.saved_deleted",
-      entityType: "saved_search",
-      entityId: record.id,
-      payload: { name: record.name },
+    await this.db.transaction(async (tx) => {
+      const deleted = await tx.delete(savedSearches).where(eq(savedSearches.id, id)).returning();
+      const record = deleted[0];
+      if (record === undefined) {
+        throw new SearchError("not_found", "No saved search exists with that identifier.");
+      }
+      await tx.insert(events).values({
+        actor: "user",
+        type: "search.saved_deleted",
+        entityType: "saved_search",
+        entityId: record.id,
+        payload: { name: record.name },
+      });
     });
   }
 }

@@ -16,13 +16,17 @@ import {
   type MessageClassificationView,
   type SuggestionSource,
 } from "@mail-hub/contracts";
+import { SANITIZER_VERSION } from "@mail-hub/ingestion/sanitize";
+import type { SanitizedBody } from "@mail-hub/ingestion";
 import { ReadingError } from "./errors.ts";
 
 /**
  * The safe message reader (SPEC F3 and sections 8 and 9). Reads serve only
- * sanitized derivatives, never the stored original bytes, and every download
- * carries bytes the decoded hash verified — from the disposable cache or from
- * a regeneration over the verified original.
+ * sanitized derivatives, never the stored original bytes: a derivative the
+ * current sanitizer did not produce rebuilds from the verified original
+ * before it is served, and every download carries bytes the decoded hash
+ * verified — from the disposable cache or from a regeneration over the
+ * verified original.
  */
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -39,6 +43,13 @@ export type CleanViewExtractor = Pick<ContentExtractor, "extractCleanView">;
  * reader independent of it.
  */
 export type AttachmentRegenerator = (attachmentId: string) => Promise<{ bytes: Uint8Array }>;
+
+/**
+ * Rebuilds one message's sanitized body from the verified durable original
+ * and persists the fresh derivative (SPEC section 8). The ingestion service
+ * implements this; the type keeps the reader independent of it.
+ */
+export type SanitizedBodyRefresher = (messageId: string) => Promise<SanitizedBody | null>;
 
 /** One attachment as the reader shows it. */
 export interface MessageAttachment {
@@ -95,6 +106,7 @@ export class ReadingService {
     private readonly db: MailHubDatabase,
     private readonly storage: Storage,
     private readonly regenerate: AttachmentRegenerator,
+    private readonly refreshSanitizedBody: SanitizedBodyRefresher,
     private readonly extractor: CleanViewExtractor = new ContentExtractor(),
   ) {}
 
@@ -129,7 +141,11 @@ export class ReadingService {
           : { to: recipients.to, cc: recipients.cc ?? [] },
       sentAt: row.message.sentAt,
       fetchedBody: row.message.fetchedBody,
-      htmlSanitized: row.body?.htmlSanitized ?? null,
+      htmlSanitized: await this.currentSanitizedHtml(
+        row.message.id,
+        row.body?.htmlSanitized ?? null,
+        row.body?.sanitizerVersion ?? null,
+      ),
       textPlain: row.body?.textPlain ?? null,
       attachments: withInlineResolution(parts),
       classification: classificationOf(row.message),
@@ -146,7 +162,7 @@ export class ReadingService {
   async readCleanView(messageId: string): Promise<CleanViewDetail> {
     requireUuid("message id", messageId);
     const rows = await this.db
-      .select({ htmlSanitized: bodies.htmlSanitized })
+      .select({ htmlSanitized: bodies.htmlSanitized, sanitizerVersion: bodies.sanitizerVersion })
       .from(messages)
       .leftJoin(bodies, eq(bodies.messageId, messages.id))
       .where(eq(messages.id, messageId))
@@ -155,14 +171,39 @@ export class ReadingService {
     if (row === undefined) {
       throw new ReadingError("not_found", "No message exists with this identifier.");
     }
-    if (row.htmlSanitized === null) {
+    const htmlSanitized = await this.currentSanitizedHtml(
+      messageId,
+      row.htmlSanitized,
+      row.sanitizerVersion,
+    );
+    if (htmlSanitized === null) {
       throw new ReadingError(
         "invalid_request",
         "This message has no sanitized HTML body to extract a clean view from.",
       );
     }
-    const view = await this.extractor.extractCleanView(row.htmlSanitized);
+    const view = await this.extractor.extractCleanView(htmlSanitized);
     return { html: view.html, source: view.source };
+  }
+
+  /**
+   * The sanitized HTML to serve: the stored derivative when its sanitizer
+   * version is current, or a rebuild from the durable original when it is
+   * stale — including an unknown version (SPEC section 8). The plain-text
+   * part never passes through the sanitizer, so only an HTML derivative
+   * can go stale. The refresh persists its result, so one rebuild serves
+   * every later read.
+   */
+  private async currentSanitizedHtml(
+    messageId: string,
+    htmlSanitized: string | null,
+    sanitizerVersion: string | null,
+  ): Promise<string | null> {
+    if (htmlSanitized === null || sanitizerVersion === SANITIZER_VERSION) {
+      return htmlSanitized;
+    }
+    const refreshed = await this.refreshSanitizedBody(messageId);
+    return refreshed?.htmlSanitized ?? htmlSanitized;
   }
 
   /**

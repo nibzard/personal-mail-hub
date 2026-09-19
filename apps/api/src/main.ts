@@ -143,13 +143,16 @@ if (authConfig === null) {
   });
   app.log.info("Search ready: cross-account queries and saved searches.");
 
-  // The reader serves sanitized derivatives only; a download regenerates its
-  // disposable copy from the verified original when the cache misses (SPEC
-  // F3 and section 8). Reads carry no recovery gate.
+  // The reader serves sanitized derivatives only. A derivative stamped with
+  // an old sanitizer rebuilds from the verified original, and a download
+  // regenerates its disposable copy from the same record when the cache
+  // misses (SPEC F3 and section 8). Reads carry no recovery gate.
+  const ingestionForReads = new IngestionService(db, storage);
   const readingService = new ReadingService(
     db,
     storage,
-    (attachmentId) => new IngestionService(db, storage).regenerateAttachment(attachmentId),
+    (attachmentId) => ingestionForReads.regenerateAttachment(attachmentId),
+    (messageId) => ingestionForReads.refreshSanitizedBody(messageId),
   );
   await registerMessageRoutes(app, {
     service: readingService,

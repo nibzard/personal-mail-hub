@@ -20,6 +20,7 @@ export {
   type IngestOriginalInput,
   type IngestResult,
   type RegeneratedAttachment,
+  type SanitizedBody,
   type StageOriginalInput,
   type StagedOriginal,
 } from "./service.ts";
