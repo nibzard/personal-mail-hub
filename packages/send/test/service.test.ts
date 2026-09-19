@@ -17,6 +17,7 @@ import {
   folders as foldersTable,
   messages as messagesTable,
   outboundMessages,
+  outboundUploads,
   runMigrations,
   uploadKey,
   type MailHubDatabase,
@@ -228,6 +229,35 @@ suite("outbound snapshots and SMTP sending", () => {
   }
 
   /**
+   * One storage double that fires a hook while the freeze verifies an upload,
+   * before the claim transaction opens: the window a concurrent attach or
+   * detach commits through. Later calls pass straight through.
+   */
+  function storageWithVerifyHook(hook: () => Promise<unknown>): Storage {
+    const durable = storage.durable;
+    let armed = true;
+    return {
+      durable: {
+        storageClass: durable.storageClass,
+        put: (key: string, bytes: Uint8Array) => durable.put(key, bytes),
+        putStream: (key: string, chunks: AsyncIterable<Uint8Array>) => durable.putStream(key, chunks),
+        get: (key: string) => durable.get(key),
+        createReadStream: (key: string) => durable.createReadStream(key),
+        stat: (key: string) => durable.stat(key),
+        verify: async (key: string, expectedSha256: string) => {
+          if (armed) {
+            armed = false;
+            await hook();
+          }
+          return durable.verify(key, expectedSha256);
+        },
+        remove: (key: string) => durable.remove(key),
+      },
+      disposable: storage.disposable,
+    };
+  }
+
+  /**
    * One service wired to a scripted submitter and a fake Sent folder, for the
    * append and recovery tests. Both accounts share the folder double.
    */
@@ -367,6 +397,77 @@ suite("outbound snapshots and SMTP sending", () => {
 
     const error = await rejection(composeAndQueue(draft.id, randomUUID(), 1));
     expect(error instanceof SendError && error.code).toBe("upload_unverified");
+  });
+
+  it("refuses to freeze when a concurrent attach changes the draft's files", async () => {
+    const draft = await makeDraft();
+    const first = await compose.createUpload(readyContext, {
+      accountId,
+      filename: "first.txt",
+      contentType: "text/plain",
+      bytes: new TextEncoder().encode("first bytes"),
+    });
+    const second = await compose.createUpload(readyContext, {
+      accountId,
+      filename: "second.txt",
+      contentType: "text/plain",
+      bytes: new TextEncoder().encode("second bytes"),
+    });
+    await compose.attachUpload(readyContext, draft.id, first.id);
+
+    // The attach lands between the unlocked attachment read and the freeze
+    // transaction. It moves no revision, so only the link re-check inside
+    // the claim transaction can catch it.
+    const raced = new OutboundService(
+      db,
+      storageWithVerifyHook(() => compose.attachUpload(readyContext, draft.id, second.id)),
+      controls,
+    );
+    const error = await rejection(
+      raced.queueSend(readyContext, { draftId: draft.id, idempotencyKey: randomUUID(), baseRevision: 1 }),
+    );
+    expect(error instanceof SendError && error.code).toBe("draft_stale");
+
+    // Nothing queued, nothing locked, and the draft never moved.
+    expect(
+      await db.select().from(outboundMessages).where(eq(outboundMessages.draftId, draft.id)),
+    ).toHaveLength(0);
+    const draftRow = (await db.select().from(draftsTable).where(eq(draftsTable.id, draft.id)))[0]!;
+    expect(draftRow.lockedBySend).toBeNull();
+    expect(draftRow.revision).toBe(1);
+
+    // The retry freezes exactly the files the draft now names.
+    const retry = await queueSendOf(draft.id);
+    expect(
+      await db.select().from(outboundUploads).where(eq(outboundUploads.outboundId, retry.id)),
+    ).toHaveLength(2);
+  });
+
+  it("refuses to freeze when a concurrent detach changes the draft's files", async () => {
+    const draft = await makeDraft();
+    const upload = await compose.createUpload(readyContext, {
+      accountId,
+      filename: "only.txt",
+      contentType: "text/plain",
+      bytes: new TextEncoder().encode("only bytes"),
+    });
+    await compose.attachUpload(readyContext, draft.id, upload.id);
+
+    const raced = new OutboundService(
+      db,
+      storageWithVerifyHook(() => compose.detachUpload(readyContext, draft.id, upload.id)),
+      controls,
+    );
+    const error = await rejection(
+      raced.queueSend(readyContext, { draftId: draft.id, idempotencyKey: randomUUID(), baseRevision: 1 }),
+    );
+    expect(error instanceof SendError && error.code).toBe("draft_stale");
+
+    expect(
+      await db.select().from(outboundMessages).where(eq(outboundMessages.draftId, draft.id)),
+    ).toHaveLength(0);
+    const draftRow = (await db.select().from(draftsTable).where(eq(draftsTable.id, draft.id)))[0]!;
+    expect(draftRow.lockedBySend).toBeNull();
   });
 
   it("gates queueing on the recovery generation before the idempotency lookup", async () => {
@@ -516,6 +617,125 @@ suite("outbound snapshots and SMTP sending", () => {
     expect(stillLocked.lockedBySend).toBe(outbound.id);
   });
 
+  it("fails an attempt whose stored bytes left durable storage, and frees the draft", async () => {
+    const draft = await makeDraft();
+    const { service, script } = executingService(acceptedReport());
+    const outbound = await queueSendOf(draft.id);
+    await storage.durable.remove((await loadRow(outbound.id)).mimeStorageKey);
+
+    const outcome = await service.executeOutbound(outbound.id);
+    expect(outcome.status).toBe("failed");
+    const row = await loadRow(outbound.id);
+    expect(row.lastError).toEqual({
+      code: "mime_missing",
+      message: "The stored MIME bytes could not be read; nothing was submitted.",
+    });
+    // SMTP never opened, so no recipient holds a recorded verdict.
+    expect(row.recipientResults).toEqual([]);
+    expect(row.smtpResponse).toBeNull();
+    expect(script.calls).toHaveLength(0);
+    expect(await eventTypesOf(outbound.id)).toContain("send.failed");
+
+    // Nothing was submitted, so the outcome is definitive and the draft
+    // returns to editing instead of staying wedged as unknown.
+    const unlocked = (
+      await db.select().from(draftsTable).where(eq(draftsTable.id, draft.id)).limit(1)
+    )[0]!;
+    expect(unlocked.lockedBySend).toBeNull();
+    const edited = await compose.updateDraft(readyContext, draft.id, {
+      baseRevision: 1,
+      markdown: "# Edited after the local failure\n\nThe draft was never wedged.",
+    });
+    expect(edited.revision).toBe(2);
+  });
+
+  it("fails an attempt whose stored bytes no longer match their hash", async () => {
+    const draft = await makeDraft();
+    const { service, script } = executingService(acceptedReport());
+    const outbound = await queueSendOf(draft.id);
+    await storage.durable.put((await loadRow(outbound.id)).mimeStorageKey, new TextEncoder().encode("tampered"));
+
+    const outcome = await service.executeOutbound(outbound.id);
+    expect(outcome.status).toBe("failed");
+    expect((await loadRow(outbound.id)).lastError).toEqual({
+      code: "mime_mismatch",
+      message: "The stored MIME bytes no longer match their recorded hash; nothing was submitted.",
+    });
+    expect(script.calls).toHaveLength(0);
+    const unlocked = (
+      await db.select().from(draftsTable).where(eq(draftsTable.id, draft.id)).limit(1)
+    )[0]!;
+    expect(unlocked.lockedBySend).toBeNull();
+  });
+
+  it("fails an attempt with unresolvable credentials and frees the draft", async () => {
+    const draft = await makeDraft();
+    const script = scriptedSubmitter(acceptedReport());
+    const service = new OutboundService(db, storage, controls, {
+      submit: script.submit,
+      resolveCredentials: async () => {
+        throw new Error("No SMTP password is stored for this account.\nThe rest stays off the record.");
+      },
+    });
+    const outbound = await queueSendOf(draft.id);
+    const outcome = await service.executeOutbound(outbound.id);
+
+    expect(outcome.status).toBe("failed");
+    const row = await loadRow(outbound.id);
+    expect(row.lastError).toEqual({
+      code: "credentials_unavailable",
+      message: "No SMTP password is stored for this account.",
+    });
+    expect(script.calls).toHaveLength(0);
+    expect(await eventTypesOf(outbound.id)).toContain("send.failed");
+
+    // A wrong password must not wedge the draft: it unlocks, the settings
+    // get fixed, and the edited draft queues again under a new key.
+    const unlocked = (
+      await db.select().from(draftsTable).where(eq(draftsTable.id, draft.id)).limit(1)
+    )[0]!;
+    expect(unlocked.lockedBySend).toBeNull();
+    const edited = await compose.updateDraft(readyContext, draft.id, {
+      baseRevision: 1,
+      markdown: "# Edited after the password was fixed",
+    });
+    const retry = await queueSendOf(edited.id, randomUUID(), edited.revision);
+    expect(retry.status).toBe("queued");
+  });
+
+  it("ends the draft lock on acceptance, so a sent draft is deletable", async () => {
+    const draft = await makeDraft();
+    const upload = await compose.createUpload(readyContext, {
+      accountId,
+      filename: "kept.txt",
+      contentType: "text/plain",
+      bytes: new TextEncoder().encode("kept bytes"),
+    });
+    await compose.attachUpload(readyContext, draft.id, upload.id);
+
+    const { service } = executingService(acceptedReport());
+    const outbound = await queueSendOf(draft.id);
+    const outcome = await service.executeOutbound(outbound.id);
+    expect(outcome.status).toBe("sent");
+
+    const released = (
+      await db.select().from(draftsTable).where(eq(draftsTable.id, draft.id)).limit(1)
+    )[0]!;
+    expect(released.lockedBySend).toBeNull();
+
+    // The sent snapshot is the record; the draft can be discarded, and the
+    // outbound references keep its file alive (SPEC F6).
+    await compose.deleteDraft(readyContext, draft.id);
+    const deleted = (
+      await db.select().from(draftsTable).where(eq(draftsTable.id, draft.id)).limit(1)
+    )[0]!;
+    expect(deleted.deletedAt).not.toBeNull();
+    const kept = await loadRow(outbound.id);
+    expect(kept.status).toBe("sent");
+    expect(kept.draftId).toBe(draft.id);
+    expect(await storage.durable.stat(uploadKey(upload.id))).not.toBeNull();
+  });
+
   it("sweeps queued rows of this generation only", async () => {
     const draft = await makeDraft();
     await queueSendOf(draft.id);
@@ -551,12 +771,13 @@ suite("outbound snapshots and SMTP sending", () => {
     const { service, script, folder } = appendingService(acceptedReport(), new FakeSentFolder("Sent"));
     const { row, bytes } = await acceptedSend(service);
 
-    const summary = await service.appendDueSentCopies();
+    const summary = await service.appendDueSentCopies(100);
     expect(summary.blocked).toBe(false);
     expect(summary.attempted).toBeGreaterThanOrEqual(1);
 
-    // The sweep also stores due rows from earlier tests; this row's own append
-    // is what matters here.
+    // The sweep also stores due rows from earlier tests, so the pass runs
+    // with headroom above the default batch; this row's own append is what
+    // matters here.
     expect(folder.appendsOf(row.rfcMessageId)).toBe(1);
     const attempt = folder.appends.find((entry) => entry.rfcMessageId === row.rfcMessageId)!;
     expect(attempt.folder).toBe("Sent");

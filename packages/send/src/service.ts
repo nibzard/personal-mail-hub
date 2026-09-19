@@ -32,7 +32,12 @@ import {
 } from "@mail-hub/ingestion";
 import type { SmtpSubmitReport } from "@mail-hub/contracts";
 import { assessJob, type ControlStatus, type MailHubTransaction, type MutationGate } from "@mail-hub/recovery";
-import { lockDraftForSend, unlockDraftAfterFailure, type MutationContext } from "@mail-hub/compose";
+import {
+  lockDraftForSend,
+  unlockDraftAfterFailure,
+  unlockDraftAfterSend,
+  type MutationContext,
+} from "@mail-hub/compose";
 import { createHash, randomUUID } from "node:crypto";
 import { SendError } from "./errors.ts";
 import { composeOutboundMime } from "./mime.ts";
@@ -65,8 +70,13 @@ import type { SentCopyDestination, SentCopyMailbox, SentCopySessionFactory } fro
  *    job. Partial acceptance shows per-recipient results instead of inventing
  *    one outcome.
  * 4. A definitive refusal means `failed` and releases the draft for editing.
- *    An unclassifiable outcome means `outcome_unknown`; the draft stays
- *    locked and nothing resends automatically.
+ *    So does a local failure before SMTP opened — unreadable stored bytes,
+ *    unresolvable credentials — because nothing was submitted and no server
+ *    stated anything. An unclassifiable outcome means `outcome_unknown`; the
+ *    draft stays locked and nothing resends automatically. Acceptance ends
+ *    the lock in the same transaction that sets `sent`: the snapshot is the
+ *    record, and the draft is deletable again while the outbound references
+ *    keep its uploaded files alive.
  * 5. `executeSentCopyAppend` runs the separate Sent append job on the stored
  *    bytes. It reconciles first — a verified copy already in the Sent folder
  *    ends the job without a second append — appends only when absence is
@@ -343,6 +353,23 @@ export class OutboundService {
       if (locked.lockedBySend !== null) {
         throw new SendError("draft_locked", "This draft is already locked by a queued send.");
       }
+      // Attach and detach change the draft's files without moving its
+      // revision, so the revision check above cannot see them. The link set
+      // is re-read under the lock and must still match the set the bytes
+      // were composed from; otherwise the send would carry files the draft
+      // no longer names, or miss files it just gained (SPEC F7 step 1).
+      const links = await tx
+        .select({ uploadId: draftUploads.uploadId, ordinal: draftUploads.ordinal })
+        .from(draftUploads)
+        .where(eq(draftUploads.draftId, draft.id))
+        .orderBy(asc(draftUploads.ordinal));
+      if (!matchesFrozenAttachments(links, attachments)) {
+        throw new SendError(
+          "draft_stale",
+          "This draft's attachments changed while the send was being frozen; read the draft again and retry.",
+          locked.revision,
+        );
+      }
 
       const inserted = await tx
         .insert(outboundMessages)
@@ -480,21 +507,32 @@ export class OutboundService {
       return { ...current, submitted: false };
     }
 
-    // The stored bytes are the request; submit nothing the record cannot vouch for.
+    // The stored bytes are the request; submit nothing the record cannot
+    // vouch for. A failure this early is local and definitive — SMTP never
+    // opened, so nothing was submitted — and the draft returns to editing
+    // instead of staying locked against an outcome that cannot arrive.
     let bytes: Uint8Array;
     try {
       bytes = await this.storage.durable.get(row.mimeStorageKey);
     } catch {
-      const updated = await this.recordUnknown(row, null, {
-        code: "mime_missing",
-        message: "The stored MIME bytes could not be read; nothing was submitted.",
+      const updated = await this.recordFailure(row, {
+        smtpResponse: null,
+        recipientResults: [],
+        error: {
+          code: "mime_missing",
+          message: "The stored MIME bytes could not be read; nothing was submitted.",
+        },
       });
       return { ...toOutboundRecord(updated), submitted: true };
     }
     if (sha256Hex(bytes) !== row.mimeSha256) {
-      const updated = await this.recordUnknown(row, null, {
-        code: "mime_mismatch",
-        message: "The stored MIME bytes no longer match their recorded hash; nothing was submitted.",
+      const updated = await this.recordFailure(row, {
+        smtpResponse: null,
+        recipientResults: [],
+        error: {
+          code: "mime_mismatch",
+          message: "The stored MIME bytes no longer match their recorded hash; nothing was submitted.",
+        },
       });
       return { ...toOutboundRecord(updated), submitted: true };
     }
@@ -503,12 +541,18 @@ export class OutboundService {
     try {
       credentials = await this.execution.resolveCredentials(row.accountId);
     } catch (cause) {
-      // The claim is spent and nothing was submitted, but the account's
-      // submission settings are missing or unreadable; that is not a refusal
-      // the server stated, so the outcome stays open.
-      const updated = await this.recordUnknown(row, null, {
-        code: "credentials_unavailable",
-        message: cause instanceof Error ? cause.message.split("\n")[0]! : "The account's submission settings could not be resolved.",
+      // The claim is spent and nothing was submitted. The account's
+      // submission settings are missing or unreadable — a wrong password, an
+      // unmapped host — and no server stated anything; still, the attempt
+      // itself is definitively over, so it fails and the draft is editable
+      // again once the settings are corrected (SPEC F7 step 6).
+      const updated = await this.recordFailure(row, {
+        smtpResponse: null,
+        recipientResults: [],
+        error: {
+          code: "credentials_unavailable",
+          message: cause instanceof Error ? cause.message.split("\n")[0]! : "The account's submission settings could not be resolved.",
+        },
       });
       return { ...toOutboundRecord(updated), submitted: true };
     }
@@ -550,7 +594,16 @@ export class OutboundService {
       };
     }
     if (report.state === "rejected") {
-      return { ...toOutboundRecord(await this.recordFailure(row, report)), submitted: true };
+      return {
+        ...toOutboundRecord(
+          await this.recordFailure(row, {
+            smtpResponse: smtpResponseOf(report),
+            recipientResults: recipientResultsOf(row.envelopeRecipients, report),
+            error: report.error === null ? null : { ...report.error },
+          }),
+        ),
+        submitted: true,
+      };
     }
     return { ...toOutboundRecord(await this.recordUnknown(row, report, null)), submitted: true };
   }
@@ -1043,6 +1096,13 @@ export class OutboundService {
             })
             .where(and(eq(outboundMessages.id, row.id), eq(outboundMessages.status, input.fromStatus)))
             .returning();
+          if (updated[0] !== undefined) {
+            // Acceptance ends the send lock in the same transaction: the
+            // snapshot is the record now, and the draft returns to plain
+            // list state — deletable, never wedged — while the outbound
+            // references keep its uploaded files alive (SPEC F6 and F7).
+            await unlockDraftAfterSend(tx, row.id);
+          }
           await recordSendEvent(tx, "system", SEND_SENT_EVENT, row.id, {
             accountId: row.accountId,
             messageId,
@@ -1065,18 +1125,26 @@ export class OutboundService {
   }
 
   /**
-   * One definitive refusal (SPEC F7 step 6): `failed`, the responses it did
-   * produce, and the draft lock released for editing.
+   * One definitive failure (SPEC F7 step 6): `failed`, whatever responses the
+   * attempt produced — none, when SMTP never opened — and the draft lock
+   * released for editing.
    */
-  private async recordFailure(row: OutboundMessage, report: SmtpSubmitReport): Promise<OutboundMessage> {
+  private async recordFailure(
+    row: OutboundMessage,
+    outcome: {
+      smtpResponse: Record<string, unknown> | null;
+      recipientResults: RecipientResult[];
+      error: { code: string; message: string } | null;
+    },
+  ): Promise<OutboundMessage> {
     return this.db.transaction(async (tx) => {
       const updated = await tx
         .update(outboundMessages)
         .set({
           status: "failed",
-          smtpResponse: smtpResponseOf(report),
-          recipientResults: recipientResultsOf(row.envelopeRecipients, report),
-          lastError: report.error === null ? null : { ...report.error },
+          smtpResponse: outcome.smtpResponse,
+          recipientResults: outcome.recipientResults,
+          lastError: outcome.error === null ? null : { ...outcome.error },
         })
         .where(and(eq(outboundMessages.id, row.id), eq(outboundMessages.status, "sending")))
         .returning();
@@ -1084,7 +1152,7 @@ export class OutboundService {
       await unlockDraftAfterFailure(tx, row.id);
       await recordSendEvent(tx, "system", SEND_FAILED_EVENT, row.id, {
         accountId: row.accountId,
-        code: report.error?.code ?? "unknown",
+        code: outcome.error?.code ?? "unknown",
       });
       return failed;
     });
@@ -1450,6 +1518,24 @@ async function lockDraftRow(tx: MailHubTransaction, draftId: string): Promise<Dr
     throw new SendError("not_found", "No draft exists with this identifier.");
   }
   return row;
+}
+
+/**
+ * Whether the draft's live upload links still name the frozen attachment
+ * set, position for position. Both lists are ordered by ordinal; attach and
+ * detach change the set without moving the draft revision, so this is the
+ * check that catches them inside the freeze transaction.
+ */
+function matchesFrozenAttachments(
+  links: { uploadId: string; ordinal: number }[],
+  frozen: { upload: { id: string }; ordinal: number }[],
+): boolean {
+  if (links.length !== frozen.length) {
+    return false;
+  }
+  return links.every(
+    (link, index) => link.uploadId === frozen[index]!.upload.id && link.ordinal === frozen[index]!.ordinal,
+  );
 }
 
 /** Record one send audit event. Payloads never contain message text. */

@@ -1342,14 +1342,14 @@
         "deployment",
         "security"
       ],
-      "updated_at": "2026-09-19T19:37:06Z",
+      "updated_at": "2026-09-19T19:37:54Z",
       "files": [
-        "deploy/docker-compose.yml",
-        "deploy/entrypoint.sh",
-        "deploy/README.md",
-        "deploy/env.example",
         ".dockerignore",
         "apps/worker/src/main.ts",
+        "deploy/README.md",
+        "deploy/docker-compose.yml",
+        "deploy/entrypoint.sh",
+        "deploy/env.example",
         "to-do.json"
       ]
     },
@@ -1357,17 +1357,18 @@
       "id": "T039",
       "title": "Fix the send and draft-lock lifecycle defects",
       "priority": 1,
-      "status": "todo",
-      "details": "Three defects in the send path. First, queueSend freezes the attachment list from an unlocked read: loadVerifiedAttachments runs before the freeze transaction (packages/send/src/service.ts:296) and attachUpload and detachUpload never bump drafts.revision (packages/compose/src/service.ts:452-492), so a concurrent attach or detach changes what is sent. Second, local pre-submission failures (mime_missing, mime_mismatch, credentials_unavailable at packages/send/src/service.ts:484-514) are recorded as outcome_unknown although nothing was submitted; recordUnknown never unlocks the draft, only a failed outcome unlocks it (line 1084), and no sweep or edit path can open it again, so a wrong SMTP password wedges the draft permanently. Third, no path releases lockedBySend after a successful send, so sent drafts stay locked forever and deleteDraft rejects them with draft_locked (packages/compose/src/service.ts:722-734) while listDrafts keeps returning them. Freeze the attachment set inside the claim transaction or bump the revision on link changes, classify never-submitted local failures as failed with the draft unlocked and editable, and release or supersede the lock on acceptance while outbound references keep the uploaded files alive.",
+      "status": "done",
+      "details": "Three defects in the send path. First, queueSend freezes the attachment list from an unlocked read: loadVerifiedAttachments runs before the freeze transaction (packages/send/src/service.ts:296) and attachUpload and detachUpload never bump drafts.revision (packages/compose/src/service.ts:452-492), so a concurrent attach or detach changes what is sent. Second, local pre-submission failures (mime_missing, mime_mismatch, credentials_unavailable at packages/send/src/service.ts:484-514) are recorded as outcome_unknown although nothing was submitted; recordUnknown never unlocks the draft, only a failed outcome unlocks it (line 1084), and no sweep or edit path can open it again, so a wrong SMTP password wedges the draft permanently. Third, no path releases lockedBySend after a successful send, so sent drafts stay locked forever and deleteDraft rejects them with draft_locked (packages/compose/src/service.ts:722-734) while listDrafts keeps returning them. Freeze the attachment set inside the claim transaction or bump the revision on link changes, classify never-submitted local failures as failed with the draft unlocked and editable, and release or supersede the lock on acceptance while outbound references keep the uploaded files alive. Fixed all three. The freeze transaction now re-reads the draft upload links under the row lock and rejects with draft_stale when they no longer match the composed set, so a concurrent attach or detach cannot change what is sent (chosen over a revision bump, which would break the attachment flows of the web autosaver). Local pre-submission failures (mime_missing, mime_mismatch, credentials_unavailable) now record failed with the draft unlocked and editable; only genuinely unclassifiable post-submission outcomes stay outcome_unknown. commitAcceptance ends the draft lock in the same transaction that sets sent via the new compose helper unlockDraftAfterSend, so a sent draft can be discarded while outbound references keep its uploaded files alive.",
       "tags": [
         "send",
         "compose",
         "safety"
       ],
-      "updated_at": "2026-09-19T17:39:46Z",
+      "updated_at": "2026-09-19T19:58:04Z",
       "files": [
         "packages/send/src/service.ts",
         "packages/compose/src/service.ts",
+        "packages/compose/src/index.ts",
         "packages/send/test/service.test.ts",
         "packages/compose/test/service.test.ts"
       ]

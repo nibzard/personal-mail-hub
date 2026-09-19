@@ -591,6 +591,26 @@ export async function lockDraftForSend(
  * may release its lock, and an unresolved attempt never does.
  */
 export async function unlockDraftAfterFailure(tx: MailHubTransaction, outboundId: string): Promise<number> {
+  return releaseDraftLock(tx, outboundId, "failed");
+}
+
+/**
+ * Unlock a draft its send accepted (SPEC F7). The sent snapshot is the
+ * record now, so the draft returns to plain list state: deletable, with its
+ * uploaded files kept alive through the outbound references (SPEC F6).
+ * Commit the `sent` status first, inside the acceptance transaction; an
+ * unresolved attempt never releases its lock.
+ */
+export async function unlockDraftAfterSend(tx: MailHubTransaction, outboundId: string): Promise<number> {
+  return releaseDraftLock(tx, outboundId, "sent");
+}
+
+/** The one lock release: only the outbound row that owns the lock drops it. */
+async function releaseDraftLock(
+  tx: MailHubTransaction,
+  outboundId: string,
+  requiresStatus: "failed" | "sent",
+): Promise<number> {
   requireUuid("outbound id", outboundId);
   const outbound = await tx
     .select({ status: outboundMessages.status })
@@ -601,10 +621,10 @@ export async function unlockDraftAfterFailure(tx: MailHubTransaction, outboundId
   if (row === undefined) {
     throw new ComposeError("not_found", "No outbound message exists with this identifier.");
   }
-  if (row.status !== "failed") {
+  if (row.status !== requiresStatus) {
     throw new ComposeError(
       "invalid_request",
-      "Only a definitively failed send unlocks its draft; unresolved attempts stay locked.",
+      "Only a send with a definitive outcome unlocks its draft; unresolved attempts stay locked.",
     );
   }
   const released = await tx
@@ -613,7 +633,10 @@ export async function unlockDraftAfterFailure(tx: MailHubTransaction, outboundId
     .where(eq(drafts.lockedBySend, outboundId))
     .returning({ id: drafts.id });
   for (const draft of released) {
-    await recordComposeEvent(tx, "system", "draft.unlocked", "draft", draft.id, { outboundId });
+    await recordComposeEvent(tx, "system", "draft.unlocked", "draft", draft.id, {
+      outboundId,
+      outcome: requiresStatus,
+    });
   }
   return released.length;
 }

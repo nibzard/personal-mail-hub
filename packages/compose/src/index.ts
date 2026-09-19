@@ -28,6 +28,7 @@ export {
   ComposeService,
   lockDraftForSend,
   unlockDraftAfterFailure,
+  unlockDraftAfterSend,
   type CreateDraftInput,
   type CreateReplyDraftInput,
   type CreateUploadInput,

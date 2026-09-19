@@ -2,7 +2,7 @@ import { mkdtemp } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -11,6 +11,7 @@ import {
   createStorage,
   drafts as draftsTable,
   events,
+  messages as messagesTable,
   outboundMessages,
   runMigrations,
   uploads as uploadsTable,
@@ -25,6 +26,7 @@ import {
   ComposeService,
   lockDraftForSend,
   unlockDraftAfterFailure,
+  unlockDraftAfterSend,
   type DraftRecord,
 } from "../src/index.ts";
 
@@ -383,6 +385,57 @@ suite("draft editing and durable uploads", () => {
       markdown: "editable again",
     });
     expect(unlocked.revision).toBe(draft.revision + 1);
+  });
+
+  it("unlocks a draft after its send is accepted, so a sent draft is deletable", async () => {
+    const draft = await service.createDraft(readyContext, { accountId });
+    const upload = await service.createUpload(readyContext, {
+      accountId,
+      filename: "kept.pdf",
+      contentType: "application/pdf",
+      bytes: new TextEncoder().encode("kept"),
+    });
+    await service.attachUpload(readyContext, draft.id, upload.id);
+
+    const outboundId = randomUUID();
+    await db.transaction(async (tx) => {
+      await insertOutbound(tx, outboundId, accountId, draft);
+      await lockDraftForSend(tx, draft.id, draft.revision, outboundId);
+    });
+    expect((await staleRejection(service.deleteDraft(readyContext, draft.id))).code).toBe("draft_locked");
+
+    // Anything but `sent` keeps the lock: an unresolved attempt never releases.
+    expect((await staleRejection(db.transaction((tx) => unlockDraftAfterSend(tx, outboundId)))).code).toBe(
+      "invalid_request",
+    );
+
+    // Acceptance needs its local sent record (SPEC F7), so one exists here.
+    const message = (
+      await db.insert(messagesTable).values({ accountId, fetchedBody: true }).returning({ id: messagesTable.id })
+    )[0]!;
+    await db
+      .update(outboundMessages)
+      .set({ status: "sent", logicalMessageId: message.id })
+      .where(eq(outboundMessages.id, outboundId));
+    expect(await db.transaction((tx) => unlockDraftAfterSend(tx, outboundId))).toBe(1);
+
+    const released = (await db.select().from(draftsTable).where(eq(draftsTable.id, draft.id)))[0]!;
+    expect(released.lockedBySend).toBeNull();
+    const unlockEvents = await db
+      .select({ payload: events.payload })
+      .from(events)
+      .where(and(eq(events.entityType, "draft"), eq(events.entityId, draft.id), eq(events.type, "draft.unlocked")));
+    expect(unlockEvents).toEqual([{ payload: { outboundId, outcome: "sent" } }]);
+
+    // The sent draft leaves the list only through an explicit delete, and
+    // the delete no longer rejects: the wedge is gone, while the outbound
+    // references keep the uploaded file alive (SPEC F6).
+    await service.deleteDraft(readyContext, draft.id);
+    expect((await service.listDrafts()).map((entry) => entry.id)).not.toContain(draft.id);
+    expect(await storage.durable.stat(uploadKey(upload.id))).not.toBeNull();
+    expect((await db.select().from(outboundMessages).where(eq(outboundMessages.id, outboundId)))[0]!.draftId).toBe(
+      draft.id,
+    );
   });
 
   it("rejects a send lock that does not match the frozen revision", async () => {
