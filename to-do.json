@@ -618,7 +618,7 @@
       "title": "Implement the command palette and keyboard controls",
       "priority": 2,
       "status": "done",
-      "details": "Done. One cmdk palette over a shared command registry: grouped commands with unavailable reasons and scope notes, nested choosers (theme with current marker, folders grouped by account, Escape pops the choice first), word-prefix filtering that keeps registry order, and platform labels (Cmd on Apple, Ctrl elsewhere; Cmd+P left to printing). The shell binds one keydown listener: Ctrl/Cmd+K toggles the palette, and the SPEC F3 single keys (j/k/o/e/u/s/r//) stay inert in inputs, editable content, and dialogs, ignore composition, and refuse repeats for mutations. Focus restoration runs from Radix onCloseAutoFocus: keep focus a command placed, else the opener, the selected row, the list heading, or the Commands button. Touch: the Commands button grows to 44 px on mobile and palette rows keep a 44 px minimum height. Note for a later pass: the nav toggle and ThemeToggle in the header remain under 44 px on mobile (pre-existing T015 scope).",
+      "details": "Done. One cmdk palette over a shared command registry: grouped commands with unavailable reasons and scope notes, nested choosers (theme with current marker, folders grouped by account, Escape pops the choice first), word-prefix filtering that keeps registry order, and platform labels (Cmd on Apple, Ctrl elsewhere; Cmd+P left to printing). The shell binds one keydown listener: Ctrl/Cmd+K toggles the palette, and the SPEC F3 single keys (j/k/o/e/u/s/r//) stay inert in inputs, editable content, and dialogs, ignore composition, and refuse repeats for mutations. Focus restoration runs from Radix onCloseAutoFocus: keep focus a command placed, else the opener, the selected row, the list heading, or the Commands button. Touch: the Commands button grows to 44 px on mobile and palette rows keep a 44 px minimum height. Note for a later pass: the nav toggle and ThemeToggle in the header remain under 44 px on mobile (pre-existing T015 scope). Re-verified 2026-09-19 after the status had flipped back to doing: the workspace type check passes in every workspace, the web suite passes (30 tests across commands and render), and the token contrast script passes; the implementation itself is commit 3b42bf4 and needed no changes.",
       "depends_on": [
         "T014",
         "T015"
@@ -627,7 +627,7 @@
         "ui",
         "accessibility"
       ],
-      "updated_at": "2026-09-19T12:23:35Z",
+      "updated_at": "2026-09-19T12:28:25Z",
       "files": [
         "apps/web/package.json",
         "apps/web/src/lib/platform.ts",
