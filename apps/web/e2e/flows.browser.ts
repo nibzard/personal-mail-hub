@@ -292,8 +292,113 @@ test.describe("clean view", () => {
   });
 });
 
-test.describe("performance", () => {
-  test("the virtualized list mounts a bounded window of a large scope", async ({
+test.describe("settings", () => {
+  /** Opens the settings screen through the palette (SPEC F11). */
+  async function openSettings(page: Page) {
+    await page.keyboard.press("Control+k");
+    const palette = page.getByRole("dialog");
+    await expect(palette).toBeVisible();
+    await page.keyboard.type("settings");
+    await page.keyboard.press("Enter");
+    const dialog = page.getByRole("dialog", { name: "Settings" });
+    await expect(dialog).toBeVisible();
+    return dialog;
+  }
+
+  test("the screen shows preferences, accounts, and the sync status", async ({ page }) => {
+    await openInbox(page);
+    const dialog = await openSettings(page);
+
+    // The sections the SPEC F10 settings cover are all present.
+    for (const name of [
+      "Appearance",
+      "Keyboard and reading",
+      "Classification",
+      "Accounts",
+      "Synchronization and queues",
+    ]) {
+      await expect(dialog.getByRole("heading", { name, exact: true })).toBeVisible();
+    }
+
+    // The per-account status and the queue counters come from one read.
+    await expect(dialog.getByText("Last cycle 2 min ago")).toBeVisible();
+    await expect(dialog.getByText(/3 bodies pending/u)).toBeVisible();
+    await expect(dialog.getByText("2 folders still backfilling")).toBeVisible();
+    await expect(dialog.getByText("2 jobs waiting")).toBeVisible();
+    await expect(dialog.getByText(/1 queued/u)).toBeVisible();
+
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+  });
+
+  test("a density change applies at once, saves, and survives a reload", async ({ page }) => {
+    await openInbox(page);
+    await expect(page.locator("html")).not.toHaveAttribute("data-density", "comfortable");
+    const dialog = await openSettings(page);
+
+    await dialog.getByLabel("Reading density").click();
+    // Radix portals the option list outside the dialog element.
+    await page.getByRole("option", { name: "Comfortable" }).click();
+    await expect(page.locator("html")).toHaveAttribute("data-density", "comfortable");
+    await expect(dialog.locator("footer[role='status']")).toHaveText("Saved.");
+
+    // The server is the record: with local storage emptied, a reload adopts
+    // the stored choice (SPEC F10).
+    await page.evaluate(() => window.localStorage.clear());
+    await page.reload();
+    await expect(page.locator("#message-list [data-message-row]").first()).toBeVisible();
+    await expect(page.locator("html")).toHaveAttribute("data-density", "comfortable");
+
+    // Compact returns the same way.
+    const reopened = await openSettings(page);
+    await reopened.getByLabel("Reading density").click();
+    await page.getByRole("option", { name: "Compact" }).click();
+    await expect(page.locator("html")).not.toHaveAttribute("data-density", "comfortable");
+  });
+
+  test("folder roles, identities, and the classify toggle write through", async ({ page }) => {
+    await openInbox(page);
+    const dialog = await openSettings(page);
+
+    // A role choice saves and reloads the folder index.
+    const projectsRole = dialog.getByLabel("Role of Projects");
+    await projectsRole.click();
+    await page.getByRole("option", { name: "junk" }).click();
+    await expect(projectsRole).toContainText("junk");
+    // The list still holds one folder per role; Projects moved, none copied.
+    await expect(dialog.getByLabel("Role of Archive")).toContainText("archive");
+
+    // Clearing a required role states what is missing (SPEC F1). The Work
+    // card never maps an archive folder, so scope to the Personal card.
+    const personalCard = dialog.getByRole("region", { name: "Personal", exact: true });
+    await dialog.getByLabel("Role of Archive").click();
+    await page.getByRole("option", { name: "No role" }).click();
+    await expect(personalCard.getByText(/Choose a destination for archive/u)).toBeVisible();
+    await dialog.getByLabel("Role of Archive").click();
+    await page.getByRole("option", { name: "archive" }).click();
+    await expect(personalCard.getByText(/Choose a destination/u)).toBeHidden();
+
+    // The classify toggle writes and survives the account refetch.
+    await dialog.getByRole("switch", { name: "Classify messages of Personal" }).click();
+    await expect(dialog.getByRole("switch", { name: "Classify messages of Personal" })).toBeChecked();
+
+    // An identity row saves through the account and re-renders.
+    await dialog.getByRole("button", { name: "Add identity" }).first().click();
+    await dialog.getByLabel("Address of identity 2").fill("alex+lists@personal.example");
+    await dialog.getByLabel("Display name of identity 2").fill("Alex Lists");
+    await dialog.getByRole("button", { name: "Save identities" }).first().click();
+    await expect(dialog.getByLabel("Address of identity 2")).toHaveValue(
+      "alex+lists@personal.example",
+    );
+    // The stored default stays identity 1.
+    await expect(personalCard.getByLabel("Make identity 1 the default")).toBeChecked();
+
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+  });
+});
+
+test.describe("performance", () => {  test("the virtualized list mounts a bounded window of a large scope", async ({
     page,
   }) => {
     await openInbox(page);

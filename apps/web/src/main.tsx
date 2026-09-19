@@ -6,12 +6,15 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { OfflineSyncProvider } from "@/offline/sync-context.tsx";
+import { SettingsProvider } from "@/settings/settings-context";
 import { useAuthStatus, useSession } from "@/mail/data";
 import "./styles.css";
 
 /*
  * Entry point. One probe decides between the mail shell and the sign-in
  * screen: the account list reads only with a live session (SPEC section 9).
+ * A live session also carries the settings record, so appearance choices
+ * follow the account onto this device (SPEC F10).
  */
 
 function App() {
@@ -24,7 +27,14 @@ function App() {
   if (session.state.phase === "signed-in") {
     return (
       <OfflineSyncProvider probeGeneration={session.state.recoveryGeneration}>
-        <AppShell accounts={session.state.accounts} onSessionLost={session.refresh} />
+        <SettingsProvider recoveryGeneration={session.state.recoveryGeneration}>
+          <AppShell
+            accounts={session.state.accounts}
+            recoveryGeneration={session.state.recoveryGeneration}
+            onSessionLost={session.refresh}
+            onAccountsChanged={session.refresh}
+          />
+        </SettingsProvider>
       </OfflineSyncProvider>
     );
   }

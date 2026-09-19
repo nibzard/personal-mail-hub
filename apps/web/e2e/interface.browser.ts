@@ -54,11 +54,41 @@ test.describe("axe", () => {
   });
 
   test("the dark palette passes", async ({ page }) => {
-    await page.addInitScript(() => {
-      localStorage.setItem("mailhub.theme", "dark");
-    });
     await openInbox(page);
+    // Turn the theme dark through the application's own control. The stored
+    // choice is the record, and it wins over any local seed (SPEC F10).
+    await page.keyboard.press("Control+k");
+    const palette = page.getByRole("dialog");
+    await expect(palette).toBeVisible();
+    await page.keyboard.type("theme");
+    await page.keyboard.press("Enter");
+    await palette.getByRole("option", { name: "Dark", exact: true }).click();
+    await expect(palette).toBeHidden();
     await expect(page.locator("html")).toHaveClass(/dark/u);
+    await expectNoAxeViolations(page);
+  });
+
+  test("the settings screen passes", async ({ page }) => {
+    await openInbox(page);
+    await page.keyboard.press("Control+k");
+    const palette = page.getByRole("dialog");
+    await expect(palette).toBeVisible();
+    await page.keyboard.type("settings");
+    await page.keyboard.press("Enter");
+    const dialog = page.getByRole("dialog", { name: "Settings" });
+    await expect(dialog).toBeVisible();
+    // The account cards carry the densest controls: selects, switches, and
+    // the identity radio group.
+    await expect(dialog.getByRole("heading", { name: "Accounts", exact: true })).toBeVisible();
+    // Contrast is a property of the settled surface: during the fade-in the
+    // dialog is still translucent over the overlay.
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          Number(getComputedStyle(document.querySelector("[role='dialog']") ?? document.body).opacity),
+        ),
+      )
+      .toBe(1);
     await expectNoAxeViolations(page);
   });
 });

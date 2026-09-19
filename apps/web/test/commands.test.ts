@@ -80,6 +80,7 @@ function build(overrides: Partial<MailCommandsInput> = {}) {
     openSelection: vi.fn(),
     setTheme: vi.fn(),
     setSingleKeyShortcuts: vi.fn(),
+    openSettings: vi.fn(),
   };
   const input: MailCommandsInput = {
     accounts: [ACCOUNT_A, ACCOUNT_B],
@@ -142,7 +143,7 @@ describe("buildMailCommands", () => {
   });
 
   it("keeps unavailable commands listed with their reason", () => {
-    const withSelection = build().commands;
+    const { commands: withSelection, handlers } = build();
     const messageActions = withSelection.filter(
       (command) => command.group === "message-actions",
     );
@@ -155,9 +156,11 @@ describe("buildMailCommands", () => {
     expect(
       withSelection.find((command) => command.id === "new-message")!.unavailableReason,
     ).toMatch(/compose editor/);
-    expect(
-      withSelection.find((command) => command.id === "open-settings")!.unavailableReason,
-    ).toMatch(/settings screen/);
+    // The settings screen ships, so its command runs.
+    const openSettings = withSelection.find((command) => command.id === "open-settings")!;
+    expect(openSettings.unavailableReason).toBeNull();
+    openSettings.run?.();
+    expect(handlers.openSettings).toHaveBeenCalledOnce();
 
     // Without a selection, every contextual command says so first.
     const withoutSelection = build({ selected: null }).commands;

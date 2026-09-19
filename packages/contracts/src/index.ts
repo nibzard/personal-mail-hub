@@ -723,6 +723,61 @@ export type IngestionErrorCode =
   | "locator_unresolved"
   | "bytes_mismatch";
 
+/** Settings rejection code, from `SPEC.md` F10 and section 7. */
+export type SettingsErrorCode = "invalid_request";
+
+/** The body of a settings route rejection. */
+export interface SettingsErrorBody {
+  error: {
+    code: SettingsErrorCode;
+    message: string;
+  };
+}
+
+/** The theme choices settings offer. System follows the device (SPEC F10). */
+export type SettingsTheme = "system" | "light" | "dark";
+
+/** The reading densities settings offer. Compact is the default (SPEC F10). */
+export type SettingsDensity = "compact" | "comfortable";
+
+/** The application settings the `settings` table stores (SPEC F10). */
+export interface AppSettings {
+  theme: SettingsTheme;
+  density: SettingsDensity;
+  /** Whether the single-key shortcuts respond (SPEC F11). */
+  singleKeyShortcuts: boolean;
+  /** Whether the reader opens messages in clean view by default (SPEC F3). */
+  cleanViewDefault: boolean;
+  /** Whether Jev classification runs for enabled accounts (SPEC F8). */
+  classificationEnabled: boolean;
+  /** Monthly Jev cost ceiling in US dollars; `null` means no cap (SPEC F8). */
+  classificationMonthlyCostCapUsd: number | null;
+  /** Whether the historical backfill classifies stored messages (SPEC F8). */
+  backfillClassification: boolean;
+}
+
+/** Response of `GET /settings` and `PUT /settings`. */
+export interface SettingsResponse {
+  settings: AppSettings;
+}
+
+/** The body of `PUT /settings`: only the keys being changed. */
+export type SettingsUpdateBody = Partial<AppSettings>;
+
+/**
+ * The per-account synchronization and queue status the settings screen shows.
+ * Every number comes from the same durable records `GET /healthz` reads, so
+ * the interface and the health check can never disagree (SPEC section 11).
+ */
+export interface SyncStatusResponse {
+  /** When the report was assembled, as an ISO 8601 timestamp. */
+  checkedAt: string;
+  queue: HealthzQueue;
+  sends: HealthzSends;
+  classification: HealthzClassification;
+  accounts: HealthzAccount[];
+}
+
 /** The stages one connection test walks through, in order. */
 export type ConnectionTestStage = "tls" | "authenticate" | "inspect";
 

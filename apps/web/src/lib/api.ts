@@ -167,6 +167,28 @@ export function apiPatch<T>(
   });
 }
 
+/** One authenticated put, for whole-value replaces such as identities. */
+export function apiPut<T>(
+  path: string,
+  body: unknown,
+  options?: { signal?: AbortSignal; headers?: Record<string, string> },
+): Promise<T> {
+  return request<T>(path, {
+    method: "PUT",
+    signal: options?.signal,
+    headers: { "content-type": "application/json", ...(options?.headers ?? {}) },
+    body: JSON.stringify(body),
+  });
+}
+
+/** One authenticated delete, for clearing a value such as a folder role. */
+export function apiDelete<T>(
+  path: string,
+  options?: { signal?: AbortSignal; headers?: Record<string, string> },
+): Promise<T> {
+  return request<T>(path, { method: "DELETE", signal: options?.signal, headers: options?.headers });
+}
+
 /** One authenticated byte upload, sent verbatim (SPEC F6). */
 export function apiPostBytes<T>(
   path: string,

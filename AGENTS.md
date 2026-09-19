@@ -114,6 +114,15 @@
   `events` table, where the sync, action, send, account, authentication,
   and recovery services already record their milestones; classification
   corrections and pauses join them with the Jev integration.
+- `packages/settings` contains the settings record (SPEC F10): theme,
+  reading density, single-key shortcuts, the clean-view default, and the
+  classification keys, stored as key-value pairs in the `settings` table
+  with one `settings.updated` event per change. Reads merge stored rows
+  over the defaults and fall back when a stored value is unusable; writes
+  pass the recovery gate, validate the patch, and store only the changed
+  keys. `apps/api` serves it at `GET`/`PUT /settings` and exposes the
+  per-account synchronization and queue status at `GET /sync/status` over
+  the same durable records the health report reads.
 - `packages/database` contains the Drizzle schema, SQL migrations, object
   storage, and pg-boss integration, plus the retrying scratch-database cleanup
   (`dropTestDatabase`) the PostgreSQL suites share. Run `npm run db:generate`

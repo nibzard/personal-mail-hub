@@ -9,6 +9,7 @@ import { IngestionService } from "@mail-hub/ingestion";
 import { ReadingService } from "@mail-hub/reading";
 import { runConnectionTest } from "@mail-hub/transport";
 import { HealthService } from "@mail-hub/observability";
+import { SettingsService } from "@mail-hub/settings";
 import { registerAccountRoutes } from "./account-routes.ts";
 import { registerAuthRoutes } from "./auth-routes.ts";
 import { registerComposeRoutes } from "./compose-routes.ts";
@@ -17,6 +18,7 @@ import { registerHealthRoutes } from "./health-routes.ts";
 import { registerMessageRoutes } from "./message-routes.ts";
 import { registerSearchRoutes } from "./search-routes.ts";
 import { registerSendRoutes } from "./send-routes.ts";
+import { registerSettingsRoutes } from "./settings-routes.ts";
 import { buildApp } from "./app.ts";
 
 const connectionString = process.env.DATABASE_URL;
@@ -72,6 +74,18 @@ if (authConfig === null) {
   const authService = new PasskeyAuthService(db, authConfig, controls);
   await registerAuthRoutes(app, { service: authService, origin: authConfig.origin });
   app.log.info(`Passkey authentication ready for origin ${authConfig.origin}.`);
+
+  // Settings read and write through the same session and recovery gate as
+  // every durable client mutation (SPEC F10 and section 7). The sync status
+  // the settings screen shows reads the durable records behind /healthz.
+  const settingsService = new SettingsService(db, controls);
+  await registerSettingsRoutes(app, {
+    service: settingsService,
+    health: healthService,
+    origin: authConfig.origin,
+    verifySession: (token) => authService.verifySession(token),
+  });
+  app.log.info("Settings ready: preferences and per-account sync status.");
 
   // Draft editing and uploads share the session and recovery gate; their
   // files persist in durable storage before the database acknowledges them

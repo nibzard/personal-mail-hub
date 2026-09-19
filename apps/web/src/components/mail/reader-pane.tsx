@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { apiUrl } from "@/lib/api";
 import { formatBytes, formatCount, formatFullTime, senderLabel } from "@/lib/format";
 import { useCleanView, useInlineImages, useMessageDetail } from "@/mail/data";
+import { useAppSettings } from "@/settings/settings-context";
 import { prepareMessageDocument } from "@/mail/render";
 import { SanitizedMessageFrame, useReaderColors } from "./message-body";
 
@@ -44,9 +45,13 @@ export function ReaderPane({ message, onBack, onSessionLost, className }: Reader
 
   // Clean view is one toggle per message (SPEC F3): Defuddle extraction,
   // then DOMPurify, then this same frame. The sanitized original stays one
-  // click away, and the remote-image policy applies to both views.
-  const [cleanViewFor, setCleanViewFor] = useState<string | null>(null);
-  const cleanEnabled = messageId !== null && cleanViewFor === messageId;
+  // click away, and the remote-image policy applies to both views. A message
+  // without its own choice yet starts from the stored default (SPEC F10).
+  const { settings } = useAppSettings();
+  const [cleanChoice, setCleanChoice] = useState<{ id: string; on: boolean } | null>(null);
+  const cleanEnabled =
+    messageId !== null &&
+    (cleanChoice?.id === messageId ? cleanChoice.on : settings.cleanViewDefault);
   const cleanResource = useCleanView(messageId, cleanEnabled);
   const cleanView = cleanEnabled && cleanResource.phase === "ready" ? cleanResource.data : null;
   const activeHtml = cleanView?.html ?? body?.htmlSanitized ?? null;
@@ -177,7 +182,11 @@ export function ReaderPane({ message, onBack, onSessionLost, className }: Reader
                           size="sm"
                           aria-pressed={cleanEnabled}
                           disabled={cleanEnabled && cleanView === null && cleanResource.phase === "loading"}
-                          onClick={() => setCleanViewFor(cleanEnabled ? null : messageId)}
+                          onClick={() =>
+                            setCleanChoice(
+                              cleanEnabled ? null : { id: message.messageId, on: true },
+                            )
+                          }
                         >
                           <Sparkles aria-hidden="true" className="size-3.5" />
                           Clean view

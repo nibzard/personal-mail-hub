@@ -15,8 +15,12 @@ const CHOICES: ReadonlyArray<{ value: Theme; label: string }> = [
 ];
 
 /** Shared theme control for the shell, the palette, and settings. */
-export function ThemeToggle() {
+export function ThemeToggle({ onChoose }: { onChoose?: (theme: Theme) => void }) {
   const { theme, setTheme } = useTheme();
+  const choose = (value: Theme) => {
+    setTheme(value);
+    onChoose?.(value);
+  };
 
   return (
     <DropdownMenu>
@@ -38,10 +42,7 @@ export function ThemeToggle() {
         )}
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        <DropdownMenuRadioGroup
-          value={theme}
-          onValueChange={(value) => setTheme(value as Theme)}
-        >
+        <DropdownMenuRadioGroup value={theme} onValueChange={(value) => choose(value as Theme)}>
           {CHOICES.map((choice) => (
             <DropdownMenuRadioItem key={choice.value} value={choice.value}>
               {choice.label}

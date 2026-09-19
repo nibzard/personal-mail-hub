@@ -12,6 +12,7 @@ import type {
 } from "@mail-hub/contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiGet, apiGetBlob, toApiError, type ApiError } from "@/lib/api";
+
 import { offlineStore } from "@/offline/store.ts";
 import { useResource, type Resource } from "./use-resource";
 import { folderForRole, scopeKey, type MailScope } from "./view";
@@ -51,14 +52,24 @@ export type SessionState =
  */
 export function useSession(): { state: SessionState; refresh: () => void } {
   const resource = useResource((signal) => apiGet<AccountsResponse>("/accounts", signal), []);
+  // A refresh keeps the last signed-in answer visible, so a reload after a
+  // settings mutation never flashes the shell away (SPEC F12).
+  const lastAnswer = useRef<AccountsResponse | null>(null);
+  if (resource.phase === "ready" && resource.data !== null) {
+    lastAnswer.current = resource.data;
+  }
+  const fromAnswer = (answer: AccountsResponse): SessionState => ({
+    phase: "signed-in",
+    accounts: answer.accounts,
+    recoveryGeneration: answer.recoveryGeneration,
+  });
   switch (resource.phase) {
     case "ready":
       return {
-        state: {
-          phase: "signed-in",
-          accounts: resource.data?.accounts ?? [],
-          recoveryGeneration: resource.data?.recoveryGeneration ?? null,
-        },
+        state:
+          resource.data !== null
+            ? fromAnswer(resource.data)
+            : { phase: "signed-in", accounts: [], recoveryGeneration: null },
         refresh: resource.reload,
       };
     case "error":
@@ -73,7 +84,9 @@ export function useSession(): { state: SessionState; refresh: () => void } {
         refresh: resource.reload,
       };
     default:
-      return { state: { phase: "loading" }, refresh: resource.reload };
+      return lastAnswer.current !== null
+        ? { state: fromAnswer(lastAnswer.current), refresh: resource.reload }
+        : { state: { phase: "loading" }, refresh: resource.reload };
   }
 }
 

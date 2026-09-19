@@ -59,6 +59,7 @@ export interface MailCommandHandlers {
   openSelection(): void;
   setTheme(theme: Theme): void;
   setSingleKeyShortcuts(on: boolean): void;
+  openSettings(): void;
 }
 
 export interface MailCommandsInput {
@@ -82,7 +83,6 @@ const NO_ACCOUNTS = "No accounts are configured yet.";
 const ACTION_ROUTES =
   "Mail actions need the server routes for flags and moves, which this build does not include.";
 const COMPOSING = "The compose editor is not part of this build yet.";
-const SETTINGS_SCREEN = "The settings screen is not part of this build yet.";
 
 /** Builds the full command set for the current shell state. */
 export function buildMailCommands(input: MailCommandsInput): MailCommand[] {
@@ -298,10 +298,10 @@ export function buildMailCommands(input: MailCommandsInput): MailCommand[] {
       id: "open-settings",
       group: "settings",
       label: "Open settings",
-      keywords: ["preferences", "configuration"],
-      unavailableReason: SETTINGS_SCREEN,
+      keywords: ["preferences", "configuration", "density", "classification"],
+      unavailableReason: null,
       scopeNote: null,
-      run: undefined,
+      run: () => handlers.openSettings(),
     },
   ];
 }

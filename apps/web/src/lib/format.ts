@@ -81,3 +81,20 @@ export function senderLabel(address: { address: string; name?: string | null } |
   const name = address.name?.trim();
   return name !== undefined && name.length > 0 ? name : address.address;
 }
+
+/** Ages of sync and queue records, for example "45s", "12 min", "3 h". */
+export function formatAge(seconds: number | null): string {
+  if (seconds === null || !Number.isFinite(seconds) || seconds < 0) {
+    return "unknown";
+  }
+  if (seconds < 60) {
+    return `${Math.floor(seconds)}s`;
+  }
+  if (seconds < 3600) {
+    return `${Math.floor(seconds / 60)} min`;
+  }
+  if (seconds < 86_400) {
+    return `${Math.floor(seconds / 3600)} h`;
+  }
+  return `${Math.floor(seconds / 86_400)} d`;
+}

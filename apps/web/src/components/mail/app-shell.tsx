@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AccountSummary, SearchResultItem } from "@mail-hub/contracts";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
+import { SettingsScreen } from "@/components/settings/settings-screen";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { useDebouncedValue, useMediaQuery } from "@/lib/hooks";
 import { shouldRunSingleKey } from "@/lib/keyboard";
@@ -15,6 +16,7 @@ import {
 import { cn } from "@/lib/utils";
 import { setSingleKeyShortcuts, useSingleKeyShortcuts } from "@/shortcuts";
 import { useTheme } from "@/theme";
+import { useAppSettings } from "@/settings/settings-context";
 import { useFolderIndex, useMessageList } from "@/mail/data";
 import {
   buildMailCommands,
@@ -51,10 +53,16 @@ const THREE_PANE_QUERY = "(min-width: 1024px)";
 
 export function AppShell({
   accounts,
+  recoveryGeneration,
   onSessionLost,
+  onAccountsChanged,
 }: {
   accounts: AccountSummary[];
+  /** The generation settings and account mutations must carry (SPEC section 7). */
+  recoveryGeneration: string | null;
   onSessionLost: () => void;
+  /** Refetches the account list after a settings mutation changes it. */
+  onAccountsChanged: () => void;
 }) {
   const [scope, setScope] = useState<MailScope>({ kind: "unified-inbox" });
   const [query, setQuery] = useState("");
@@ -66,8 +74,10 @@ export function AppShell({
   const threePane = useMediaQuery(THREE_PANE_QUERY);
   const { theme, setTheme } = useTheme();
   const singleKeyShortcuts = useSingleKeyShortcuts();
+  const appSettings = useAppSettings();
   const platform = useMemo(shortcutPlatform, []);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const rows = list.state.phase === "ready" ? list.state.rows : [];
   const selected = rows.find((row) => row.messageId === selectedId) ?? null;
@@ -137,6 +147,26 @@ export function AppShell({
     }
   }, [handleSelect]);
 
+  // Palette choices persist through the settings record, so they follow the
+  // account to every device (SPEC F10). The local store paints at once.
+  const persistTheme = useCallback(
+    (choice: "system" | "light" | "dark") => {
+      setTheme(choice);
+      appSettings.update({ theme: choice });
+    },
+    [setTheme, appSettings],
+  );
+  const persistSingleKeyShortcuts = useCallback(
+    (on: boolean) => {
+      setSingleKeyShortcuts(on);
+      appSettings.update({ singleKeyShortcuts: on });
+    },
+    [appSettings],
+  );
+  const openSettings = useCallback(() => {
+    setSettingsOpen(true);
+  }, []);
+
   const commands = useMemo<MailCommand[]>(
     () =>
       buildMailCommands({
@@ -152,8 +182,9 @@ export function AppShell({
           focusSearch,
           moveSelection,
           openSelection,
-          setTheme,
-          setSingleKeyShortcuts,
+          setTheme: persistTheme,
+          setSingleKeyShortcuts: persistSingleKeyShortcuts,
+          openSettings,
         },
       }),
     [
@@ -168,7 +199,9 @@ export function AppShell({
       focusSearch,
       moveSelection,
       openSelection,
-      setTheme,
+      persistTheme,
+      persistSingleKeyShortcuts,
+      openSettings,
     ],
   );
   const commandsRef = useRef(commands);
@@ -291,7 +324,7 @@ export function AppShell({
               ))}
             </span>
           </Button>
-          <ThemeToggle />
+          <ThemeToggle onChoose={(choice) => appSettings.update({ theme: choice })} />
         </div>
       </header>
 
@@ -354,6 +387,16 @@ export function AppShell({
         onOpenChange={handlePaletteOpenChange}
         commands={commands}
         onRestoreFocus={restorePaletteFocus}
+      />
+
+      <SettingsScreen
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        accounts={accounts}
+        folders={folders.data}
+        recoveryGeneration={recoveryGeneration}
+        onAccountsChanged={onAccountsChanged}
+        onFoldersChanged={folders.reload}
       />
     </div>
   );

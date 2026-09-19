@@ -490,6 +490,93 @@ export const attachmentBytes = new Map([
 export const authStatus = { ownerRegistered: true, login: "available", control: "ready" };
 
 /**
+ * The settings record the fixture starts from (SPEC F10 defaults). The
+ * server keeps the state in memory, so a browser run can change it and read
+ * the change back.
+ */
+export const settings = {
+  theme: "system",
+  density: "compact",
+  singleKeyShortcuts: true,
+  cleanViewDefault: false,
+  classificationEnabled: false,
+  classificationMonthlyCostCapUsd: null,
+  backfillClassification: false,
+};
+
+/** Every value one settings key accepts, for the fixture's write check. */
+export const settingsSchema = {
+  theme: ["system", "light", "dark"],
+  density: ["compact", "comfortable"],
+  singleKeyShortcuts: "boolean",
+  cleanViewDefault: "boolean",
+  classificationEnabled: "boolean",
+  classificationMonthlyCostCapUsd: "number-or-null",
+  backfillClassification: "boolean",
+};
+
+/**
+ * The per-account synchronization and queue status (SPEC section 11): one
+ * account fully caught up, one still backfilling with bodies pending.
+ */
+export const syncStatus = {
+  checkedAt: "2026-09-17T09:31:00Z",
+  queue: {
+    state: "ok",
+    depth: 2,
+    oldestJobAt: "2026-09-17T09:30:00Z",
+    oldestJobAgeSeconds: 60,
+    oldestPendingWorkAt: "2026-09-17T09:29:30Z",
+    oldestPendingWorkAgeSeconds: 90,
+  },
+  sends: { queued: 1, failed: 0, outcomeUnknown: 1 },
+  classification: {
+    circuit: "not_configured",
+    calls: 0,
+    errors: 0,
+    description: "Jev classification is not configured.",
+  },
+  accounts: [
+    {
+      accountId: "acc-personal",
+      label: "Personal",
+      color: "#2563eb",
+      sync: {
+        lastCycleAt: "2026-09-17T09:29:00Z",
+        cycleAgeSeconds: 120,
+        backfillPendingFolders: 0,
+        pendingBodies: 3,
+      },
+      metrics: {
+        messagesSynced: 48210,
+        bodiesFetched: 48207,
+        lastFullReconciliationAt: null,
+        jevCalls: 0,
+        jevErrors: 0,
+      },
+    },
+    {
+      accountId: "acc-work",
+      label: "Work",
+      color: "#ea580c",
+      sync: {
+        lastCycleAt: "2026-09-17T09:30:00Z",
+        cycleAgeSeconds: 60,
+        backfillPendingFolders: 2,
+        pendingBodies: 0,
+      },
+      metrics: {
+        messagesSynced: 51790,
+        bodiesFetched: 51790,
+        lastFullReconciliationAt: "2026-09-16T02:10:00Z",
+        jevCalls: 0,
+        jevErrors: 0,
+      },
+    },
+  ],
+};
+
+/**
  * Clean views the reader serves, keyed by message id. `m-005` shows a real
  * extraction with the quoted chain collapsed; `m-002` shows the
  * sanitized-original fallback; messages without an HTML body have no entry,
