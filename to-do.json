@@ -601,35 +601,36 @@
         "send",
         "safety"
       ],
-      "updated_at": "2026-09-19T05:55:33Z",
+      "updated_at": "2026-09-19T05:55:53Z",
       "files": [
-        "packages/send/src/service.ts",
+        "AGENTS.md",
+        "apps/api/src/main.ts",
+        "apps/api/src/send-routes.ts",
+        "apps/worker/src/main.ts",
+        "packages/contracts/src/index.ts",
+        "packages/send/package.json",
+        "packages/send/src/errors.ts",
+        "packages/send/src/index.ts",
         "packages/send/src/mime.ts",
         "packages/send/src/render.ts",
+        "packages/send/src/service.ts",
         "packages/send/src/smtp.ts",
-        "packages/send/src/errors.ts",
         "packages/send/src/view.ts",
-        "packages/send/src/index.ts",
-        "packages/send/package.json",
-        "packages/send/tsconfig.json",
         "packages/send/test/mime.test.ts",
         "packages/send/test/service.test.ts",
-        "packages/transport/src/submit.ts",
+        "packages/send/tsconfig.json",
         "packages/transport/src/index.ts",
-        "packages/transport/test/submit.test.ts",
+        "packages/transport/src/submit.ts",
         "packages/transport/test/fake-smtp-server.ts",
-        "packages/contracts/src/index.ts",
-        "apps/api/src/send-routes.ts",
-        "apps/api/src/main.ts",
-        "apps/worker/src/main.ts",
-        "AGENTS.md"
+        "packages/transport/test/submit.test.ts",
+        "to-do.json"
       ]
     },
     {
       "id": "T022",
       "title": "Implement sent-copy append and uncertain-send recovery",
       "priority": 1,
-      "status": "todo",
+      "status": "done",
       "details": "Append confirmed mail to Sent in a separate job, reconcile lost responses using durable evidence, preserve unknown outcomes, and prohibit automatic resends.",
       "depends_on": [
         "T021"
@@ -637,6 +638,23 @@
       "tags": [
         "send",
         "recovery"
+      ],
+      "updated_at": "2026-09-19T06:21:19Z",
+      "files": [
+        "packages/contracts/src/index.ts",
+        "packages/send/src/sent-copy.ts",
+        "packages/send/src/service.ts",
+        "packages/send/src/errors.ts",
+        "packages/send/src/index.ts",
+        "packages/send/test/service.test.ts",
+        "packages/send/test/fake-sent-copy.ts",
+        "packages/sync/src/mailbox.ts",
+        "packages/sync/src/imap-session.ts",
+        "packages/sync/src/index.ts",
+        "apps/worker/src/main.ts",
+        "apps/worker/package.json",
+        "package-lock.json",
+        "AGENTS.md"
       ]
     },
     {

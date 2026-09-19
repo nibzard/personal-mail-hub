@@ -33,6 +33,12 @@ const SEND_CYCLE_QUEUE = "send.cycle";
 /** How often queued sends are claimed. Overridable for tests and slow deployments. */
 const DEFAULT_SEND_CYCLE_CRON = "*/5 * * * * *";
 
+/** The queue that runs the separate Sent-copy append and reconciliation job. */
+const SENT_COPY_CYCLE_QUEUE = "send.sent-copy-cycle";
+
+/** How often due Sent copies and unknown outcomes are reconciled. */
+const DEFAULT_SENT_COPY_CYCLE_CRON = "*/15 * * * * *";
+
 /** Durable originals live under this root (SPEC section 8). */
 const DEFAULT_STORAGE_ROOT = "data/storage";
 
@@ -113,7 +119,30 @@ async function main(databaseUrl: string): Promise<void> {
         password: credentials.password,
       };
     },
+    // The Sent-copy job rides one verified IMAP connection per account, the
+    // same way the sync cycles open theirs (SPEC F7 step 5).
+    openSentCopy: async (accountId) => {
+      const credentials = await accounts.resolveCredentials(accountId);
+      return sessions.open({
+        host: credentials.imap.host,
+        port: credentials.imap.port,
+        username: credentials.username,
+        password: credentials.password,
+      });
+    },
   });
+
+  // Startup recovery (SPEC F7): hold the attempts a crash left behind as
+  // unknown before any cycle runs, so nothing is replayed blindly.
+  const abandoned = await outbound.recoverAbandonedAttempts();
+  if (abandoned.blocked) {
+    console.warn("Startup recovery is blocked by the control state; no attempt was replayed.");
+  } else if (abandoned.heldSends > 0 || abandoned.heldAppends > 0) {
+    console.log(
+      `Startup recovery held ${abandoned.heldSends} abandoned submission(s) and ` +
+        `${abandoned.heldAppends} abandoned append(s) as unknown.`,
+    );
+  }
 
   await queue.createQueue(SYNC_CYCLE_QUEUE);
   await queue.work<{ generation: string }>(SYNC_CYCLE_QUEUE, { batchSize: 1 }, async (jobs) => {
@@ -164,10 +193,49 @@ async function main(databaseUrl: string): Promise<void> {
     }
   });
 
+  await queue.createQueue(SENT_COPY_CYCLE_QUEUE);
+  await queue.work<{ generation: string }>(SENT_COPY_CYCLE_QUEUE, { batchSize: 1 }, async (jobs) => {
+    const job = jobs[0];
+    if (job === undefined) {
+      return;
+    }
+    const assessment = assessJob(await controls.readStatus(), job.data.generation);
+    if (assessment === "stale") {
+      console.warn(`Discarded a ${SENT_COPY_CYCLE_QUEUE} job from generation ${job.data.generation}.`);
+      return;
+    }
+    if (assessment === "blocked") {
+      throw new Error(`Recovery control state is not ready; the ${SENT_COPY_CYCLE_QUEUE} job will retry.`);
+    }
+
+    // The Sent-copy job never touches SMTP: it appends stored bytes and
+    // reconciles uncertain outcomes from durable evidence alone (SPEC F7
+    // steps 5 and 7).
+    const copies = await outbound.appendDueSentCopies();
+    if (copies.attempted > 0 || copies.skippedStale > 0) {
+      console.log(
+        `Sent-copy cycle: ${copies.attempted} attempted, ${copies.skippedStale} held for reconciliation.`,
+      );
+    }
+    const unknown = await outbound.reconcileUnknownOutcomes();
+    if (unknown.resolved > 0) {
+      console.log(`Sent-copy cycle: ${unknown.resolved} unknown outcome(s) resolved from server evidence.`);
+    }
+  });
+
   await armSchedule(queue, ready.generation, SYNC_CYCLE_QUEUE, process.env.SYNC_CYCLE_CRON ?? DEFAULT_SYNC_CYCLE_CRON);
   console.log(`Synchronization cycles scheduled (${process.env.SYNC_CYCLE_CRON ?? DEFAULT_SYNC_CYCLE_CRON}).`);
   await armSchedule(queue, ready.generation, SEND_CYCLE_QUEUE, process.env.SEND_CYCLE_CRON ?? DEFAULT_SEND_CYCLE_CRON);
   console.log(`Send cycles scheduled (${process.env.SEND_CYCLE_CRON ?? DEFAULT_SEND_CYCLE_CRON}).`);
+  await armSchedule(
+    queue,
+    ready.generation,
+    SENT_COPY_CYCLE_QUEUE,
+    process.env.SENT_COPY_CYCLE_CRON ?? DEFAULT_SENT_COPY_CYCLE_CRON,
+  );
+  console.log(
+    `Sent-copy cycles scheduled (${process.env.SENT_COPY_CYCLE_CRON ?? DEFAULT_SENT_COPY_CYCLE_CRON}).`,
+  );
 
   const stop = async () => {
     shutdown.abort();

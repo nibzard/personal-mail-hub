@@ -300,7 +300,7 @@ export interface DraftUploadVerificationResponse {
   }[];
 }
 
-/** Send rejection codes: queueing an outbound snapshot and submitting it (SPEC F7). */
+/** Send rejection codes: queueing, submitting, and storing the Sent copy (SPEC F7). */
 export type SendErrorCode =
   | "invalid_request"
   | "not_found"
@@ -309,7 +309,8 @@ export type SendErrorCode =
   | "recipients_required"
   | "upload_unverified"
   | "idempotency_conflict"
-  | "send_unavailable";
+  | "send_unavailable"
+  | "sent_copy_unavailable";
 
 /** The body of a send route rejection. */
 export interface SendErrorBody {

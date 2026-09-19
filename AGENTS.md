@@ -41,7 +41,10 @@
   reconciliation, and one bounded cycle per account per cron run. The
   ImapFlow session also carries the two-way writes the action executor
   drives: conditional `UNCHANGEDSINCE` flag stores on a session opened with
-  `condstoreWrites`, and IMAP `MOVE` with no expunge fallback.
+  `condstoreWrites`, and IMAP `MOVE` with no expunge fallback. It also
+  serves the Sent-copy job of the outbound pipeline: message appends of
+  exact stored bytes and header searches that locate a copy for
+  verification.
 - `packages/actions` contains the recovery-aware mail action service: frozen
   action records with per-target work items and idempotency keys, remote-state
   refresh with generation and revision checks before any write, per-item
@@ -55,8 +58,14 @@
   snapshot exactly once over the verified SMTP port, recipient-level result
   recording with conservative outcome classification, local sent records
   keyed by account and original hash, and the draft lock that only a
-  definitive refusal releases. The worker sweeps queued rows on a cron; the
-  API only queues.
+  definitive refusal releases. A separate Sent-copy job appends the stored
+  bytes to the Sent folder after acceptance: it verifies by generated
+  identifier and hash before it appends, keeps uncertain appends unknown
+  until reconciliation proves absence, and never invokes SMTP. Startup
+  recovery holds abandoned `sending` and `appending` rows as unknown, and an
+  unknown send resolves only from a verified Sent copy, in the same
+  acceptance transaction. No path resubmits an uncertain attempt. The worker
+  sweeps queued rows and Sent copies on cron queues; the API only queues.
 - `packages/database` contains the Drizzle schema, SQL migrations, object
   storage, and pg-boss integration. Run `npm run db:generate` there after
   changing `src/schema.ts`; apply migrations with `npm run db:migrate`.

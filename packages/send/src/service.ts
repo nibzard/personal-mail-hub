@@ -1,10 +1,11 @@
-import { and, asc, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import {
   attachments as attachmentsTable,
   bodies,
   draftUploads,
   drafts,
   events,
+  folders,
   messages,
   outboundMessages,
   outboundUploads,
@@ -37,9 +38,11 @@ import { SendError } from "./errors.ts";
 import { composeOutboundMime } from "./mime.ts";
 import { renderMarkdownHtml } from "./render.ts";
 import type { SmtpCredentials, SmtpCredentialsResolver, SmtpSubmitter } from "./smtp.ts";
+import type { SentCopyDestination, SentCopyMailbox, SentCopySessionFactory } from "./sent-copy.ts";
 
 /**
- * Immutable outbound snapshots and SMTP sending (SPEC F7).
+ * Immutable outbound snapshots, SMTP sending, and Sent-copy recovery
+ * (SPEC F7).
  *
  * One service owns the whole outbound life of a draft:
  *
@@ -63,8 +66,17 @@ import type { SmtpCredentials, SmtpCredentialsResolver, SmtpSubmitter } from "./
  *    one outcome.
  * 4. A definitive refusal means `failed` and releases the draft for editing.
  *    An unclassifiable outcome means `outcome_unknown`; the draft stays
- *    locked and nothing resends automatically. The separate Sent-copy append
- *    (T022) starts from `sent_copy_status = 'pending'`.
+ *    locked and nothing resends automatically.
+ * 5. `executeSentCopyAppend` runs the separate Sent append job on the stored
+ *    bytes. It reconciles first — a verified copy already in the Sent folder
+ *    ends the job without a second append — appends only when absence is
+ *    proved, and keeps `sent` whatever the append does. Append retries can
+ *    never invoke SMTP.
+ * 6. `recoverAbandonedAttempts` holds crashed `sending` and `appending` rows
+ *    as unknown at startup, and `reconcileUnknownOutcome` resolves an
+ *    uncertain send only from durable server evidence: a Sent copy whose
+ *    bytes hash to the frozen snapshot. Without evidence the unknown stays,
+ *    and no path in this service ever resubmits it.
  */
 
 /** Event recorded when a snapshot and its draft lock commit (SPEC F7 step 2). */
@@ -78,6 +90,15 @@ export const SEND_FAILED_EVENT = "send.failed";
 
 /** Event recorded when a submission's outcome cannot be classified (SPEC F7 step 6). */
 export const SEND_UNKNOWN_EVENT = "send.outcome_unknown";
+
+/** Event recorded when the Sent folder holds the verified stored copy (SPEC F7 step 5). */
+export const SEND_SENT_COPY_STORED_EVENT = "send.sent_copy_stored";
+
+/** Event recorded when the Sent append was definitively refused (SPEC F7 step 5). */
+export const SEND_SENT_COPY_FAILED_EVENT = "send.sent_copy_failed";
+
+/** Event recorded when the Sent append outcome cannot be classified (SPEC F7 step 5). */
+export const SEND_SENT_COPY_UNKNOWN_EVENT = "send.sent_copy_unknown";
 
 /** Longest idempotency key accepted, so keys stay index-friendly. */
 export const MAX_IDEMPOTENCY_KEY_LENGTH = 200;
@@ -96,6 +117,8 @@ export interface OutboundExecutionDeps {
   submit?: SmtpSubmitter;
   /** Resolves an account's SMTP settings and credentials. */
   resolveCredentials?: SmtpCredentialsResolver;
+  /** Opens the IMAP connection the Sent-copy job appends and reconciles over. */
+  openSentCopy?: SentCopySessionFactory;
   /** Sanitizer for the HTML alternative; defaults to the shared server pass. */
   sanitizer?: HtmlSanitizer;
   /** Clock and identifier factories, overridable in tests. */
@@ -139,6 +162,32 @@ export interface OutboundRecord {
 export interface SendSweepSummary {
   scanned: number;
   submitted: number;
+  skippedStale: number;
+  blocked: boolean;
+}
+
+/** What one sweep pass over the due Sent copies did. */
+export interface SentCopySweepSummary {
+  scanned: number;
+  attempted: number;
+  skippedStale: number;
+  blocked: boolean;
+}
+
+/** What one sweep pass over the unknown outcomes did. */
+export interface UnknownSweepSummary {
+  scanned: number;
+  resolved: number;
+  skippedStale: number;
+  blocked: boolean;
+}
+
+/** What one startup recovery pass over the abandoned attempts did. */
+export interface AbandonedAttemptSummary {
+  /** Sending rows held as `outcome_unknown`. */
+  heldSends: number;
+  /** Append attempts held as `unknown`. */
+  heldAppends: number;
   skippedStale: number;
   blocked: boolean;
 }
@@ -474,7 +523,17 @@ export class OutboundService {
     }
 
     if (report.state === "accepted") {
-      return { ...toOutboundRecord(await this.recordAcceptance(row, report, bytes)), submitted: true };
+      return {
+        ...toOutboundRecord(
+          await this.commitAcceptance(row, {
+            fromStatus: "sending",
+            bytes,
+            smtpResponse: smtpResponseOf(report),
+            recipientResults: recipientResultsOf(row.envelopeRecipients, report),
+          }),
+        ),
+        submitted: true,
+      };
     }
     if (report.state === "rejected") {
       return { ...toOutboundRecord(await this.recordFailure(row, report)), submitted: true };
@@ -483,19 +542,462 @@ export class OutboundService {
   }
 
   /**
+   * Sweep the due Sent copies of this deployment (SPEC F7 step 5). Rows whose
+   * send left `sent`, and rows from another recovery generation, stay put:
+   * a restored database keeps its pending work until reconciliation
+   * dispositions it.
+   */
+  async appendDueSentCopies(limit = DEFAULT_SEND_SWEEP_LIMIT): Promise<SentCopySweepSummary> {
+    const status = await this.controls.readStatus();
+    if (status.state !== "ready") {
+      return { scanned: 0, attempted: 0, skippedStale: 0, blocked: true };
+    }
+    const due = await this.db
+      .select({ id: outboundMessages.id, generation: outboundMessages.recoveryGeneration })
+      .from(outboundMessages)
+      .where(
+        and(
+          eq(outboundMessages.status, "sent"),
+          inArray(outboundMessages.sentCopyStatus, ["pending", "failed", "unknown"]),
+        ),
+      )
+      .orderBy(asc(outboundMessages.createdAt))
+      .limit(limit);
+
+    let attempted = 0;
+    let skippedStale = 0;
+    for (const row of due) {
+      if (assessJob(status, row.generation) === "stale") {
+        skippedStale += 1;
+        continue;
+      }
+      const outcome = await this.executeSentCopyAppend(row.id);
+      if (outcome.attempted) {
+        attempted += 1;
+      }
+    }
+    return { scanned: due.length, attempted, skippedStale, blocked: false };
+  }
+
+  /**
+   * Run the Sent append job of one snapshot (SPEC F7 step 5). The job starts
+   * only after confirmed acceptance, appends the exact stored bytes — never
+   * SMTP — and reconciles before it writes: a copy already in the Sent folder
+   * that hashes to the snapshot ends the job as `stored`, and an append
+   * happens only once reconciliation proves the folder holds no such copy.
+   * `appending` persists before the remote call, exactly like the SMTP claim.
+   */
+  async executeSentCopyAppend(outboundId: string): Promise<OutboundRecord & { attempted: boolean }> {
+    requireUuid("outbound id", outboundId);
+    if (this.execution.openSentCopy === undefined) {
+      throw new SendError(
+        "sent_copy_unavailable",
+        "This process cannot store sent copies: no Sent-copy session factory is configured.",
+      );
+    }
+
+    const rows = await this.db.select().from(outboundMessages).where(eq(outboundMessages.id, outboundId)).limit(1);
+    const before = rows[0];
+    if (before === undefined) {
+      throw new SendError("not_found", "No outbound message exists with this identifier.");
+    }
+    if (before.status !== "sent" || before.sentCopyStatus === "stored") {
+      return { ...toOutboundRecord(before), attempted: false };
+    }
+    const status = await this.controls.readStatus();
+    if (status.state !== "ready" || assessJob(status, before.recoveryGeneration) === "stale") {
+      return { ...toOutboundRecord(before), attempted: false };
+    }
+
+    // The destination must be mapped before anything is appended (SPEC F1).
+    // One unmapped folder fails the job once; later sweeps stay quiet until
+    // the map changes, so a missing choice cannot flood the audit trail.
+    const sentFolder = await this.findSentFolder(before.accountId);
+    if (sentFolder === null) {
+      if (before.sentCopyStatus === "failed" && before.lastError?.code === "sent_folder_unmapped") {
+        return { ...toOutboundRecord(before), attempted: false };
+      }
+      const failed = await this.concludeSentCopy(before, "unclaimed", {
+        status: "failed",
+        error: {
+          code: "sent_folder_unmapped",
+          message: "The account has no folder mapped to the Sent role; map one in settings to store the sent copy.",
+        },
+      });
+      return { ...toOutboundRecord(failed), attempted: true };
+    }
+
+    // The claim: `appending` persists before the connection opens, and only
+    // the claimer may conclude the attempt.
+    const claimed = await this.db
+      .update(outboundMessages)
+      .set({ sentCopyStatus: "appending" })
+      .where(
+        and(
+          eq(outboundMessages.id, outboundId),
+          eq(outboundMessages.status, "sent"),
+          inArray(outboundMessages.sentCopyStatus, ["pending", "failed", "unknown"]),
+        ),
+      )
+      .returning();
+    const row = claimed[0];
+    if (row === undefined) {
+      const current = await this.readOutbound(outboundId);
+      return { ...current, attempted: false };
+    }
+
+    let session: SentCopyMailbox;
+    try {
+      session = await this.execution.openSentCopy(row.accountId);
+    } catch (cause) {
+      const held = await this.concludeSentCopy(row, "claimed", {
+        status: "unknown",
+        error: {
+          code: "session_unavailable",
+          message: `The Sent-copy connection could not be opened: ${firstLine(cause)}`,
+        },
+      });
+      return { ...toOutboundRecord(held), attempted: true };
+    }
+    try {
+      // The stored bytes are the only bytes this job may append.
+      let bytes: Uint8Array;
+      try {
+        bytes = await this.storage.durable.get(row.mimeStorageKey);
+      } catch {
+        const held = await this.concludeSentCopy(row, "claimed", {
+          status: "unknown",
+          error: {
+            code: "mime_missing",
+            message: "The stored MIME bytes could not be read; nothing was appended.",
+          },
+        });
+        return { ...toOutboundRecord(held), attempted: true };
+      }
+      if (sha256Hex(bytes) !== row.mimeSha256) {
+        const held = await this.concludeSentCopy(row, "claimed", {
+          status: "unknown",
+          error: {
+            code: "mime_mismatch",
+            message: "The stored MIME bytes no longer match their recorded hash; nothing was appended.",
+          },
+        });
+        return { ...toOutboundRecord(held), attempted: true };
+      }
+
+      // Reconcile first (SPEC F7 step 5): a verified copy ends the job, a
+      // same-identifier message with different bytes blocks the append, and
+      // only a proved absence authorizes one.
+      const evidence = await this.locateVerifiedCopy(session, sentFolder, row);
+      if (evidence.kind === "verified") {
+        const stored = await this.concludeSentCopy(row, "claimed", {
+          status: "stored",
+          destination: evidence.destination,
+        });
+        return { ...toOutboundRecord(stored), attempted: true };
+      }
+      if (evidence.kind === "conflict") {
+        const held = await this.concludeSentCopy(row, "claimed", {
+          status: "unknown",
+          error: {
+            code: "sent_copy_conflict",
+            message:
+              "The Sent folder holds a message with this identifier but different bytes; the copy was not verified and nothing was appended.",
+          },
+        });
+        return { ...toOutboundRecord(held), attempted: true };
+      }
+
+      const appended = await session.appendMessage(sentFolder.path, bytes);
+      if (appended.result === "rejected") {
+        const failed = await this.concludeSentCopy(row, "claimed", {
+          status: "failed",
+          error: {
+            code: "append_rejected",
+            message: "The server refused the Sent append; the sent state is unchanged.",
+          },
+        });
+        return { ...toOutboundRecord(failed), attempted: true };
+      }
+      if (appended.result === "appended" && appended.uidvalidity !== null && appended.uid !== null) {
+        const stored = await this.concludeSentCopy(row, "claimed", {
+          status: "stored",
+          destination: { folderId: sentFolder.id, uidvalidity: appended.uidvalidity, uid: appended.uid },
+        });
+        return { ...toOutboundRecord(stored), attempted: true };
+      }
+
+      // The server gave no usable coordinates, or its response was lost:
+      // reconcile before deciding anything, and never append twice for one
+      // attempt (SPEC F7 step 5).
+      const after = await this.locateVerifiedCopy(session, sentFolder, row);
+      if (after.kind === "verified") {
+        const stored = await this.concludeSentCopy(row, "claimed", {
+          status: "stored",
+          destination: after.destination,
+        });
+        return { ...toOutboundRecord(stored), attempted: true };
+      }
+      if (after.kind === "conflict") {
+        const held = await this.concludeSentCopy(row, "claimed", {
+          status: "unknown",
+          error: {
+            code: "sent_copy_conflict",
+            message:
+              "The Sent folder holds a message with this identifier but different bytes; the append outcome stays unknown.",
+          },
+        });
+        return { ...toOutboundRecord(held), attempted: true };
+      }
+      if (appended.result === "appended") {
+        // A positive append response with no destination coordinates: the
+        // copy is stored as far as the server stated, and the next Sent
+        // import records the occurrence itself.
+        const stored = await this.concludeSentCopy(row, "claimed", {
+          status: "stored",
+          destination: { folderId: sentFolder.id, uidvalidity: null, uid: null },
+        });
+        return { ...toOutboundRecord(stored), attempted: true };
+      }
+      const held = await this.concludeSentCopy(row, "claimed", {
+        status: "unknown",
+        error: {
+          code: "append_uncertain",
+          message: `The Sent append response was lost: ${appended.reason}`,
+        },
+      });
+      return { ...toOutboundRecord(held), attempted: true };
+    } catch (cause) {
+      const held = await this.concludeSentCopy(row, "claimed", {
+        status: "unknown",
+        error: {
+          code: "session_error",
+          message: `The Sent-copy session failed: ${firstLine(cause)}`,
+        },
+      });
+      return { ...toOutboundRecord(held), attempted: true };
+    } finally {
+      await session.logout().catch(() => undefined);
+    }
+  }
+
+  /**
+   * Sweep the unknown outcomes of this deployment (SPEC F7 step 7). Every
+   * pass is read-only towards SMTP: it only looks for durable server
+   * evidence, and a row without evidence keeps its unknown state and reason.
+   */
+  async reconcileUnknownOutcomes(limit = DEFAULT_SEND_SWEEP_LIMIT): Promise<UnknownSweepSummary> {
+    const status = await this.controls.readStatus();
+    if (status.state !== "ready") {
+      return { scanned: 0, resolved: 0, skippedStale: 0, blocked: true };
+    }
+    const unknown = await this.db
+      .select({ id: outboundMessages.id, generation: outboundMessages.recoveryGeneration })
+      .from(outboundMessages)
+      .where(eq(outboundMessages.status, "outcome_unknown"))
+      .orderBy(asc(outboundMessages.createdAt))
+      .limit(limit);
+
+    let resolved = 0;
+    let skippedStale = 0;
+    for (const row of unknown) {
+      if (assessJob(status, row.generation) === "stale") {
+        skippedStale += 1;
+        continue;
+      }
+      const outcome = await this.reconcileUnknownOutcome(row.id);
+      if (outcome.reconciled) {
+        resolved += 1;
+      }
+    }
+    return { scanned: unknown.length, resolved, skippedStale, blocked: false };
+  }
+
+  /**
+   * Reconcile one uncertain send (SPEC F7 step 7). The only evidence that
+   * resolves it is a Sent-folder copy that carries the generated identifier
+   * and hashes to the frozen snapshot; that evidence commits the same
+   * acceptance transaction as a positive final response, sent state, local
+   * index, and append outcome together. An empty Sent folder proves nothing,
+   * and nothing here can resubmit the snapshot.
+   */
+  async reconcileUnknownOutcome(
+    outboundId: string,
+  ): Promise<OutboundRecord & { reconciled: boolean; reason: string | null }> {
+    requireUuid("outbound id", outboundId);
+    if (this.execution.openSentCopy === undefined) {
+      throw new SendError(
+        "sent_copy_unavailable",
+        "This process cannot reconcile sends: no Sent-copy session factory is configured.",
+      );
+    }
+
+    const rows = await this.db.select().from(outboundMessages).where(eq(outboundMessages.id, outboundId)).limit(1);
+    const before = rows[0];
+    if (before === undefined) {
+      throw new SendError("not_found", "No outbound message exists with this identifier.");
+    }
+    if (before.status !== "outcome_unknown") {
+      return { ...toOutboundRecord(before), reconciled: false, reason: null };
+    }
+    const status = await this.controls.readStatus();
+    if (status.state !== "ready" || assessJob(status, before.recoveryGeneration) === "stale") {
+      return { ...toOutboundRecord(before), reconciled: false, reason: null };
+    }
+
+    const sentFolder = await this.findSentFolder(before.accountId);
+    if (sentFolder === null) {
+      return { ...toOutboundRecord(before), reconciled: false, reason: "sent_folder_unmapped" };
+    }
+
+    let session: SentCopyMailbox;
+    try {
+      session = await this.execution.openSentCopy(before.accountId);
+    } catch (cause) {
+      return { ...toOutboundRecord(before), reconciled: false, reason: `session_unavailable: ${firstLine(cause)}` };
+    }
+    try {
+      const evidence = await this.locateVerifiedCopy(session, sentFolder, before);
+      if (evidence.kind !== "verified") {
+        // Neither an empty folder nor an unverified candidate proves anything
+        // about the submission; the unknown keeps its recorded reason.
+        return { ...toOutboundRecord(before), reconciled: false, reason: evidence.kind };
+      }
+      const bytes = await session.fetchOriginal(evidence.destination.uid!);
+      if (bytes === null || sha256Hex(bytes) !== before.mimeSha256) {
+        return { ...toOutboundRecord(before), reconciled: false, reason: "candidate_unreadable" };
+      }
+      const resolved = await this.commitAcceptance(before, {
+        fromStatus: "outcome_unknown",
+        bytes,
+        // The durable responses the uncertain attempt recorded stay as they
+        // are; reconciliation evidence is noted on the event instead.
+        smtpResponse: before.smtpResponse,
+        recipientResults: before.recipientResults,
+        sentCopy: evidence.destination,
+        evidence: "verified_sent_copy",
+      });
+      return { ...toOutboundRecord(resolved), reconciled: true, reason: null };
+    } finally {
+      await session.logout().catch(() => undefined);
+    }
+  }
+
+  /**
+   * Hold the attempts a crash left behind (SPEC F7): on startup every
+   * abandoned `sending` row becomes `outcome_unknown` and every abandoned
+   * `appending` row becomes `unknown`, both with the reason recorded. Nothing
+   * is replayed; rows from another recovery generation stay for the operator
+   * recovery flow (SPEC section 10, step 4).
+   */
+  async recoverAbandonedAttempts(): Promise<AbandonedAttemptSummary> {
+    const status = await this.controls.readStatus();
+    if (status.state !== "ready") {
+      return { heldSends: 0, heldAppends: 0, skippedStale: 0, blocked: true };
+    }
+
+    const sending = await this.db
+      .select({ id: outboundMessages.id, generation: outboundMessages.recoveryGeneration })
+      .from(outboundMessages)
+      .where(eq(outboundMessages.status, "sending"));
+    let heldSends = 0;
+    let skippedStale = 0;
+    for (const row of sending) {
+      if (assessJob(status, row.generation) === "stale") {
+        skippedStale += 1;
+        continue;
+      }
+      const held = await this.db.transaction(async (tx) => {
+        const updated = await tx
+          .update(outboundMessages)
+          .set({
+            status: "outcome_unknown",
+            lastError: {
+              code: "sending_abandoned",
+              message:
+                "The submission attempt recorded no outcome before the process stopped; nothing was resubmitted.",
+            },
+          })
+          .where(and(eq(outboundMessages.id, row.id), eq(outboundMessages.status, "sending")))
+          .returning();
+        if (updated[0] === undefined) {
+          return false;
+        }
+        await recordSendEvent(tx, "system", SEND_UNKNOWN_EVENT, row.id, {
+          accountId: updated[0].accountId,
+          code: "sending_abandoned",
+        });
+        return true;
+      });
+      if (held) {
+        heldSends += 1;
+      }
+    }
+
+    const appending = await this.db
+      .select({ id: outboundMessages.id, generation: outboundMessages.recoveryGeneration })
+      .from(outboundMessages)
+      .where(eq(outboundMessages.sentCopyStatus, "appending"));
+    let heldAppends = 0;
+    for (const row of appending) {
+      if (assessJob(status, row.generation) === "stale") {
+        skippedStale += 1;
+        continue;
+      }
+      const held = await this.db.transaction(async (tx) => {
+        const updated = await tx
+          .update(outboundMessages)
+          .set({
+            sentCopyStatus: "unknown",
+            lastError: {
+              code: "append_abandoned",
+              message:
+                "The Sent append attempt recorded no outcome before the process stopped; it was not retried blindly.",
+            },
+          })
+          .where(and(eq(outboundMessages.id, row.id), eq(outboundMessages.sentCopyStatus, "appending")))
+          .returning();
+        if (updated[0] === undefined) {
+          return false;
+        }
+        await recordSendEvent(tx, "system", SEND_SENT_COPY_UNKNOWN_EVENT, row.id, {
+          accountId: updated[0].accountId,
+          code: "append_abandoned",
+        });
+        return true;
+      });
+      if (held) {
+        heldAppends += 1;
+      }
+    }
+    return { heldSends, heldAppends, skippedStale, blocked: false };
+  }
+
+  /**
    * Commit one acceptance (SPEC F7 step 4 and the local-sent-record rules):
    * one transaction sets `sent`, creates or reuses the local message by its
    * account and original hash, writes its body, attachments, and search text,
    * marks the thread job, records the event, and leaves the Sent append job
-   * to start from `pending`.
+   * to start from `pending`. Reconciliation of an uncertain send reuses this
+   * transaction from `outcome_unknown` with the verified Sent copy attached,
+   * so its sent state, local index, and append outcome commit together.
    */
-  private async recordAcceptance(
+  private async commitAcceptance(
     row: OutboundMessage,
-    report: SmtpSubmitReport,
-    bytes: Uint8Array,
+    input: {
+      /** The status the row must still hold when the transaction runs. */
+      fromStatus: "sending" | "outcome_unknown";
+      /** The accepted bytes: submitted or, on reconciliation, the verified copy. */
+      bytes: Uint8Array;
+      smtpResponse: Record<string, unknown> | null;
+      recipientResults: RecipientResult[];
+      /** A Sent copy verification already settled; it finishes the append job too. */
+      sentCopy?: SentCopyDestination | null;
+      /** What proved acceptance, recorded on the event for the audit trail. */
+      evidence?: string | null;
+    },
   ): Promise<OutboundMessage> {
-    const recipientResults = recipientResultsOf(row.envelopeRecipients, report);
-    const parsed = await parseMime(bytes);
+    const parsed = await parseMime(input.bytes);
 
     // Repeated acceptance, or a Sent import that raced this handler, may
     // already hold a message with the same original hash; the unique index
@@ -506,25 +1008,36 @@ export class OutboundService {
           const existing = await findMessageByHash(tx, row.accountId, row.mimeSha256);
           const messageId =
             existing?.id ??
-            (await this.insertLocalSentMessage(tx, row, parsed, bytes));
+            (await this.insertLocalSentMessage(tx, row, parsed, input.bytes));
           const updated = await tx
             .update(outboundMessages)
             .set({
               status: "sent",
               logicalMessageId: messageId,
-              smtpResponse: smtpResponseOf(report),
-              recipientResults,
+              smtpResponse: input.smtpResponse,
+              recipientResults: input.recipientResults,
               sentAt: this.now(),
               lastError: null,
+              ...(input.sentCopy === undefined || input.sentCopy === null
+                ? {}
+                : {
+                    sentCopyStatus: "stored" as const,
+                    sentFolderId: input.sentCopy.folderId,
+                    sentUidvalidity: input.sentCopy.uidvalidity,
+                    sentUid: input.sentCopy.uid,
+                  }),
             })
-            .where(and(eq(outboundMessages.id, row.id), eq(outboundMessages.status, "sending")))
+            .where(and(eq(outboundMessages.id, row.id), eq(outboundMessages.status, input.fromStatus)))
             .returning();
           await recordSendEvent(tx, "system", SEND_SENT_EVENT, row.id, {
             accountId: row.accountId,
             messageId,
-            accepted: recipientResults.filter((result) => result.accepted).length,
-            rejected: recipientResults.filter((result) => !result.accepted).length,
-            partial: recipientResults.some((result) => !result.accepted),
+            accepted: input.recipientResults.filter((result) => result.accepted).length,
+            rejected: input.recipientResults.filter((result) => !result.accepted).length,
+            partial: input.recipientResults.some((result) => !result.accepted),
+            ...(input.evidence === undefined || input.evidence === null
+              ? {}
+              : { evidence: input.evidence }),
           });
           return updated[0] ?? row;
         });
@@ -591,6 +1104,114 @@ export class OutboundService {
         code: failure?.code ?? "unknown",
       });
       return unknown;
+    });
+  }
+
+  /** The folder one account maps to the Sent role (SPEC F1). */
+  private async findSentFolder(accountId: string): Promise<{ id: string; path: string } | null> {
+    const rows = await this.db
+      .select({ id: folders.id, path: folders.name })
+      .from(folders)
+      .where(and(eq(folders.accountId, accountId), eq(folders.role, "sent")))
+      .limit(1);
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Search one Sent folder for the snapshot's copy and verify every candidate
+   * against the frozen hash (SPEC F7 step 5). The identifier locates; the
+   * bytes decide. A candidate with different bytes is a conflict, because a
+   * reused `Message-ID` must never be treated as the snapshot's own copy.
+   */
+  private async locateVerifiedCopy(
+    session: SentCopyMailbox,
+    folder: { id: string; path: string },
+    row: OutboundMessage,
+  ): Promise<
+    | { kind: "verified"; destination: SentCopyDestination }
+    | { kind: "absent" }
+    | { kind: "conflict" }
+  > {
+    const state = await session.select(folder.path);
+    const uids = await session.searchByMessageId(row.rfcMessageId);
+    let candidateSeen = false;
+    for (const uid of uids) {
+      const bytes = await session.fetchOriginal(uid);
+      if (bytes === null) {
+        continue;
+      }
+      candidateSeen = true;
+      if (sha256Hex(bytes) === row.mimeSha256) {
+        return {
+          kind: "verified",
+          destination: { folderId: folder.id, uidvalidity: state.uidValidity, uid },
+        };
+      }
+    }
+    return candidateSeen ? { kind: "conflict" } : { kind: "absent" };
+  }
+
+  /**
+   * Conclude one append attempt. A claimed conclusion requires the row to
+   * still hold `appending`, so only the worker that claimed the attempt can
+   * finish it; when a concurrent recovery already moved the row, nothing is
+   * written and no event is invented. An unclaimed conclusion covers the
+   * destination problems found before any claim.
+   */
+  private async concludeSentCopy(
+    row: OutboundMessage,
+    claim: "claimed" | "unclaimed",
+    outcome:
+      | { status: "stored"; destination: SentCopyDestination }
+      | { status: "failed" | "unknown"; error: { code: string; message: string } },
+  ): Promise<OutboundMessage> {
+    return this.db.transaction(async (tx) => {
+      const updated = await tx
+        .update(outboundMessages)
+        .set(
+          outcome.status === "stored"
+            ? {
+                sentCopyStatus: "stored",
+                sentFolderId: outcome.destination.folderId,
+                sentUidvalidity: outcome.destination.uidvalidity,
+                sentUid: outcome.destination.uid,
+                lastError: null,
+              }
+            : { sentCopyStatus: outcome.status, lastError: { ...outcome.error } },
+        )
+        .where(
+          and(
+            eq(outboundMessages.id, row.id),
+            eq(outboundMessages.status, "sent"),
+            claim === "claimed"
+              ? eq(outboundMessages.sentCopyStatus, "appending")
+              : inArray(outboundMessages.sentCopyStatus, ["pending", "failed", "unknown"]),
+          ),
+        )
+        .returning();
+      const after = updated[0];
+      if (after === undefined) {
+        return row;
+      }
+      await recordSendEvent(
+        tx,
+        "system",
+        outcome.status === "stored"
+          ? SEND_SENT_COPY_STORED_EVENT
+          : outcome.status === "failed"
+            ? SEND_SENT_COPY_FAILED_EVENT
+            : SEND_SENT_COPY_UNKNOWN_EVENT,
+        row.id,
+        outcome.status === "stored"
+          ? {
+              accountId: row.accountId,
+              folderId: outcome.destination.folderId,
+              uidvalidity: outcome.destination.uidvalidity,
+              uid: outcome.destination.uid,
+            }
+          : { accountId: row.accountId, code: outcome.error.code },
+      );
+      return after;
     });
   }
 
@@ -853,6 +1474,12 @@ function hashRequest(draftId: string, baseRevision: number): string {
 
 function sha256Hex(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+/** The first line of one failure, without credentials or stack noise. */
+function firstLine(cause: unknown): string {
+  const message = cause instanceof Error ? cause.message : String(cause);
+  return message.split("\n")[0]!;
 }
 
 function truncate(text: string, maxChars: number): string {

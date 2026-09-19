@@ -109,3 +109,32 @@ export interface MailboxConnection {
 export interface MailboxSessionFactory {
   open(connection: MailboxConnection): Promise<MailboxSession>;
 }
+
+/**
+ * The classified answer of one message append (SPEC F7 step 5). `appended`
+ * carries the destination coordinates the server reported, which need the
+ * UIDPLUS extension; `uncertain` means the response was lost and the outcome
+ * needs reconciliation, never a blind replay.
+ */
+export type AppendMessageResult =
+  | { result: "appended"; uidvalidity: number | null; uid: number | null }
+  | { result: "rejected" }
+  | { result: "uncertain"; reason: string };
+
+/**
+ * A session that can store sent copies and locate them again by their
+ * generated identifier (SPEC F7 step 5). The outbound pipeline declares the
+ * same shape as its own port, so one open connection serves both without a
+ * dependency between the packages.
+ */
+export interface SentCopyMailboxSession extends MailboxSession {
+  /**
+   * UIDs in the selected folder whose `Message-ID` header carries the
+   * identifier. The match is a substring one; callers verify candidate
+   * content before trusting it.
+   */
+  searchByMessageId(rfcMessageId: string): Promise<number[]>;
+
+  /** Append complete message bytes to one folder. */
+  appendMessage(folder: string, bytes: Uint8Array): Promise<AppendMessageResult>;
+}

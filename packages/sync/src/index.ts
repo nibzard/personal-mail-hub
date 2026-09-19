@@ -28,12 +28,14 @@ export {
 export { parseHeaderBlock, type ImportedHeaders } from "./headers.ts";
 export {
   IMPORTED_HEADER_FIELDS,
+  type AppendMessageResult,
   type MailboxConnection,
   type MailboxFlags,
   type MailboxHeaders,
   type MailboxSession,
   type MailboxSessionFactory,
   type MailboxState,
+  type SentCopyMailboxSession,
 } from "./mailbox.ts";
 export { ImapMailboxSessionFactory, ImapMailboxSession, type MailboxSessionOptions } from "./imap-session.ts";
 export {

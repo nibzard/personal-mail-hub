@@ -13,6 +13,7 @@
     "@mail-hub/database": "0.1.0",
     "@mail-hub/ingestion": "0.1.0",
     "@mail-hub/recovery": "0.1.0",
+    "@mail-hub/send": "0.1.0",
     "@mail-hub/sync": "0.1.0",
     "@mail-hub/transport": "0.1.0"
   },

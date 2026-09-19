@@ -2,7 +2,7 @@ import { mkdtemp } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { SmtpSubmitReport, SmtpSubmitRequest } from "@mail-hub/contracts";
@@ -14,6 +14,7 @@ import {
   createStorage,
   drafts as draftsTable,
   events,
+  folders as foldersTable,
   messages as messagesTable,
   outboundMessages,
   runMigrations,
@@ -25,6 +26,7 @@ import { SANITIZER_VERSION } from "@mail-hub/ingestion";
 import { RecoveryBlockedError, RecoveryControls } from "@mail-hub/recovery";
 import { ComposeService } from "@mail-hub/compose";
 import { OutboundService, SendError, type OutboundRecord } from "../src/index.ts";
+import { FakeSentFolder } from "./fake-sent-copy.ts";
 
 /**
  * Outbound snapshots and SMTP sending against a real PostgreSQL and a real
@@ -121,6 +123,7 @@ suite("outbound snapshots and SMTP sending", () => {
   let compose: ComposeService;
   let controls: RecoveryControls;
   let accountId: string;
+  let bareAccountId: string;
 
   beforeAll(async () => {
     const url = new URL(testDatabaseUrl!);
@@ -154,6 +157,20 @@ suite("outbound snapshots and SMTP sending", () => {
       })
       .returning({ id: accountsTable.id });
     accountId = inserted[0]!.id;
+    await db.insert(foldersTable).values({ accountId, name: "Sent", role: "sent" });
+
+    // One account without a Sent mapping, for the destination checks.
+    const bare = await db
+      .insert(accountsTable)
+      .values({
+        label: "Bare mailbox",
+        color: "#16a34a",
+        username: "bare@example.com",
+        passwordEnc: "v1.unused",
+        identities: [{ address: "bare@example.com", name: "Bare User", isDefault: true }],
+      })
+      .returning({ id: accountsTable.id });
+    bareAccountId = bare[0]!.id;
   });
 
   afterAll(async () => {
@@ -162,10 +179,15 @@ suite("outbound snapshots and SMTP sending", () => {
 
   /** One draft at revision 1, through the real compose service. */
   async function makeDraft(
-    overrides: Partial<{ recipients: typeof RECIPIENTS; markdown: string; subject: string | null }> = {},
+    overrides: Partial<{
+      accountId: string;
+      recipients: typeof RECIPIENTS;
+      markdown: string;
+      subject: string | null;
+    }> = {},
   ) {
     return compose.createDraft(readyContext, {
-      accountId,
+      accountId: overrides.accountId ?? accountId,
       recipients: overrides.recipients ?? RECIPIENTS,
       subject: overrides.subject ?? "One exact message",
       markdown: overrides.markdown ?? MARKDOWN,
@@ -203,6 +225,49 @@ suite("outbound snapshots and SMTP sending", () => {
         }),
       }),
     };
+  }
+
+  /**
+   * One service wired to a scripted submitter and a fake Sent folder, for the
+   * append and recovery tests. Both accounts share the folder double.
+   */
+  function appendingService(report: SmtpSubmitReport, folder: FakeSentFolder): {
+    service: OutboundService;
+    script: ReturnType<typeof scriptedSubmitter>;
+    folder: FakeSentFolder;
+  } {
+    const wired = executingService(report);
+    const service = new OutboundService(db, storage, controls, {
+      submit: wired.script.submit,
+      resolveCredentials: async () => ({
+        host: "smtp.example.com",
+        port: 587,
+        security: "starttls_required" as const,
+        username: "user@example.com",
+        password: "mailbox-secret",
+      }),
+      openSentCopy: async () => folder.session(),
+    });
+    return { service, script: wired.script, folder };
+  }
+
+  /** Queue and accept one send, returning the stored row and its bytes. */
+  async function acceptedSend(
+    service: OutboundService,
+    options: { accountId?: string } = {},
+  ): Promise<{ row: typeof outboundMessages.$inferSelect; bytes: Uint8Array }> {
+    const draft = await makeDraft({ accountId: options.accountId });
+    const queued = await queueSendOf(draft.id);
+    await service.executeOutbound(queued.id);
+    const row = await loadRow(queued.id);
+    expect(row.status).toBe("sent");
+    return { row, bytes: await storage.durable.get(row.mimeStorageKey) };
+  }
+
+  /** The event types recorded for one outbound row. */
+  async function eventTypesOf(outboundId: string): Promise<string[]> {
+    const rows = await db.select({ type: events.type }).from(events).where(eq(events.entityId, outboundId));
+    return rows.map((event) => event.type);
   }
 
   /** The outbound row as stored, with its draft. */
@@ -471,4 +536,301 @@ suite("outbound snapshots and SMTP sending", () => {
     expect(summary.skippedStale).toBeGreaterThanOrEqual(1);
     expect((await loadRow(foreign.id)).status).toBe("queued");
   });
+
+  it("needs a Sent-copy session before it can append", async () => {
+    const draft = await makeDraft();
+    const outbound = await queueSendOf(draft.id);
+    const { service: submitOnly } = executingService(acceptedReport());
+    await submitOnly.executeOutbound(outbound.id);
+
+    const error = await rejection(submitOnly.executeSentCopyAppend(outbound.id));
+    expect(error instanceof SendError && error.code).toBe("sent_copy_unavailable");
+  });
+
+  it("appends the stored bytes once and records the destination", async () => {
+    const { service, script, folder } = appendingService(acceptedReport(), new FakeSentFolder("Sent"));
+    const { row, bytes } = await acceptedSend(service);
+
+    const summary = await service.appendDueSentCopies();
+    expect(summary.blocked).toBe(false);
+    expect(summary.attempted).toBeGreaterThanOrEqual(1);
+
+    // The sweep also stores due rows from earlier tests; this row's own append
+    // is what matters here.
+    expect(folder.appendsOf(row.rfcMessageId)).toBe(1);
+    const attempt = folder.appends.find((entry) => entry.rfcMessageId === row.rfcMessageId)!;
+    expect(attempt.folder).toBe("Sent");
+    expect(Buffer.from(attempt.bytes).equals(Buffer.from(bytes))).toBe(true);
+
+    const stored = await loadRow(row.id);
+    expect(stored.status).toBe("sent");
+    expect(stored.sentCopyStatus).toBe("stored");
+    expect(stored.sentFolderId).toBe((await sentFolderOf(row.accountId))!.id);
+    expect(stored.sentUidvalidity).toBe(1);
+    expect(stored.sentUid).toBe(folder.uidOf(row.rfcMessageId));
+    expect(stored.lastError).toBeNull();
+    expect(await eventTypesOf(row.id)).toContain("send.sent_copy_stored");
+
+    // A stored copy is done; no sweep appends it again, and SMTP saw exactly
+    // one submission the whole time.
+    const again = await service.appendDueSentCopies();
+    expect(again.scanned).toBe(0);
+    expect(folder.appendsOf(row.rfcMessageId)).toBe(1);
+    expect(script.calls).toHaveLength(1);
+  });
+
+  it("keeps sent status after a refused append and retries only the append", async () => {
+    const folder = new FakeSentFolder("Sent");
+    const { service, script } = appendingService(acceptedReport(), folder);
+    const { row } = await acceptedSend(service);
+
+    folder.scriptedAppend = { result: "rejected" };
+    await service.appendDueSentCopies();
+
+    const failed = await loadRow(row.id);
+    expect(failed.status).toBe("sent");
+    expect(failed.sentCopyStatus).toBe("failed");
+    expect(failed.lastError).toEqual({
+      code: "append_rejected",
+      message: "The server refused the Sent append; the sent state is unchanged.",
+    });
+    expect(await eventTypesOf(row.id)).toContain("send.sent_copy_failed");
+
+    folder.scriptedAppend = null;
+    await service.appendDueSentCopies();
+    const stored = await loadRow(row.id);
+    expect(stored.sentCopyStatus).toBe("stored");
+    expect(folder.appendsOf(row.rfcMessageId)).toBe(2);
+    // The append job never opened SMTP (SPEC F7 step 5).
+    expect(script.calls).toHaveLength(1);
+  });
+
+  it("holds a lost append response as unknown and stores it only after reconciliation", async () => {
+    const folder = new FakeSentFolder("Sent");
+    const { service } = appendingService(acceptedReport(), folder);
+    const { row, bytes } = await acceptedSend(service);
+
+    folder.scriptedAppend = { result: "uncertain", reason: "connection dropped" };
+    await service.appendDueSentCopies();
+
+    const held = await loadRow(row.id);
+    expect(held.sentCopyStatus).toBe("unknown");
+    expect((held.lastError as { code: string }).code).toBe("append_uncertain");
+    expect(await eventTypesOf(row.id)).toContain("send.sent_copy_unknown");
+
+    // The lost attempt actually landed. The next sweep must verify that copy
+    // instead of appending a second one.
+    folder.scriptedAppend = null;
+    folder.load(row.rfcMessageId, bytes);
+    await service.appendDueSentCopies();
+
+    const stored = await loadRow(row.id);
+    expect(stored.sentCopyStatus).toBe("stored");
+    expect(stored.sentUid).toBe(1);
+    expect(folder.appendsOf(row.rfcMessageId)).toBe(1);
+  });
+
+  it("does not append when the folder already holds the verified copy", async () => {
+    const folder = new FakeSentFolder("Sent");
+    const { service } = appendingService(acceptedReport(), folder);
+    const { row, bytes } = await acceptedSend(service);
+
+    // A Sent import raced the append job and stored the copy first.
+    folder.load(row.rfcMessageId, bytes);
+    await service.appendDueSentCopies();
+
+    const stored = await loadRow(row.id);
+    expect(stored.sentCopyStatus).toBe("stored");
+    expect(stored.sentUid).toBe(1);
+    expect(folder.appendsOf(row.rfcMessageId)).toBe(0);
+  });
+
+  it("retains unknown when a same-identifier message holds different bytes", async () => {
+    const folder = new FakeSentFolder("Sent");
+    const { service } = appendingService(acceptedReport(), folder);
+    const { row } = await acceptedSend(service);
+
+    folder.load(row.rfcMessageId, new TextEncoder().encode("different bytes with the same identifier"));
+    await service.appendDueSentCopies();
+    await service.appendDueSentCopies();
+
+    const held = await loadRow(row.id);
+    expect(held.sentCopyStatus).toBe("unknown");
+    expect((held.lastError as { code: string }).code).toBe("sent_copy_conflict");
+    expect(folder.appendsOf(row.rfcMessageId)).toBe(0);
+  });
+
+  it("fails quietly while the account maps no Sent folder, and stores after mapping one", async () => {
+    const folder = new FakeSentFolder("Sent");
+    const { service } = appendingService(acceptedReport(), folder);
+    const { row } = await acceptedSend(service, { accountId: bareAccountId });
+
+    const first = await service.appendDueSentCopies();
+    expect(first.attempted).toBeGreaterThanOrEqual(1);
+    let failed = await loadRow(row.id);
+    expect(failed.sentCopyStatus).toBe("failed");
+    expect((failed.lastError as { code: string }).code).toBe("sent_folder_unmapped");
+
+    // Repeated sweeps change nothing and record nothing further.
+    const second = await service.appendDueSentCopies();
+    expect(second.attempted).toBe(0);
+    failed = await loadRow(row.id);
+    expect(failed.sentCopyStatus).toBe("failed");
+    expect((await eventTypesOf(row.id)).filter((type) => type === "send.sent_copy_failed")).toHaveLength(1);
+
+    await db.insert(foldersTable).values({ accountId: bareAccountId, name: "Sent", role: "sent" });
+    await service.appendDueSentCopies();
+    const stored = await loadRow(row.id);
+    expect(stored.sentCopyStatus).toBe("stored");
+    expect(folder.appendsOf(row.rfcMessageId)).toBe(1);
+  });
+
+  it("holds an abandoned submission as unknown and never resubmits it", async () => {
+    const folder = new FakeSentFolder("Sent");
+    const { service, script } = appendingService(acceptedReport(), folder);
+    const draft = await makeDraft();
+    const outbound = await queueSendOf(draft.id);
+
+    // A crash left the row mid-submission: claimed, but no outcome recorded.
+    await db
+      .update(outboundMessages)
+      .set({ status: "sending", sendingStartedAt: new Date() })
+      .where(eq(outboundMessages.id, outbound.id));
+
+    const recovered = await service.recoverAbandonedAttempts();
+    expect(recovered.blocked).toBe(false);
+    expect(recovered.heldSends).toBe(1);
+
+    const held = await loadRow(outbound.id);
+    expect(held.status).toBe("outcome_unknown");
+    expect((held.lastError as { code: string }).code).toBe("sending_abandoned");
+    expect(await eventTypesOf(outbound.id)).toContain("send.outcome_unknown");
+
+    const stillLocked = (
+      await db.select().from(draftsTable).where(eq(draftsTable.id, draft.id)).limit(1)
+    )[0]!;
+    expect(stillLocked.lockedBySend).toBe(outbound.id);
+
+    // No path resubmits an uncertain attempt (SPEC F7 step 6).
+    const sweep = await service.executeQueued();
+    expect(sweep.submitted).toBe(0);
+    const direct = await service.executeOutbound(outbound.id);
+    expect(direct.submitted).toBe(false);
+    const copies = await service.appendDueSentCopies();
+    expect(copies.scanned).toBe(0);
+    expect(script.calls).toHaveLength(0);
+  });
+
+  it("holds an abandoned append as unknown and reconciles it on the next sweep", async () => {
+    const folder = new FakeSentFolder("Sent");
+    const { service } = appendingService(acceptedReport(), folder);
+    const { row, bytes } = await acceptedSend(service);
+
+    await db
+      .update(outboundMessages)
+      .set({ sentCopyStatus: "appending" })
+      .where(eq(outboundMessages.id, row.id));
+
+    const recovered = await service.recoverAbandonedAttempts();
+    expect(recovered.heldAppends).toBe(1);
+    const held = await loadRow(row.id);
+    expect(held.sentCopyStatus).toBe("unknown");
+    expect((held.lastError as { code: string }).code).toBe("append_abandoned");
+
+    // The abandoned append did land; the sweep must verify it, not repeat it.
+    folder.load(row.rfcMessageId, bytes);
+    await service.appendDueSentCopies();
+    const stored = await loadRow(row.id);
+    expect(stored.sentCopyStatus).toBe("stored");
+    expect(folder.appendsOf(row.rfcMessageId)).toBe(0);
+  });
+
+  it("resolves an unknown send from a verified Sent copy in one transaction", async () => {
+    const folder = new FakeSentFolder("Sent");
+    const { service, script } = appendingService(unknownReport(), folder);
+    const draft = await makeDraft();
+    const queued = await queueSendOf(draft.id);
+    await service.executeOutbound(queued.id);
+    const unknownRow = await loadRow(queued.id);
+    expect(unknownRow.status).toBe("outcome_unknown");
+    expect(unknownRow.logicalMessageId).toBeNull();
+
+    // Durable server evidence: the server stored the exact submitted bytes.
+    folder.load(unknownRow.rfcMessageId, await storage.durable.get(unknownRow.mimeStorageKey));
+
+    const summary = await service.reconcileUnknownOutcomes();
+    expect(summary.resolved).toBe(1);
+
+    const resolved = await loadRow(queued.id);
+    expect(resolved.status).toBe("sent");
+    expect(resolved.sentCopyStatus).toBe("stored");
+    expect(resolved.sentUid).toBe(1);
+    expect(resolved.lastError).toBeNull();
+
+    const message = (
+      await db.select().from(messagesTable).where(eq(messagesTable.id, resolved.logicalMessageId!)).limit(1)
+    )[0]!;
+    expect(message.originalSha256).toBe(resolved.mimeSha256);
+    expect(message.fetchedBody).toBe(true);
+    expect(await db.select().from(bodiesTable).where(eq(bodiesTable.messageId, message.id))).toHaveLength(1);
+
+    const sentEvents = (await eventTypesOf(queued.id)).filter((type) => type === "send.sent");
+    expect(sentEvents).toHaveLength(1);
+
+    // Resolution is evidence work, not a resend.
+    expect(script.calls).toHaveLength(1);
+  });
+
+  it("keeps an unknown send unknown without evidence", async () => {
+    const folder = new FakeSentFolder("Sent");
+    const { service } = appendingService(unknownReport(), folder);
+    const draft = await makeDraft();
+    const queued = await queueSendOf(draft.id);
+    await service.executeOutbound(queued.id);
+
+    const summary = await service.reconcileUnknownOutcomes();
+    expect(summary.resolved).toBe(0);
+
+    const held = await loadRow(queued.id);
+    expect(held.status).toBe("outcome_unknown");
+    expect(held.logicalMessageId).toBeNull();
+    expect((await eventTypesOf(queued.id)).filter((type) => type === "send.sent")).toHaveLength(0);
+    expect(
+      await db.select().from(messagesTable).where(eq(messagesTable.messageId, held.rfcMessageId)),
+    ).toHaveLength(0);
+  });
+
+  it("skips stale generations in the append and recovery sweeps", async () => {
+    const folder = new FakeSentFolder("Sent");
+    const { service } = appendingService(acceptedReport(), folder);
+    const { row } = await acceptedSend(service);
+    await db
+      .update(outboundMessages)
+      .set({ recoveryGeneration: OTHER_GENERATION })
+      .where(eq(outboundMessages.id, row.id));
+
+    const copies = await service.appendDueSentCopies();
+    expect(copies.skippedStale).toBeGreaterThanOrEqual(1);
+    expect(folder.appendsOf(row.rfcMessageId)).toBe(0);
+
+    // A restored row mid-flight stays for operator reconciliation.
+    const queued = await queueSendOf((await makeDraft()).id);
+    await db
+      .update(outboundMessages)
+      .set({ status: "sending", recoveryGeneration: OTHER_GENERATION })
+      .where(eq(outboundMessages.id, queued.id));
+    const recovered = await service.recoverAbandonedAttempts();
+    expect(recovered.skippedStale).toBeGreaterThanOrEqual(1);
+    expect((await loadRow(queued.id)).status).toBe("sending");
+  });
+
+  /** The folder one account maps to the Sent role. */
+  async function sentFolderOf(accountIdToResolve: string) {
+    const rows = await db
+      .select({ id: foldersTable.id })
+      .from(foldersTable)
+      .where(and(eq(foldersTable.accountId, accountIdToResolve), eq(foldersTable.role, "sent")))
+      .limit(1);
+    return rows[0] ?? null;
+  }
 });

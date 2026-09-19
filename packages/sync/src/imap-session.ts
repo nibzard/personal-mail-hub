@@ -11,12 +11,14 @@ import { resolveTimeouts, verifiedTlsOptions } from "@mail-hub/transport";
 import { SyncError } from "./errors.ts";
 import {
   IMPORTED_HEADER_FIELDS,
+  type AppendMessageResult,
   type MailboxConnection,
   type MailboxFlags,
   type MailboxHeaders,
   type MailboxSession,
   type MailboxSessionFactory,
   type MailboxState,
+  type SentCopyMailboxSession,
 } from "./mailbox.ts";
 
 /**
@@ -31,7 +33,10 @@ import {
  * The session also carries the two-way writes of the action path (SPEC F2
  * and F4). They run only through the action executor, on a session opened
  * with `condstoreWrites` so conditional `UNCHANGEDSINCE` stores are possible;
- * synchronization itself keeps reading and never writes.
+ * synchronization itself keeps reading and never writes. The Sent-copy
+ * operations of the outbound pipeline (SPEC F7 step 5) ride the same
+ * connection: an append of exact stored bytes, and the header search that
+ * locates a copy for verification.
  */
 
 /** Options that shape the session one `open` call returns. */
@@ -47,7 +52,7 @@ export interface MailboxSessionOptions {
 
 /** Opens one ImapFlow connection per call. */
 export class ImapMailboxSessionFactory implements MailboxSessionFactory {
-  async open(connection: MailboxConnection, options: MailboxSessionOptions = {}): Promise<MailboxSession> {
+  async open(connection: MailboxConnection, options: MailboxSessionOptions = {}): Promise<ImapMailboxSession> {
     const timeouts = resolveTimeouts(connection.timeouts);
     const client = new ImapFlow({
       host: connection.host,
@@ -84,7 +89,7 @@ export class ImapMailboxSessionFactory implements MailboxSessionFactory {
 }
 
 /** One mailbox session over one open ImapFlow connection. */
-export class ImapMailboxSession implements MailboxSession, WritableActionMailbox {
+export class ImapMailboxSession implements MailboxSession, WritableActionMailbox, SentCopyMailboxSession {
   private currentPath: string | null = null;
 
   constructor(private readonly client: ImapFlow) {}
@@ -246,6 +251,38 @@ export class ImapMailboxSession implements MailboxSession, WritableActionMailbox
     }
   }
 
+  async searchByMessageId(rfcMessageId: string): Promise<number[]> {
+    // A header search locates candidates for the Sent-copy reconciliation
+    // (SPEC F7 step 5). The match is a substring one, so the caller verifies
+    // candidate bytes before trusting any hit.
+    const found = await this.guard("search", (client) =>
+      client.search({ header: { "message-id": rfcMessageId } }, { uid: true }),
+    );
+    return (Array.isArray(found) ? found : []).slice().sort((a, b) => a - b);
+  }
+
+  async appendMessage(folder: string, bytes: Uint8Array): Promise<AppendMessageResult> {
+    try {
+      // A stored copy is mail its author already read (SPEC F7 step 5).
+      const appended = await this.client.append(folder, toBuffer(bytes), ["\\Seen"]);
+      if (appended === false) {
+        // ImapFlow folds a failed command into `false` without saying whether
+        // the tagged response arrived; a dead connection reads as a lost
+        // response and everything else as a definitive rejection.
+        return this.unusable() ? uncertain("The append response was lost.") : { result: "rejected" };
+      }
+      return {
+        result: "appended",
+        // Destination coordinates need the UIDPLUS extension; without them the
+        // caller reconciles the location with a header search.
+        uidvalidity: appended.uidValidity === undefined ? null : Number(appended.uidValidity),
+        uid: appended.uid ?? null,
+      };
+    } catch (cause) {
+      return uncertain(describe(cause));
+    }
+  }
+
   async logout(): Promise<void> {
     try {
       await this.client.logout();
@@ -275,6 +312,11 @@ export class ImapMailboxSession implements MailboxSession, WritableActionMailbox
 
 /** The wire keyword each tracked flag maps to. */
 const IMAP_FLAGS = { unread: "\\Seen", flagged: "\\Flagged" } as const;
+
+/** Message content as the append API wants it, without a copy when possible. */
+function toBuffer(bytes: Uint8Array): Buffer {
+  return Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+}
 
 function uncertain(reason: string): { result: "uncertain"; reason: string } {
   return { result: "uncertain", reason };

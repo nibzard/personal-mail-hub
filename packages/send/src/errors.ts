@@ -1,7 +1,7 @@
 import type { SendErrorCode } from "@mail-hub/contracts";
 
 /**
- * Send rejections: queueing an outbound snapshot and submitting it (SPEC F7).
+ * Send rejections: queueing, submitting, and storing the Sent copy (SPEC F7).
  * Each code maps to one HTTP status so routes and workers report the same
  * way. `draft_stale` carries the server's current revision; the choice codes
  * of reply addressing live in the compose package instead.
@@ -16,6 +16,7 @@ const HTTP_STATUS_BY_CODE: Record<SendErrorCode, number> = {
   upload_unverified: 409,
   idempotency_conflict: 409,
   send_unavailable: 503,
+  sent_copy_unavailable: 503,
 };
 
 /** A send rejection with its HTTP status. */
