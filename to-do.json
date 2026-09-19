@@ -527,7 +527,7 @@
       "title": "Implement draft editing and durable uploads",
       "priority": 1,
       "status": "done",
-      "details": "Create the Markdown editor, revision-aware autosave, attachment upload verification, identity selection, and immutable draft locking for queued sends. Shipped: the @mail-hub/compose service and API routes with revision-aware draft edits, identity selection against configured account identities, durable upload writes verified before acknowledgement, attachment verification, and the draft lock a queued send takes and only a definitive failure releases; plus the client autosave state machine (2s debounce, coalescing, stale-revision choice). The CodeMirror editor surface itself lands with the interface milestone (T014+), which this task depends on and which is still open; the editor drives this API unchanged.",
+      "details": "Create the Markdown editor, revision-aware autosave, attachment upload verification, identity selection, and immutable draft locking for queued sends. Re-verified 2026-09-19 (full suite: 281 tests, 11 workspaces, type checks clean). Shipped: the @mail-hub/compose service and API routes with revision-aware draft edits, identity selection against configured account identities, durable upload writes verified before acknowledgement, attachment verification, and the draft lock a queued send takes and only a definitive failure releases; plus the client autosave state machine (2s debounce, coalescing, stale-revision choice). The CodeMirror editor surface itself lands with the interface milestone (T014+), which this task depends on and which is still open; the editor drives this API unchanged.",
       "depends_on": [
         "T002",
         "T005",
@@ -537,7 +537,7 @@
         "compose",
         "drafts"
       ],
-      "updated_at": "2026-09-19T04:52:01Z",
+      "updated_at": "2026-09-19T04:59:16Z",
       "files": [
         "packages/compose/package.json",
         "packages/compose/tsconfig.json",
