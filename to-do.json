@@ -763,27 +763,28 @@
         "testing",
         "harness"
       ],
-      "updated_at": "2026-09-19T07:19:08Z",
+      "updated_at": "2026-09-19T07:19:25Z",
       "files": [
         "packages/harness/package.json",
-        "packages/harness/tsconfig.json",
         "packages/harness/src/certificates.ts",
-        "packages/harness/src/mailbox-store.ts",
-        "packages/harness/src/imap-server.ts",
-        "packages/harness/src/smtp-server.ts",
         "packages/harness/src/fixtures.ts",
+        "packages/harness/src/imap-server.ts",
         "packages/harness/src/index.ts",
+        "packages/harness/src/mailbox-store.ts",
+        "packages/harness/src/smtp-server.ts",
+        "packages/harness/test/fixtures.test.ts",
         "packages/harness/test/imap-server.test.ts",
         "packages/harness/test/smtp-server.test.ts",
-        "packages/harness/test/fixtures.test.ts"
+        "packages/harness/tsconfig.json",
+        "to-do.json"
       ]
     },
     {
       "id": "T030",
       "title": "Add sync, storage, threading, and search acceptance tests",
       "priority": 1,
-      "status": "todo",
-      "details": "Verify backfill restarts, copies, generation changes, thread ambiguity, attachment regeneration, concurrent flags, and header and body search behavior.",
+      "status": "done",
+      "details": "Done: new packages/sync/test/acceptance.test.ts drives the real services against PostgreSQL and the filesystem store for SPEC section 12 (Sync, storage, and search acceptance): interrupted newest-first backfill resumed while arrivals continue (empty UID ranges included, header matches work before bodies), byte-identical copies without Message-ID headers merging on content hash while both occurrences and their independent flags survive, a reused Message-ID with different bytes never merging and never guessing its child parent, header search by sender, recipient, and subject before the body fetch with body and mixed header/body queries after it, a generation change with reused UIDs refusing a stale body job and rejecting a pre-frozen action before any remote write (stale worker results discarded by the reset cycle), concurrent flag changes conflicting a stale action without writing and confirming a fresh write that preserves the unrelated flag, conditional-write conflicts exposed with refreshed state and confirmed on retry, and twin attachments with identical name, type, size, and duplicate Content-ID regenerating to their exact bytes by attachment ID (nested message/rfc822 included) with stable IDs across a byte-identical merge. Search coverage stays at the storage level because T013 (query operators, saved searches) is still open. Suite passes with TEST_DATABASE_URL; full run 399 tests across 13 workspaces, nothing skipped.",
       "depends_on": [
         "T008",
         "T009",
@@ -794,6 +795,11 @@
       "tags": [
         "testing",
         "sync"
+      ],
+      "updated_at": "2026-09-19T07:34:02Z",
+      "files": [
+        "packages/sync/test/acceptance.test.ts",
+        "to-do.json"
       ]
     },
     {
