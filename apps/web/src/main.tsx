@@ -1,4 +1,4 @@
-import { StrictMode } from "react";
+import { StrictMode, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { AppShell } from "@/components/mail/app-shell";
 import { SignInScreen } from "@/components/mail/sign-in";
@@ -20,6 +20,15 @@ import "./styles.css";
 function App() {
   const session = useSession();
   const status = useAuthStatus();
+  const refreshSession = session.refresh;
+
+  // A cold offline start serves cached session data; when connectivity
+  // returns, re-probe so the shell does not wait for a manual refresh.
+  useEffect(() => {
+    const onOnline = () => refreshSession();
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  }, [refreshSession]);
 
   if (session.state.phase === "loading") {
     return <SplashScreen />;
@@ -81,3 +90,15 @@ createRoot(root).render(
     </TooltipProvider>
   </StrictMode>,
 );
+
+/*
+ * The offline shell (SPEC section 6 and F9): register the worker the build
+ * emits. It precaches the shell, so an offline reload or an installed launch
+ * still opens the app. A registration failure stays silent; the app works
+ * through the network whenever the network is there.
+ */
+if (import.meta.env.PROD && "serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    void navigator.serviceWorker.register("/sw.js").catch(() => {});
+  });
+}

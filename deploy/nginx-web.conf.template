@@ -40,6 +40,20 @@ server {
         add_header Cache-Control "no-cache";
     }
 
+    # The install descriptor needs its manifest type even where the mime
+    # types file predates the extension.
+    location = /manifest.webmanifest {
+        default_type application/manifest+json;
+        add_header Cache-Control "no-cache";
+    }
+
+    # The worker revalidates on every update check, so a new build takes
+    # over as soon as the browser looks.
+    location = /sw.js {
+        default_type text/javascript;
+        add_header Cache-Control "no-cache";
+    }
+
     # History-friendly PWA fallback.
     location / {
         try_files $uri $uri/ /index.html;

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- The favicon twin of the generated PNG icons: the accent surface with
+       the envelope glyph, one shape each, so it stays crisp at 16 px. -->
+  <rect width="64" height="64" rx="13" fill="#3163c5"/>
+  <path d="M18 21 32 30.9 46 21 46 43 18 43Z" fill="#f9fafb" stroke="#f9fafb"
+    stroke-width="2" stroke-linejoin="round"/>
+</svg>

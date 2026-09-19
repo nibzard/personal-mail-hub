@@ -33,6 +33,10 @@ const REQUEST_LIMIT_CAP = 100;
 /** Mirrors the API's maximum page offset. */
 const REQUEST_OFFSET_CAP = 10_000;
 
+/** Offline-store keys for the cold-boot copies (SPEC F9). */
+const SESSION_META_KEY = "cachedSession";
+const FOLDER_INDEX_META_KEY = "cachedFolderIndex";
+
 /** Authentication availability, read before any session exists. */
 export function useAuthStatus() {
   return useResource((signal) => apiGet<AuthStatusResponse>("/auth/status", signal), []);
@@ -58,6 +62,36 @@ export function useSession(): { state: SessionState; refresh: () => void } {
   if (resource.phase === "ready" && resource.data !== null) {
     lastAnswer.current = resource.data;
   }
+  // A cold start with no network serves the copy the last online visit
+  // left, so the shell still mounts and the list's own fallback can read
+  // mail (SPEC F9). `undefined` marks the copy as not read yet.
+  const offline = resource.phase === "error" && resource.error?.network === true;
+  const [cachedAnswer, setCachedAnswer] = useState<AccountsResponse | null | undefined>(undefined);
+
+  useEffect(() => {
+    if (resource.phase === "ready" && resource.data !== null) {
+      cacheSessionAnswer(resource.data);
+    }
+  }, [resource.phase, resource.data]);
+
+  useEffect(() => {
+    if (!offline) {
+      return;
+    }
+    let live = true;
+    void (async () => {
+      const store = offlineStore();
+      const cached =
+        store === null ? null : await store.readMeta<AccountsResponse>(SESSION_META_KEY);
+      if (live) {
+        setCachedAnswer(cached);
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [offline]);
+
   const fromAnswer = (answer: AccountsResponse): SessionState => ({
     phase: "signed-in",
     accounts: answer.accounts,
@@ -76,6 +110,14 @@ export function useSession(): { state: SessionState; refresh: () => void } {
       if (resource.error?.unauthorized === true) {
         return { state: { phase: "signed-out" }, refresh: resource.reload };
       }
+      // While the offline copy is still loading, the splash stays up in
+      // place of a failure the copy is about to replace.
+      if (offline && cachedAnswer === undefined) {
+        return { state: { phase: "loading" }, refresh: resource.reload };
+      }
+      if (offline && cachedAnswer != null) {
+        return { state: fromAnswer(cachedAnswer), refresh: resource.reload };
+      }
       return {
         state: {
           phase: "error",
@@ -88,6 +130,15 @@ export function useSession(): { state: SessionState; refresh: () => void } {
         ? { state: fromAnswer(lastAnswer.current), refresh: resource.reload }
         : { state: { phase: "loading" }, refresh: resource.reload };
   }
+}
+
+/** Caches the session answer for the next cold offline start (SPEC F9). */
+function cacheSessionAnswer(answer: AccountsResponse): void {
+  const store = offlineStore();
+  if (store === null) {
+    return;
+  }
+  void store.writeMeta(SESSION_META_KEY, answer).catch(() => {});
 }
 
 /**
@@ -239,7 +290,7 @@ export function useCleanView(messageId: string | null, enabled: boolean): Resour
 /** Folder lists for every account, keyed by account id. */
 export function useFolderIndex(accounts: AccountSummary[]) {
   const key = accounts.map((account) => account.id).join("|");
-  return useResource<Map<string, FolderSummary[]>>(async (signal) => {
+  const resource = useResource<Map<string, FolderSummary[]>>(async (signal) => {
     if (accounts.length === 0) {
       return new Map<string, FolderSummary[]>();
     }
@@ -257,6 +308,59 @@ export function useFolderIndex(accounts: AccountSummary[]) {
     });
     return index;
   }, [key]);
+
+  // A cold offline start serves the cached copy the same way the session
+  // does: the unified inbox needs its folder roles before the list's own
+  // fallback can run (SPEC F9).
+  const offline = resource.phase === "error" && resource.error?.network === true;
+  const [cachedIndex, setCachedIndex] = useState<Map<string, FolderSummary[]> | null | undefined>(
+    undefined,
+  );
+
+  useEffect(() => {
+    if (resource.phase === "ready" && resource.data !== null) {
+      cacheFolderIndex(resource.data);
+    }
+  }, [resource.phase, resource.data]);
+
+  useEffect(() => {
+    if (!offline) {
+      return;
+    }
+    let live = true;
+    void (async () => {
+      const store = offlineStore();
+      const cached =
+        store === null
+          ? null
+          : await store.readMeta<[string, FolderSummary[]][]>(FOLDER_INDEX_META_KEY);
+      if (live) {
+        setCachedIndex(cached === null ? null : new Map(cached));
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [offline]);
+
+  if (offline) {
+    if (cachedIndex === undefined) {
+      return { phase: "loading", data: null, error: null, reload: resource.reload };
+    }
+    if (cachedIndex !== null) {
+      return { phase: "ready", data: cachedIndex, error: null, reload: resource.reload };
+    }
+  }
+  return resource;
+}
+
+/** Caches the folder index as entries, the offline store's plain shape. */
+function cacheFolderIndex(index: Map<string, FolderSummary[]>): void {
+  const store = offlineStore();
+  if (store === null || index.size === 0) {
+    return;
+  }
+  void store.writeMeta(FOLDER_INDEX_META_KEY, [...index.entries()]).catch(() => {});
 }
 
 interface SearchParams {

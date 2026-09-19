@@ -336,6 +336,57 @@ test.describe("offline", () => {
     ).toBeHidden();
     await expect(page.locator("[data-message-row='m-001']")).toBeVisible();
   });
+
+  test("a cold offline load opens the installed shell with downloaded mail", async ({
+    page,
+    context,
+  }) => {
+    await openInbox(page);
+    // One open visit downloads the rows and the opened detail (SPEC F9).
+    await page.locator("[data-message-row='m-001']").click();
+    await expect(
+      page.getByRole("region", { name: "Message reader" }).getByRole("heading", {
+        level: 2,
+      }),
+    ).toHaveText("Dinner on Saturday");
+
+    // The install surface the browser needs (SPEC F12): the manifest link
+    // with icons, and a worker in control of the page.
+    const manifest = await page.request.get("/manifest.webmanifest");
+    expect(manifest.ok()).toBe(true);
+    const parsed = await manifest.json();
+    expect(parsed.icons.some((icon: { purpose?: string }) => icon.purpose === "maskable")).toBe(
+      true,
+    );
+    expect(
+      await page.evaluate(() => document.querySelector("link[rel='manifest']")?.getAttribute("href")),
+    ).toBe("/manifest.webmanifest");
+    expect(await page.evaluate(() => navigator.serviceWorker.ready.then(() => true))).toBe(true);
+
+    // The reload starts from nothing: no shell in memory, no session probe
+    // answer, and no network. The worker serves the shell from its precache.
+    await context.setOffline(true);
+    await page.reload();
+    expect(await page.evaluate(() => navigator.serviceWorker.controller !== null)).toBe(true);
+
+    // The cached session and folders boot the app, and the list's fallback
+    // paints the downloaded rows instead of an unreachable-service page. The
+    // failure itself stays announced beside them (SPEC F12).
+    await expect(page.getByRole("heading", { name: "Mail", exact: true })).toBeVisible();
+    await expect(page.getByText("Offline. Showing downloaded mail.")).toBeVisible();
+    await expect(page.locator("[data-message-row='m-001']")).toBeVisible();
+
+    // A message fetched before the outage still opens from its copy.
+    await page.locator("[data-message-row='m-001']").click();
+    await expect(
+      page.getByText("Offline. Showing the copy downloaded earlier."),
+    ).toBeVisible();
+
+    // Connectivity returns and a clean refresh goes back to the server.
+    await context.setOffline(false);
+    await page.getByRole("button", { name: "Refresh this view" }).click();
+    await expect(page.getByText("Offline. Showing downloaded mail.")).toBeHidden();
+  });
 });
 
 test.describe("clean view", () => {
