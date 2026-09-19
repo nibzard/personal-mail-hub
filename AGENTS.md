@@ -156,6 +156,15 @@
   (`dropTestDatabase`) the PostgreSQL suites share. Run `npm run db:generate`
   there after changing `src/schema.ts`; apply migrations with
   `npm run db:migrate`.
+- `packages/harness` contains the scripted IMAP and SMTP acceptance harness
+  (SPEC section 12): one fake IMAP server and one fake SMTP server that speak
+  the real wire protocols over TLS leaves signed by the in-repo test
+  authority, the mailbox store and deterministic MIME fixtures the suites
+  script their scenarios with, and the fault queues that bend one protocol
+  step at a time — refusals, stalls, drops, and answers that never come — so
+  the production clients run unmodified. Nothing here contacts a real mail
+  server or holds real credentials; the transport, send, and restore
+  acceptance suites run against it.
 
 ## Commands
 

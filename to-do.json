@@ -1543,16 +1543,17 @@
         "testing",
         "release"
       ],
-      "updated_at": "2026-09-19T22:15:59Z",
+      "updated_at": "2026-09-19T22:16:29Z",
       "files": [
-        "scripts/release-gate.mjs"
+        "scripts/release-gate.mjs",
+        "to-do.json"
       ]
     },
     {
       "id": "T047",
       "title": "Enforce derivative version and audit-event integrity",
       "priority": 3,
-      "status": "todo",
+      "status": "done",
       "details": "Three version and audit gaps. bodies.sanitizer_version is written but never read (packages/ingestion/src/sanitize.ts:20 with packages/reading/src/service.ts:132), so after a sanitizer change every previously ingested message keeps serving its old sanitized row, including through clean view, with nothing flagging the mismatch; compare the stored version and re-sanitize from the durable original or mark the derivative stale. EXTRACTION_VERSION is pinned only by a literal self-equality test (packages/content/src/extract.ts:22 with test/extract.test.ts:20-24), never against the installed Defuddle version, so a dependency upgrade can ship with a misreported version; assert the installed package version matches the constant. And createSavedSearch and deleteSavedSearch write their audit events as separate statements after the mutation (packages/search/src/service.ts:359-407), so a crash between them loses the event; commit the effect and the event together as settings and corrections already do.",
       "tags": [
         "ingestion",
@@ -1560,12 +1561,17 @@
         "search",
         "audit"
       ],
-      "updated_at": "2026-09-19T17:39:46Z",
+      "updated_at": "2026-09-19T22:36:14Z",
       "files": [
-        "packages/ingestion/src/sanitize.ts",
-        "packages/reading/src/service.ts",
-        "packages/content/src/extract.ts",
+        "apps/api/src/main.ts",
+        "package-lock.json",
         "packages/content/test/extract.test.ts",
+        "packages/ingestion/src/index.ts",
+        "packages/ingestion/src/service.ts",
+        "packages/reading/package.json",
+        "packages/reading/src/index.ts",
+        "packages/reading/src/service.ts",
+        "packages/reading/test/service.test.ts",
         "packages/search/src/service.ts"
       ]
     },
@@ -1573,13 +1579,13 @@
       "id": "T048",
       "title": "Check storage writes and clean repository hygiene",
       "priority": 3,
-      "status": "todo",
+      "status": "done",
       "details": "writeObject and writeSidecar ignore the bytes-written return of FileHandle.write (packages/database/src/storage/fs-object-store.ts:128 and 134), so a short write on a nearly full disk publishes a truncated durable object while the sidecar and the database keep the hash and size of the full input, and only a later full verification exposes the corruption; assert each write is complete and loop where needed. The .gitignore lacks data/ and backups/ although both apps default STORAGE_ROOT to a repo-relative data/storage and the .dockerignore already excludes both, so a local run against a real mailbox followed by git add commits every stored mail original into history. And AGENTS.md documents every package except packages/harness; add the module entry so the scripted IMAP and SMTP acceptance harness is discoverable.",
       "tags": [
         "storage",
         "hygiene"
       ],
-      "updated_at": "2026-09-19T17:39:46Z",
+      "updated_at": "2026-09-19T22:42:44Z",
       "files": [
         "packages/database/src/storage/fs-object-store.ts",
         "packages/database/test/storage.test.ts",

@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import { mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Readable } from "node:stream";
 import {
@@ -125,12 +126,12 @@ class FsObjectStore implements ObjectStore {
       if (source instanceof Uint8Array) {
         hash.update(source);
         sizeBytes += source.byteLength;
-        await handle.write(source);
+        await writeAll(handle, source);
       } else {
         for await (const chunk of source) {
           hash.update(chunk);
           sizeBytes += chunk.byteLength;
-          await handle.write(chunk);
+          await writeAll(handle, chunk);
         }
       }
       if (this.durable) {
@@ -171,7 +172,7 @@ class FsObjectStore implements ObjectStore {
     const tempPath = join(dir, `.tmp-${randomUUID()}`);
     const handle = await open(tempPath, "wx");
     try {
-      await handle.write(JSON.stringify(metadata));
+      await writeAll(handle, new TextEncoder().encode(JSON.stringify(metadata)));
       if (this.durable) {
         await handle.sync();
       }
@@ -253,6 +254,23 @@ function classifyReadError(key: string, cause: unknown): StorageError {
 
 function errorText(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
+}
+
+/**
+ * Write the whole buffer. The filesystem can report a short write — for
+ * example on a nearly full disk — and a truncated object must never become
+ * visible under a full-size hash, so advance by what landed and write the
+ * rest.
+ */
+async function writeAll(handle: FileHandle, bytes: Uint8Array): Promise<void> {
+  let offset = 0;
+  while (offset < bytes.byteLength) {
+    const { bytesWritten } = await handle.write(bytes, offset, bytes.byteLength - offset);
+    if (bytesWritten <= 0) {
+      throw new StorageError("io_failed", "Object write made no progress");
+    }
+    offset += bytesWritten;
+  }
 }
 
 async function fsyncDirectory(dir: string): Promise<void> {

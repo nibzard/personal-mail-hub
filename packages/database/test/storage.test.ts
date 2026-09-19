@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -89,6 +90,46 @@ describe("durable object store", () => {
     // The failed write never became visible: the object under the key keeps
     // the bytes the earlier test stored and verified.
     await expect(storage.durable.verify(key, sha256Hex(BINARY_BYTES))).resolves.toBe(true);
+  });
+
+  it("loops past short filesystem writes and publishes complete bytes", async () => {
+    const shortKey = originalMessageKey("99999999-9999-4999-8999-999999999999");
+    // Node does not export the FileHandle class at runtime, so reach the
+    // shared prototype every store handle inherits from through a probe.
+    type HandleBufferWrite = (
+      this: FileHandle,
+      buffer: Uint8Array,
+      offset?: number,
+      length?: number,
+    ) => Promise<{ bytesWritten: number; buffer: Uint8Array }>;
+    const probePath = join(root, ".write-probe");
+    const probe = await open(probePath, "w");
+    const handlePrototype = Object.getPrototypeOf(probe) as { write: HandleBufferWrite };
+    const realWrite = handlePrototype.write;
+    // Bend every handle write to land only half of its bytes, the shape of a
+    // short write on a nearly full disk. The store must keep writing until
+    // the object and its sidecar hold every byte the hash was taken over.
+    handlePrototype.write = async function (buffer, offset, length) {
+      const start = offset ?? 0;
+      const end = start + (length ?? buffer.byteLength - start);
+      const middle = start + Math.ceil((end - start) / 2);
+      return await realWrite.call(this, buffer, start, middle - start);
+    };
+    try {
+      const metadata = await storage.durable.put(shortKey, BINARY_BYTES);
+      expect(metadata.sizeBytes).toBe(BINARY_BYTES.byteLength);
+      expect(metadata.sha256).toBe(sha256Hex(BINARY_BYTES));
+      await expect(storage.durable.get(shortKey)).resolves.toEqual(Buffer.from(BINARY_BYTES));
+      await expect(storage.durable.verify(shortKey, metadata.sha256)).resolves.toBe(true);
+      await expect(storage.durable.stat(shortKey)).resolves.toMatchObject({
+        sha256: sha256Hex(BINARY_BYTES),
+        sizeBytes: BINARY_BYTES.byteLength,
+      });
+    } finally {
+      handlePrototype.write = realWrite;
+      await probe.close();
+      await rm(probePath, { force: true });
+    }
   });
 
   it("recomputes metadata when the sidecar is lost", async () => {

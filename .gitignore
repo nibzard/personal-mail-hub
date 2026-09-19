@@ -7,3 +7,7 @@ coverage/
 *.tsbuildinfo
 playwright-report/
 test-results/
+# Local runs store mail originals under data/ and keep backup bundles under
+# backups/; neither belongs in history.
+data/
+backups/
