@@ -1,0 +1,11 @@
+# Context
+
+## Why This Way
+These planning documents sat untracked since the repository
+started, while to-do.json listed them under source_files and code
+comments cited SPEC sections. A fresh clone had no source of
+truth for the design the implementation claims to follow.
+
+## Gotchas
+- research/ holds pre-implementation notes from 2026-09-18. They
+  record the state of investigation, not the shipped design.
