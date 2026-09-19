@@ -403,3 +403,87 @@ test.describe("theme", () => {
       .toBe(lightBackground);
   });
 });
+
+test.describe("visual regression", () => {
+  /*
+   * Snapshot baselines for the shared surfaces and the main flows (SPEC
+   * section 12). Animations settle and the text caret hides, so only a real
+   * change moves a pixel; the draft footer is masked because it names the
+   * wall-clock edit time.
+   */
+
+  /** Screenshot options every baseline shares. */
+  const SHOT = { animations: "disabled" as const, caret: "hide" as const };
+
+  test("the shell, reader, palette, settings, compose, and dark theme", async ({ page }) => {
+    await openInbox(page);
+    await expect(page).toHaveScreenshot("inbox-light.png", SHOT);
+
+    // The reader with a sanitized HTML body in the sandboxed frame (SPEC F3).
+    await page.locator("[data-message-row='m-005']").click();
+    await expect(
+      page.getByRole("region", { name: "Message reader" }).getByRole("heading", { level: 2 }),
+    ).toHaveText("Weekly report with chart");
+    await page.waitForTimeout(200);
+    await expect(page).toHaveScreenshot("reader-html-message.png", SHOT);
+
+    // The command palette over the list (SPEC F11).
+    await page.keyboard.press("Control+k");
+    await expect(page.getByRole("dialog")).toBeVisible();
+    await page.waitForTimeout(200);
+    await expect(page).toHaveScreenshot("command-palette.png", SHOT);
+    await page.keyboard.press("Escape");
+    await page.getByRole("dialog").waitFor({ state: "hidden" });
+
+    // The settings screen: the shared selects, switches, and cards (F10).
+    await page.keyboard.press("Control+k");
+    await page.keyboard.type("settings");
+    await page.keyboard.press("Enter");
+    const settings = page.getByRole("dialog", { name: "Settings" });
+    await expect(settings.getByRole("heading", { name: "Accounts", exact: true })).toBeVisible();
+    await page.waitForTimeout(200);
+    await expect(page).toHaveScreenshot("settings.png", SHOT);
+    await page.keyboard.press("Escape");
+    await settings.waitFor({ state: "hidden" });
+
+    // The compose surface: inputs, CodeMirror source, preview frame (F6).
+    await page.keyboard.press("Control+k");
+    await page.keyboard.type("send");
+    await page.keyboard.press("Enter");
+    const compose = page.getByRole("dialog");
+    await expect(compose).toBeVisible();
+    await compose.getByRole("button", { name: "New message" }).click();
+    await compose.getByRole("button", { name: "Personal", exact: true }).click();
+    await expect(compose.getByLabel("Draft body in Markdown")).toBeVisible();
+    await page.waitForTimeout(200);
+    await expect(page).toHaveScreenshot("compose.png", {
+      ...SHOT,
+      // The footer names the wall-clock edit time; mask it, not the layout.
+      mask: [compose.locator("footer p")],
+    });
+    await page.keyboard.press("Escape");
+    await compose.waitFor({ state: "hidden" });
+
+    // Dark repaints the same shell without a reload (SPEC F12).
+    await page.keyboard.press("Control+k");
+    const palette = page.getByRole("dialog");
+    await expect(palette).toBeVisible();
+    await page.keyboard.type("theme");
+    await page.keyboard.press("Enter");
+    await palette.getByRole("option", { name: "Dark", exact: true }).click();
+    await expect(page.locator("html")).toHaveClass(/(^|\s)dark(\s|$)/u);
+    await page.waitForTimeout(200);
+    await expect(page).toHaveScreenshot("inbox-dark.png", SHOT);
+  });
+
+  test("the passkey sign-in screen", async ({ page }) => {
+    await openInbox(page);
+    const flipped = await page.request.post("/api/fixture/session", {
+      data: { signedIn: false },
+    });
+    expect(flipped.ok()).toBe(true);
+    await page.reload();
+    await expect(page.getByRole("button", { name: "Sign in with a passkey" })).toBeVisible();
+    await expect(page).toHaveScreenshot("sign-in.png", SHOT);
+  });
+});

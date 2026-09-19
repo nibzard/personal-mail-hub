@@ -507,6 +507,20 @@ export const attachmentBytes = new Map([
 export const authStatus = { ownerRegistered: true, login: "available", control: "ready" };
 
 /**
+ * The WebAuthn challenge the login ceremony hands out (SPEC section 9).
+ * Fixed bytes keep the ceremony reproducible; the fixture refuses only a
+ * malformed assertion, because a scripted browser cannot sign for real.
+ */
+export const LOGIN_CHALLENGE = "3epuFHkKtVmpHTFnQqtdCDrs3XA1PkrZaLr808owZ_M";
+
+/**
+ * The credential id the login options allow. The browser check registers a
+ * virtual passkey that holds exactly this id, so the assertion the client
+ * submits names the credential the fixture offered.
+ */
+export const LOGIN_CREDENTIAL_ID = "chxV5kOdLK-w1AWrvdpAE8ineCqUn4z_WsZ81fNcRGo";
+
+/**
  * The recovery generation the fixture issues (SPEC section 10). It is a
  * fixed UUID so the offline queue accepts it as a server-issued generation.
  */

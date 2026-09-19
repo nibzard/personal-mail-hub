@@ -1630,27 +1630,32 @@
         "worker",
         "reliability"
       ],
-      "updated_at": "2026-09-19T23:11:36Z",
+      "updated_at": "2026-09-19T23:12:14Z",
       "files": [
-        "apps/worker/src/main.ts"
+        "apps/worker/src/main.ts",
+        "to-do.json"
       ]
     },
     {
       "id": "T051",
       "title": "Raise browser-test fidelity and missing coverage",
       "priority": 3,
-      "status": "todo",
-      "details": "The fixture server accepts settings and account mutations without the recovery-generation header and Origin check the real API enforces, and no route can return 401 (apps/web/e2e/fixture-server.mjs:230-238, 241-326, 348-351), so a client regression that drops the generation header, a path that exists in apps/web/src/settings/settings-context.tsx:121-123 when the generation is unknown, passes the whole browser suite while every production save fails; make the fixture enforce both guards and add a signed-out mode that exercises the sign-in path. The axe exclusion selector matches nothing because the reader iframe has no identifier (apps/web/e2e/helpers.ts:68); give the frame the identifier or fix the selector. The palette-latency check fails on the maximum of five samples against a hard 100 ms with no retries (apps/web/e2e/flows.browser.ts:452-475), stricter than the SPEC p95 target and a known intermittent-failure shape on a loaded runner; use a warm-up and a p95 aggregate. And add the missing SPEC section 12 coverage: failure and pending interaction states (the fixture always succeeds) and visual regression snapshots for the shared components and main flows.",
+      "status": "done",
+      "details": "The fixture server accepts settings and account mutations without the recovery-generation header and Origin check the real API enforces, and no route can return 401 (apps/web/e2e/fixture-server.mjs:230-238, 241-326, 348-351), so a client regression that drops the generation header, a path that exists in apps/web/src/settings/settings-context.tsx:121-123 when the generation is unknown, passes the whole browser suite while every production save fails; make the fixture enforce both guards and add a signed-out mode that exercises the sign-in path. The axe exclusion selector matches nothing because the reader iframe has no identifier (apps/web/e2e/helpers.ts:68); give the frame the identifier or fix the selector. The palette-latency check fails on the maximum of five samples against a hard 100 ms with no retries (apps/web/e2e/flows.browser.ts:452-475), stricter than the SPEC p95 target and a known intermittent-failure shape on a loaded runner; use a warm-up and a p95 aggregate. And add the missing SPEC section 12 coverage: failure and pending interaction states (the fixture always succeeds) and visual regression snapshots for the shared components and main flows. Completed: the fixture now runs the deployed guards on every mutation (origin 403, session 401, malformed generation 400, stale generation 409 with currentGeneration), exposes POST /api/fixture/session to flip a context signed-out, and serves the passkey login ceremony; the reader frame carries id message-body-frame so the axe exclusion matches; the latency check warms up once and asserts nearest-rank p95 over 20 samples; new coverage covers the sign-in path, settings and list failure retries, skeleton and saving pending states, and visual baselines for shell, reader, palette, settings, compose, dark theme, and sign-in.",
       "tags": [
         "testing",
         "ui"
       ],
-      "updated_at": "2026-09-19T17:39:46Z",
+      "updated_at": "2026-09-19T23:27:25Z",
       "files": [
         "apps/web/e2e/fixture-server.mjs",
-        "apps/web/e2e/helpers.ts",
+        "apps/web/e2e/fixture-data.mjs",
         "apps/web/e2e/flows.browser.ts",
-        "apps/web/e2e/interface.browser.ts"
+        "apps/web/e2e/interface.browser.ts",
+        "apps/web/playwright.config.ts",
+        "apps/web/src/components/mail/message-body.tsx",
+        "apps/web/src/components/mail/reader-pane.tsx",
+        "apps/web/e2e/__screenshots__/interface.browser.ts"
       ]
     },
     {

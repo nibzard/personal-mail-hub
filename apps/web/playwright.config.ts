@@ -20,6 +20,9 @@ export default defineConfig({
   testDir: "e2e",
   timeout: 30_000,
   expect: { timeout: 5_000 },
+  // Keep the visual baselines free of platform and project suffixes, so one
+  // committed set matches every run of the interface project.
+  snapshotPathTemplate: "{snapshotDir}/{testFileDir}/__screenshots__/{testFileName}/{arg}{ext}",
   fullyParallel: true,
   forbidOnly: process.env.CI !== undefined,
   retries: 0,

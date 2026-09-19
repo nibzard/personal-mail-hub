@@ -9,6 +9,8 @@
  * writes:
  *
  * - `GET /api/auth/status`    the availability probe,
+ * - `POST /api/auth/login/start` and `POST /api/auth/login/complete`
+ *                             the passkey sign-in ceremony (SPEC section 9),
  * - `GET /api/accounts`       the session probe with the recovery generation,
  * - `GET /api/accounts/:id/folders`,
  * - `GET /api/search`         filtered, paged rows for one scope,
@@ -34,6 +36,15 @@
  * own cookie jar, which keeps parallel checks isolated while one context
  * still reads its own writes back across reloads.
  *
+ * The guards the deployed API enforces are mirrored here, so a client
+ * regression the real server would refuse fails these checks too: every
+ * mutation must carry the deployed origin and the recovery generation the
+ * session probe issued (SPEC sections 7 and 9), and without a session every
+ * route but the availability probe and the sign-in ceremony answers 401.
+ * `POST /api/fixture/session` with `{ "signedIn": false }` flips one
+ * browser context into that signed-out state, which is how the sign-in
+ * screen's path stays covered (SPEC section 12).
+ *
  * Usage: `node e2e/fixture-server.mjs [port]` (default 4180, `PORT` also
  * works). The process stays in the foreground; Playwright's `webServer`
  * starts and stops it.
@@ -52,6 +63,8 @@ import {
   cleanViews,
   FLAG_KINDS,
   foldersByAccount,
+  LOGIN_CHALLENGE,
+  LOGIN_CREDENTIAL_ID,
   messageDetails,
   messageRows,
   RECOVERY_GENERATION,
@@ -62,6 +75,10 @@ import {
 
 const distDir = fileURLToPath(new URL("../dist", import.meta.url));
 const port = Number(process.argv[2] ?? process.env.PORT ?? 4180);
+/** The origin clients must present, the role `BASE_URL` plays in production. */
+const origin = `http://127.0.0.1:${port}`;
+/** The WebAuthn relying party the fixture's origin implies. */
+const rpId = new URL(origin).hostname;
 
 const MIME_TYPES = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -79,6 +96,9 @@ const MIME_TYPES = new Map([
 /** The mutable data one browser context works on. */
 function freshSession() {
   return {
+    // False while the context sits on the sign-in screen; the login
+    // ceremony flips it back (SPEC section 9).
+    signedIn: true,
     settings: structuredClone(settings),
     accounts: structuredClone(accounts),
     foldersByAccount: structuredClone(foldersByAccount),
@@ -369,6 +389,71 @@ function sendError(response, status, code, message, extra = {}) {
   sendJson(response, status, { error: { code, message, ...extra } });
 }
 
+/** The generation shape the recovery gate accepts (SPEC section 7). */
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+
+/**
+ * Runs the guards every mutation passes in the deployed API (SPEC sections
+ * 7 and 9), in the route order the real preHandlers use: the deployed
+ * origin, then the session, then the recovery generation the session probe
+ * issued. Sends the rejection and returns false when a guard refuses.
+ */
+function guardMutation(request, session, response) {
+  if (request.headers.origin !== origin) {
+    sendError(
+      response,
+      403,
+      "origin_forbidden",
+      "Requests must come from the deployed origin of this application.",
+    );
+    return false;
+  }
+  if (!session.signedIn) {
+    sendError(response, 401, "unauthorized", "Sign in to continue.");
+    return false;
+  }
+  const header = request.headers["x-recovery-generation"];
+  const generation = typeof header === "string" ? header.trim().toLowerCase() : "";
+  if (!UUID_PATTERN.test(generation)) {
+    sendError(
+      response,
+      400,
+      "invalid_recovery_generation",
+      "Mail mutations must carry the recovery generation issued when the client state was created.",
+    );
+    return false;
+  }
+  if (generation !== RECOVERY_GENERATION) {
+    sendError(
+      response,
+      409,
+      "recovery_required",
+      "The server was restored from an earlier history. Review the pending change, then retry under the current recovery generation.",
+      { currentGeneration: RECOVERY_GENERATION },
+    );
+    return false;
+  }
+  return true;
+}
+
+/**
+ * The shape the passkey assertion must have (SPEC section 9). The client
+ * posts `{ response: assertion }`; the fixture does not verify the
+ * signature, it only refuses a malformed ceremony.
+ */
+function assertionLooksValid(body) {
+  const assertion = body?.response;
+  return (
+    assertion?.type === "public-key" &&
+    typeof assertion.id === "string" &&
+    assertion.id.length > 0 &&
+    typeof assertion.rawId === "string" &&
+    typeof assertion.response?.clientDataJSON === "string" &&
+    typeof assertion.response?.authenticatorData === "string" &&
+    typeof assertion.response?.signature === "string"
+  );
+}
+
 /** Reads one JSON request body. */
 async function readJsonBody(request) {
   const chunks = [];
@@ -450,6 +535,89 @@ const server = createServer(async (request, response) => {
 
     const session = sessionFor(request, response);
     let match = null;
+
+    // The control surface the checks drive directly: it flips this context
+    // between signed in and signed out, so the sign-in path runs against
+    // the shipped client. No API guard applies; the checks act as the
+    // operator here, the way the console does in production.
+    if (pathname === "/api/fixture/session" && request.method === "POST") {
+      const body = await readJsonBody(request);
+      if (body === null || typeof body.signedIn !== "boolean") {
+        sendError(response, 400, "invalid_request", "The control body must name signedIn.");
+        return;
+      }
+      session.signedIn = body.signedIn;
+      sendJson(response, 200, { signedIn: session.signedIn });
+      return;
+    }
+
+    // The sign-in ceremony stays available without a session, the way the
+    // deployed API keeps authentication open while mail work is blocked
+    // (SPEC section 10). Only the origin guard applies.
+    if (pathname === "/api/auth/login/start" && request.method === "POST") {
+      if (request.headers.origin !== origin) {
+        sendError(
+          response,
+          403,
+          "origin_forbidden",
+          "Requests must come from the deployed origin of this application.",
+        );
+        return;
+      }
+      sendJson(response, 200, {
+        options: {
+          challenge: LOGIN_CHALLENGE,
+          timeout: 60_000,
+          rpId,
+          allowCredentials: [{ type: "public-key", id: LOGIN_CREDENTIAL_ID }],
+          userVerification: "preferred",
+        },
+      });
+      return;
+    }
+
+    if (pathname === "/api/auth/login/complete" && request.method === "POST") {
+      if (request.headers.origin !== origin) {
+        sendError(
+          response,
+          403,
+          "origin_forbidden",
+          "Requests must come from the deployed origin of this application.",
+        );
+        return;
+      }
+      if (!assertionLooksValid(await readJsonBody(request))) {
+        sendError(
+          response,
+          400,
+          "invalid_request",
+          "The passkey response is not a WebAuthn assertion.",
+        );
+        return;
+      }
+      session.signedIn = true;
+      const opened = new Date();
+      sendJson(response, 200, {
+        kind: "standard",
+        verifiedAt: opened.toISOString(),
+        expiresAt: new Date(opened.getTime() + 14 * 24 * 60 * 60 * 1000).toISOString(),
+      });
+      return;
+    }
+
+    // Without a session every route but the availability probe refuses
+    // (SPEC section 9), which is how a signed-out context reads 401.
+    if (!session.signedIn && pathname !== "/api/auth/status") {
+      sendError(response, 401, "unauthorized", "Sign in to continue.");
+      return;
+    }
+
+    // Every write passes the deployed API's mutation guards first, so a
+    // client that drops the origin or the recovery generation cannot pass
+    // these checks (SPEC sections 7 and 9).
+    if (request.method !== "GET" && !guardMutation(request, session, response)) {
+      return;
+    }
 
     // The writes the settings screen makes, before the read guard below.
     if (pathname === "/api/settings" && request.method === "PUT") {

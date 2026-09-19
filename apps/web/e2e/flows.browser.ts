@@ -19,6 +19,30 @@ function trackApiRequests(page: Page): { count: () => number } {
   return { count: () => requests };
 }
 
+/** The origin the page runs on, which mutations must present (SPEC section 9). */
+function pageOrigin(page: Page): string {
+  return new URL(page.url()).origin;
+}
+
+/** The recovery generation the session probe issued for this context. */
+async function readGeneration(page: Page): Promise<string | null> {
+  const probe = await page.request.get("/api/accounts");
+  const body = (await probe.json()) as { recoveryGeneration?: string | null };
+  return body.recoveryGeneration ?? null;
+}
+
+/** Opens the settings screen through the palette (SPEC F11). */
+async function openSettings(page: Page) {
+  await page.keyboard.press("Control+k");
+  const palette = page.getByRole("dialog");
+  await expect(palette).toBeVisible();
+  await page.keyboard.type("settings");
+  await page.keyboard.press("Enter");
+  const dialog = page.getByRole("dialog", { name: "Settings" });
+  await expect(dialog).toBeVisible();
+  return dialog;
+}
+
 test.describe("keyboard triage", () => {
   test("j, k, and o move, open, and announce the selection", async ({ page }) => {
     await openInbox(page);
@@ -428,18 +452,6 @@ test.describe("clean view", () => {
 });
 
 test.describe("settings", () => {
-  /** Opens the settings screen through the palette (SPEC F11). */
-  async function openSettings(page: Page) {
-    await page.keyboard.press("Control+k");
-    const palette = page.getByRole("dialog");
-    await expect(palette).toBeVisible();
-    await page.keyboard.type("settings");
-    await page.keyboard.press("Enter");
-    const dialog = page.getByRole("dialog", { name: "Settings" });
-    await expect(dialog).toBeVisible();
-    return dialog;
-  }
-
   test("the screen shows preferences, accounts, and the sync status", async ({ page }) => {
     await openInbox(page);
     const dialog = await openSettings(page);
@@ -531,9 +543,181 @@ test.describe("settings", () => {
     await page.keyboard.press("Escape");
     await expect(dialog).toBeHidden();
   });
+
+  test("every save carries the deployed origin and the recovery generation", async ({ page }) => {
+    await openInbox(page);
+    const generation = await readGeneration(page);
+    expect(generation).not.toBeNull();
+    const dialog = await openSettings(page);
+
+    // The deployed API refuses a mutation without the origin and the
+    // generation the session probe issued (SPEC sections 7 and 9), so the
+    // shipped client must send both on every save.
+    const saved = page.waitForRequest(
+      (request) => request.url().includes("/api/settings") && request.method() === "PUT",
+    );
+    await dialog.getByRole("switch", { name: "Clean view by default" }).click();
+    const request = await saved;
+    // `allHeaders` carries what the browser actually sent, including the
+    // implicit Origin a same-origin fetch carries.
+    const headers = await request.allHeaders();
+    expect(headers.origin).toBe(pageOrigin(page));
+    expect(headers["x-recovery-generation"]).toBe(generation);
+    await expect(dialog.locator("footer[role='status']")).toHaveText("Saved.");
+  });
 });
 
-test.describe("performance", () => {  test("the virtualized list mounts a bounded window of a large scope", async ({
+test.describe("sign-in", () => {
+  /**
+   * A throwaway ECDSA P-256 keypair for the virtual passkey this check
+   * seeds. The fixture refuses only a malformed assertion, so a test key
+   * stands in for the owner's credential.
+   */
+  const PASSKEY_PRIVATE_KEY =
+    "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgOKbctRMxKl2YQfnyrPEV8aWmPacxdNUWp8QzVEMN0j6hRANCAAQqdbYt_l-Myref_65yrPItLmOH6nzBmuDMb6jiEh7iVJLkni1mIMLchbozW0ZZ1dsfz5sKpEEJ1sfYNM-kgtZR";
+  const PASSKEY_PUBLIC_KEY =
+    "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEKnW2Lf5fjMq3n_-ucqzyLS5jh-p8wZrgzG-o4hIe4lSS5J4tZiDC3IW6M1tGWdXbH8-bCqRBCdbH2DTPpILWUQ";
+
+  test("an ended session shows the passkey screen and signs back in", async ({ page }) => {
+    await openInbox(page);
+    const origin = pageOrigin(page);
+
+    // Flip this context into the signed-out state the deployed API answers
+    // with when the session cookie is gone or revoked (SPEC section 9).
+    const flipped = await page.request.post("/api/fixture/session", {
+      data: { signedIn: false },
+    });
+    expect(flipped.ok()).toBe(true);
+
+    // Reads and writes both refuse without a session.
+    expect((await page.request.get("/api/accounts")).status()).toBe(401);
+    expect(
+      (await page.request.post("/api/actions", { headers: { origin }, data: {} })).status(),
+    ).toBe(401);
+
+    // The shell gives way to the sign-in screen (SPEC section 9).
+    await page.reload();
+    const signIn = page.getByRole("button", { name: "Sign in with a passkey" });
+    await expect(signIn).toBeVisible();
+
+    // Seed the virtual passkey with the credential the fixture's login
+    // options allow, then let the shipped client run the whole ceremony.
+    const start = await page.request.post("/api/auth/login/start", { headers: { origin } });
+    expect(start.ok()).toBe(true);
+    const options = (
+      (await start.json()) as {
+        options: { rpId: string; allowCredentials: Array<{ id: string }> };
+      }
+    ).options;
+    await page.context().credentials.create(options.rpId, {
+      id: options.allowCredentials[0]!.id,
+      userHandle: "b3duZXI",
+      privateKey: PASSKEY_PRIVATE_KEY,
+      publicKey: PASSKEY_PUBLIC_KEY,
+    });
+    await page.context().credentials.install();
+
+    await signIn.click();
+    await expect(page.locator("#message-list [data-message-row]").first()).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Mail" })).toBeVisible();
+  });
+});
+
+test.describe("failure and pending states", () => {
+  test("a settings save that fails keeps the change and retries on demand", async ({ page }) => {
+    await openInbox(page);
+    const settingsPattern = "**/api/settings";
+    await page.route(settingsPattern, async (route) => {
+      if (route.request().method() === "PUT") {
+        await route.fulfill({
+          status: 500,
+          contentType: "application/json",
+          body: JSON.stringify({
+            error: { code: "internal", message: "The settings store is unavailable." },
+          }),
+        });
+        return;
+      }
+      await route.continue();
+    });
+    const dialog = await openSettings(page);
+    const footer = dialog.locator("footer[role='status']");
+
+    // The failed save states its reason and offers the explicit retry; the
+    // chosen value stays entered meanwhile (SPEC F12).
+    const cleanView = dialog.getByRole("switch", { name: "Clean view by default" });
+    await cleanView.click();
+    await expect(footer).toContainText("Could not save: The settings store is unavailable.");
+    await expect(cleanView).toBeChecked();
+
+    await page.unroute(settingsPattern);
+    await footer.getByRole("button", { name: "Try again" }).click();
+    await expect(footer).toHaveText("Saved.");
+    await expect(cleanView).toBeChecked();
+  });
+
+  test("a failed list load states the failure and recovers on retry", async ({ page }) => {
+    const searchPattern = /\/api\/search/u;
+    await page.route(searchPattern, async (route) => {
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: { code: "internal", message: "The search index is unavailable." },
+        }),
+      });
+    });
+    await page.goto("/");
+
+    await expect(page.getByText("This view cannot be loaded.")).toBeVisible();
+    // The reason shows beside the retry; the polite region repeats it, so
+    // take the visible paragraph the list pane renders.
+    await expect(page.locator("#message-list p.max-w-sm")).toHaveText(
+      "The search index is unavailable.",
+    );
+
+    await page.unroute(searchPattern);
+    await page.getByRole("button", { name: "Try again" }).click();
+    await expect(page.locator("#message-list [data-message-row]").first()).toBeVisible();
+  });
+
+  test("a slow first page shows the skeleton, then the rows", async ({ page }) => {
+    await page.route(/\/api\/search/u, async (route) => {
+      await page.waitForTimeout(600);
+      await route.continue();
+    });
+    await page.goto("/");
+
+    // The loading state is layout-matched skeletons, not a blank pane
+    // (SPEC F12), and the pane announces it is busy.
+    await expect(page.locator("#message-list")).toHaveAttribute("aria-busy", "true");
+    await expect(page.locator("#message-list .animate-pulse").first()).toBeVisible();
+
+    await expect(page.locator("#message-list [data-message-row]").first()).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(page.locator("#message-list")).not.toHaveAttribute("aria-busy", "true");
+  });
+
+  test("a slow settings save shows the saving state before it settles", async ({ page }) => {
+    await openInbox(page);
+    await page.route("**/api/settings", async (route) => {
+      if (route.request().method() === "PUT") {
+        await page.waitForTimeout(800);
+      }
+      await route.continue();
+    });
+    const dialog = await openSettings(page);
+    const footer = dialog.locator("footer[role='status']");
+
+    await dialog.getByRole("switch", { name: "Single-key shortcuts" }).click();
+    await expect(footer).toHaveText("Saving…");
+    await expect(footer).toHaveText("Saved.", { timeout: 10_000 });
+  });
+});
+
+test.describe("performance", () => {
+  test("the virtualized list mounts a bounded window of a large scope", async ({
     page,
   }) => {
     await openInbox(page);
@@ -550,7 +734,8 @@ test.describe("performance", () => {  test("the virtualized list mounts a bounde
     expect(await mounted()).toBeLessThanOrEqual(30);
   });
 
-  test("palette input focus lands within 100 ms of the chord", async ({ page }) => {
+  test("palette input focus lands within 100 ms of the chord at p95", async ({ page }) => {
+    test.setTimeout(60_000);
     await openInbox(page);
     await page.evaluate(() => {
       window.__paletteTiming = null;
@@ -584,8 +769,8 @@ test.describe("performance", () => {  test("the virtualized list mounts a bounde
       );
     });
 
-    const samples: number[] = [];
-    for (let round = 0; round < 5; round += 1) {
+    /** One open-and-close round; returns the chord-to-focus delta in ms. */
+    const sample = async (): Promise<number> => {
       await page.evaluate(() => {
         window.__paletteTiming = null;
       });
@@ -600,14 +785,29 @@ test.describe("performance", () => {  test("the virtualized list mounts a bounde
         }
         return timing.focus - timing.keydown;
       });
-      samples.push(delta);
       await page.keyboard.press("Escape");
       await page.getByRole("dialog").waitFor({ state: "hidden" });
+      return delta;
+    };
+
+    // One warm-up round absorbs first-open layout work, the way a person's
+    // second use of the chord is the steady state the SPEC measures.
+    await sample();
+
+    const samples: number[] = [];
+    for (let round = 0; round < 20; round += 1) {
+      samples.push(await sample());
     }
 
-    // The SPEC budget is the 95th percentile under 100 ms; with five runs
-    // the maximum stands in for it.
-    expect(Math.max(...samples)).toBeLessThan(100);
+    // The SPEC budget is the 95th percentile under 100 ms. Nearest-rank p95
+    // over 20 samples drops the single worst round, so one scheduler hiccup
+    // on a loaded runner cannot fail the budget the maximum used to.
+    samples.sort((a, b) => a - b);
+    const p95 = samples[Math.ceil(0.95 * samples.length) - 1]!;
+    expect(
+      p95,
+      `chord-to-focus samples (ms): [${samples.join(", ")}]`,
+    ).toBeLessThan(100);
   });
 });
 
@@ -636,7 +836,13 @@ test.describe("compose and send", () => {
   test("a reply derives its draft through the account and identity choices", async ({ page }) => {
     await openInbox(page);
     // A second work identity makes the reply's From choice real (SPEC F6).
+    // The request acts as a same-origin client, so it carries the guards
+    // the fixture now enforces on every mutation.
     const identities = await page.request.put("/api/accounts/acc-work/identities", {
+      headers: {
+        origin: pageOrigin(page),
+        "x-recovery-generation": (await readGeneration(page)) ?? "",
+      },
       data: {
         identities: [
           {

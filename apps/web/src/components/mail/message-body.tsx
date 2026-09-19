@@ -47,6 +47,11 @@ export interface SanitizedMessageFrameProps {
   document: string;
   /** The name assistive technology announces for the frame. */
   title?: string;
+  /**
+   * The frame's identifier. The reader passes `message-body-frame` so the
+   * browser checks can address this sandboxed document from outside.
+   */
+  id?: string;
   className?: string;
 }
 
@@ -54,12 +59,14 @@ export interface SanitizedMessageFrameProps {
 export function SanitizedMessageFrame({
   document: srcDoc,
   title = "Message body",
+  id,
   className,
 }: SanitizedMessageFrameProps) {
   return (
     <iframe
       srcDoc={srcDoc}
       title={title}
+      id={id}
       // No scripts and no same-origin rights inside the message; popups are
       // the only escape, and hardened anchors open them without control.
       sandbox="allow-popups allow-popups-to-escape-sandbox"

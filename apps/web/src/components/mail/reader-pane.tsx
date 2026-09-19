@@ -323,6 +323,7 @@ function BodyContent({
             takes a viewport share and scrolls inside itself when longer. */}
         <SanitizedMessageFrame
           document={prepared.document}
+          id="message-body-frame"
           className="h-[clamp(16rem,calc(100dvh-18rem),48rem)]"
         />
       </div>
