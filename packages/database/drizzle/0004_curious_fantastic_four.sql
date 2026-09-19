@@ -1,0 +1,1 @@
+CREATE INDEX "actions_pending_idx" ON "actions" USING btree ("created_at") WHERE "status" in ('queued', 'executing');

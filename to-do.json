@@ -330,7 +330,7 @@
       "title": "Implement logical-message merging and thread reconciliation",
       "priority": 1,
       "status": "done",
-      "details": "Logical-message threading per SPEC F2. Messages carry a durable thread_dirty job mark; every import, body reparse, and byte-identical merge marks the rows whose parent links depend on the changed identifiers, in the same transaction (markThreadJobsDirty in packages/ingestion). ThreadService reconciles marked rows in bounded newest-first passes, one transaction per row: parent from the single valid In-Reply-To identifier or the last valid References identifier, one holder links, none stays pending, and conflicting identifiers, self-links, duplicate holders, and cycles stay unlinked and ambiguous; subject and participant similarity never links, and holders in another account never parent a message. Membership recomputes with each link: the row and its descendants move to the chain root thread, a detached row starts a fresh thread, and old thread records remain for drafts and snapshots. SyncRunner resolves a bounded number of thread jobs per cycle after body jobs and reports threadsResolved, threadLinksChanged, and pendingThreads in sync.status.",
+      "details": "Logical-message threading per SPEC F2. Messages carry a durable thread_dirty job mark; every import, body reparse, and byte-identical merge marks the rows whose parent links depend on the changed identifiers, in the same transaction (markThreadJobsDirty in packages/ingestion). ThreadService reconciles marked rows in bounded newest-first passes, one transaction per row: parent from the single valid In-Reply-To identifier or the last valid References identifier, one holder links, none stays pending, and conflicting identifiers, self-links, duplicate holders, and cycles stay unlinked and ambiguous; subject and participant similarity never links, and holders in another account never parent a message. Membership recomputes with each link: the row and its descendants move to the chain root thread, a detached row starts a fresh thread, and old thread records remain for drafts and snapshots. SyncRunner resolves a bounded number of thread jobs per cycle after body jobs and reports threadsResolved, threadLinksChanged, and pendingThreads in sync.status. Implemented and committed in 6fd3fcf. Two later passes (2026-09-19) re-verified workspace type checks and the full suite with TEST_DATABASE_URL set — all nine workspaces green, 221 tests, the sync suite running all five files including both thread suites — so no code changes were needed and no commit was made.",
       "depends_on": [
         "T007",
         "T008"
@@ -339,33 +339,34 @@
         "sync",
         "threading"
       ],
-      "updated_at": "2026-09-19T03:07:24Z",
+      "updated_at": "2026-09-19T03:38:28Z",
       "files": [
-        "packages/database/src/schema.ts",
+        "AGENTS.md",
+        "apps/worker/src/main.ts",
         "packages/database/drizzle/0003_magical_zodiak.sql",
-        "packages/database/drizzle/meta/_journal.json",
         "packages/database/drizzle/meta/0003_snapshot.json",
-        "packages/ingestion/src/thread-jobs.ts",
-        "packages/ingestion/src/service.ts",
+        "packages/database/drizzle/meta/_journal.json",
+        "packages/database/src/schema.ts",
         "packages/ingestion/src/index.ts",
+        "packages/ingestion/src/service.ts",
+        "packages/ingestion/src/thread-jobs.ts",
+        "packages/sync/src/index.ts",
+        "packages/sync/src/runner.ts",
         "packages/sync/src/store.ts",
         "packages/sync/src/threads.ts",
-        "packages/sync/src/runner.ts",
-        "packages/sync/src/index.ts",
-        "apps/worker/src/main.ts",
-        "packages/sync/test/threads.test.ts",
-        "packages/sync/test/thread-reference.test.ts",
         "packages/sync/test/backfill.test.ts",
         "packages/sync/test/steady.test.ts",
-        "AGENTS.md"
+        "packages/sync/test/thread-reference.test.ts",
+        "packages/sync/test/threads.test.ts",
+        "to-do.json"
       ]
     },
     {
       "id": "T011",
       "title": "Build the recovery-aware mail action service",
       "priority": 1,
-      "status": "todo",
-      "details": "Create immutable action records, per-target receipts, idempotency handling, remote-state checks, and restart reconciliation for all mail mutations.",
+      "status": "done",
+      "details": "Action service per SPEC sections 7 and 10 in packages/actions. submit gates the recovery generation before the idempotency lookup (409 recovery_required, 503 recovery_in_progress), validates the account, kind, key, and scope, then commits the immutable action row, its frozen per-target work items (occurrence revision, observed flags, folder generation, modseq), and one action.queued event before any remote work; a repeated key returns the existing receipts and a changed payload conflicts. execute refreshes targets from the mailbox first: folder-generation and absent-target conflicts, no-op confirmation when the refreshed target already holds the desired flag value (SPEC F2), stale-revision and modseq conflicts otherwise. Every item claims executing before its remote call, the recovery generation is rechecked before each write, and observed state, the receipt, and action.applied commit together per item, so a partial bulk failure never replays a finished item. Restarts reconcile bounded pending actions per account and replay flag assignments only after refresh; an interrupted move holds unknown and is never replayed; a lost destination conflicts. dispositionRestoredActions holds old-generation actions (queued as conflicted, executing as unknown) so recovery can complete, wired as the admin command recovery hold-actions. Remote IMAP writes go through the ActionExecutor port; the CONDSTORE and MOVE implementations are T012. Schema: ActionItemTarget extended with observed flags and modseq plus a partial index on pending actions (migration 0004). Verified: npm run check across all 13 workspaces and npm test with TEST_DATABASE_URL, 237 tests green including the new 16-test actions suite.",
       "depends_on": [
         "T003",
         "T009"
@@ -373,6 +374,30 @@
       "tags": [
         "actions",
         "safety"
+      ],
+      "updated_at": "2026-09-19T04:06:02Z",
+      "files": [
+        "AGENTS.md",
+        "apps/admin/package.json",
+        "apps/admin/src/main.ts",
+        "apps/admin/test/commands.test.ts",
+        "package-lock.json",
+        "packages/actions/package.json",
+        "packages/actions/src/errors.ts",
+        "packages/actions/src/executor.ts",
+        "packages/actions/src/index.ts",
+        "packages/actions/src/kinds.ts",
+        "packages/actions/src/mailbox.ts",
+        "packages/actions/src/service.ts",
+        "packages/actions/test/fake-action-mailbox.ts",
+        "packages/actions/test/fake-executor.ts",
+        "packages/actions/test/service.test.ts",
+        "packages/actions/tsconfig.json",
+        "packages/database/drizzle/0004_curious_fantastic_four.sql",
+        "packages/database/drizzle/meta/0004_snapshot.json",
+        "packages/database/drizzle/meta/_journal.json",
+        "packages/database/src/schema.ts",
+        "to-do.json"
       ]
     },
     {

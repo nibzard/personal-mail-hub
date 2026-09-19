@@ -1,4 +1,4 @@
-import { createDatabase, createPool } from "@mail-hub/database";
+import { createDatabase, createPool, type MailHubDatabase } from "@mail-hub/database";
 import {
   RecoveryControls,
   describeControlStatus,
@@ -7,6 +7,7 @@ import {
   type InitializeOutcome,
 } from "@mail-hub/recovery";
 import { AuthError, ConsoleAuthService, createRecoveryHooks } from "@mail-hub/auth";
+import { ActionService, type ActionExecutor, type ActionMailbox } from "@mail-hub/actions";
 
 /**
  * The operator command line (SPEC sections 9 and 10). Run it inside the app
@@ -17,12 +18,13 @@ import { AuthError, ConsoleAuthService, createRecoveryHooks } from "@mail-hub/au
 const USAGE = `Usage: npm run admin -- <command>
 
 Commands:
-  recovery status     Show the recovery control state.
-  recovery init       Initialize control state on a fresh installation.
-  recovery begin      Record the deployment generation and enter reconciling.
-  recovery complete   Finish recovery and reopen normal work.
-  auth bootstrap      Issue the first-passkey enrollment token.
-  auth recover        Revoke all access and issue a replacement token.
+  recovery status        Show the recovery control state.
+  recovery init          Initialize control state on a fresh installation.
+  recovery begin         Record the deployment generation and enter reconciling.
+  recovery complete      Finish recovery and reopen normal work.
+  recovery hold-actions  Hold restored actions so recovery can complete.
+  auth bootstrap         Issue the first-passkey enrollment token.
+  auth recover           Revoke all access and issue a replacement token.
 `;
 
 interface AdminEnvironment {
@@ -63,6 +65,8 @@ export async function runAdminCommand(args: string[], env: AdminEnvironment = pr
           return printBegin(await controls.beginRecovery());
         case "complete":
           return printComplete(await controls.completeRecovery());
+        case "hold-actions":
+          return runHoldActions(db, controls);
         default:
           process.stdout.write(USAGE);
           return 1;
@@ -110,6 +114,33 @@ function printGrant(
 async function runStatus(controls: RecoveryControls): Promise<void> {
   process.stdout.write(`${describeControlStatus(await controls.readStatus())}\n`);
 }
+
+/**
+ * Disposition the actions a restore left behind (SPEC section 10, step 5):
+ * old queued items become conflicted, old executing items unknown. The
+ * operator reviews them; nothing replays across a generation.
+ */
+async function runHoldActions(db: MailHubDatabase, controls: RecoveryControls): Promise<number> {
+  const status = await controls.readStatus();
+  if (status.state !== "reconciling" && status.state !== "ready") {
+    process.stderr.write("Control state holds no generation. Run 'recovery init' or 'recovery begin' first.\n");
+    return 1;
+  }
+  const service = new ActionService(db, controls, HOLD_ONLY_EXECUTOR);
+  const summary = await service.dispositionRestoredActions(status.generation);
+  process.stdout.write(
+    `Held restored actions: ${summary.actions} ` +
+      `(${summary.conflicted} conflicted, ${summary.unknown} unknown). Run 'recovery complete'.\n`,
+  );
+  return 0;
+}
+
+/** The hold path only disposition rows; an executor call here is a defect. */
+const HOLD_ONLY_EXECUTOR: ActionExecutor<ActionMailbox> = {
+  async apply() {
+    throw new Error("Holding restored actions must not execute an item.");
+  },
+};
 
 function printInitialize(outcome: InitializeOutcome): number {
   if (outcome.result === "initialized") {

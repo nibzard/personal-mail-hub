@@ -16,6 +16,7 @@ describe("runAdminCommand", () => {
 
   it("fails when the database is not configured", async () => {
     await expect(runAdminCommand(["recovery", "status"], {})).resolves.toBe(1);
+    await expect(runAdminCommand(["recovery", "hold-actions"], {})).resolves.toBe(1);
   });
 
   it("prints usage and fails for an unknown auth subcommand", async () => {

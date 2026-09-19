@@ -1,22 +1,22 @@
 {
-  "name": "@mail-hub/admin",
+  "name": "@mail-hub/actions",
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
-    "admin": "tsx src/main.ts",
     "check": "tsc --noEmit --pretty false",
     "test": "vitest run"
   },
   "dependencies": {
-    "@mail-hub/auth": "0.1.0",
+    "@mail-hub/contracts": "0.1.0",
     "@mail-hub/database": "0.1.0",
-    "@mail-hub/recovery": "0.1.0",
-    "@mail-hub/actions": "0.1.0"
+    "@mail-hub/recovery": "0.1.0"
   },
   "devDependencies": {
     "@types/node": "26.6.1",
-    "tsx": "4.21.0",
     "vitest": "5.0.1"
   }
 }

@@ -58,7 +58,17 @@ export interface RecipientResult {
   response: unknown;
 }
 
-/** The frozen target of one action item: an occurrence with its folder generation and local revision. */
+/** The flags one action froze with its target, exactly as last observed (SPEC F2). */
+export interface TargetObservation {
+  unread: boolean;
+  flagged: boolean;
+}
+
+/**
+ * The frozen target of one action item: an occurrence with its folder
+ * generation, local revision, and the flags observed when the action was
+ * queued (SPEC F2).
+ */
 export interface ActionItemTarget {
   occurrenceId: string;
   accountId: string;
@@ -66,6 +76,9 @@ export interface ActionItemTarget {
   uidvalidity: number;
   uid: number;
   revision: number;
+  observed?: TargetObservation;
+  /** Server modification sequence captured at queue time, when the server reports one. */
+  modseq?: string | null;
 }
 
 export type RecoveryMode = "ready" | "reconciling";
@@ -492,21 +505,31 @@ export const outboundUploads = pgTable(
 );
 
 /** An immutable mail-mutation request executed by the action service. */
-export const actions = pgTable("actions", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  accountId: uuid("account_id")
-    .notNull()
-    .references(() => accounts.id),
-  recoveryGeneration: uuid("recovery_generation").notNull(),
-  idempotencyKey: text("idempotency_key").notNull().unique(),
-  requestHash: text("request_hash").notNull(),
-  kind: text("kind").notNull(),
-  /** Immutable scope and desired state. */
-  request: jsonb("request").$type<Record<string, unknown>>().notNull(),
-  status: text("status").notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const actions = pgTable(
+  "actions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    accountId: uuid("account_id")
+      .notNull()
+      .references(() => accounts.id),
+    recoveryGeneration: uuid("recovery_generation").notNull(),
+    idempotencyKey: text("idempotency_key").notNull().unique(),
+    requestHash: text("request_hash").notNull(),
+    kind: text("kind").notNull(),
+    /** Immutable scope and desired state. */
+    request: jsonb("request").$type<Record<string, unknown>>().notNull(),
+    status: text("status").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Restart reconciliation scans the pending set in creation order; the
+    // recovery controls count the same set during restore completion.
+    index("actions_pending_idx")
+      .on(t.createdAt)
+      .where(sql`"status" in ('queued', 'executing')`),
+  ],
+);
 
 /** Per-target receipt inside one action. Successful items never replay on partial failure. */
 export const actionItems = pgTable(

@@ -27,6 +27,11 @@
   expunge detection, folder-generation resets, nightly inventory
   reconciliation, logical-message merging with parent linking and thread
   reconciliation, and one bounded cycle per account per cron run.
+- `packages/actions` contains the recovery-aware mail action service: frozen
+  action records with per-target work items and idempotency keys, remote-state
+  refresh with generation and revision checks before any write, per-item
+  receipts, restart reconciliation, and the restore disposition behind
+  `recovery hold-actions`. IMAP writes arrive through an executor port.
 - `packages/database` contains the Drizzle schema, SQL migrations, object
   storage, and pg-boss integration. Run `npm run db:generate` there after
   changing `src/schema.ts`; apply migrations with `npm run db:migrate`.
@@ -40,7 +45,8 @@
    migration test suite needs `TEST_DATABASE_URL` and skips without it.
 5. Run `npm run admin -- recovery status` to inspect the recovery control
    state. Use `recovery init` on a fresh installation and `recovery begin`
-   plus `recovery complete` after a restore.
+   plus `recovery complete` after a restore. Run `recovery hold-actions`
+   during recovery to disposition the actions a restore left behind.
 6. Run `npm run admin -- auth bootstrap` on a fresh installation to print the
    first-passkey enrollment token, and `npm run admin -- auth recover` after
    all passkeys are lost. Set `BASE_URL` to the deployed origin first; the
