@@ -10,6 +10,7 @@ import {
   outboundMessages,
   runMigrations,
   type MailHubDatabase,
+  dropTestDatabase,
 } from "@mail-hub/database";
 import { RecoveryControls, type RecoveryHooks } from "../src/index.ts";
 
@@ -48,7 +49,7 @@ suite("recovery controls", () => {
     const url = new URL(testDatabaseUrl!);
     url.pathname = "/postgres";
     const admin = new Pool({ connectionString: url.toString() });
-    await admin.query(`drop database ${databaseName} with (force)`);
+    await dropTestDatabase(admin, databaseName);
     await admin.end();
   });
 

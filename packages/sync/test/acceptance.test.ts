@@ -17,6 +17,7 @@ import {
   type Folder,
   type MessageOccurrence,
   type Storage,
+  dropTestDatabase,
 } from "@mail-hub/database";
 import { IngestionService } from "@mail-hub/ingestion";
 import { RecoveryControls } from "@mail-hub/recovery";
@@ -238,7 +239,7 @@ suite("Sync, storage, and search acceptance", () => {
     await pool?.end();
     await rm(root, { recursive: true, force: true }).catch(() => undefined);
     const admin = new Pool({ connectionString: maintenanceUrl() });
-    await admin.query(`drop database ${databaseName} with (force)`);
+    await dropTestDatabase(admin, databaseName);
     await admin.end();
   });
 

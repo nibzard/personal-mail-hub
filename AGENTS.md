@@ -67,8 +67,10 @@
   acceptance transaction. No path resubmits an uncertain attempt. The worker
   sweeps queued rows and Sent copies on cron queues; the API only queues.
 - `packages/database` contains the Drizzle schema, SQL migrations, object
-  storage, and pg-boss integration. Run `npm run db:generate` there after
-  changing `src/schema.ts`; apply migrations with `npm run db:migrate`.
+  storage, and pg-boss integration, plus the retrying scratch-database cleanup
+  (`dropTestDatabase`) the PostgreSQL suites share. Run `npm run db:generate`
+  there after changing `src/schema.ts`; apply migrations with
+  `npm run db:migrate`.
 
 ## Commands
 
@@ -77,11 +79,18 @@
 3. Run `npm test` before you commit behavior changes.
 4. Run `npm run db:migrate` with `DATABASE_URL` set to apply migrations. The
    migration test suite needs `TEST_DATABASE_URL` and skips without it.
-5. Run `npm run admin -- recovery status` to inspect the recovery control
+5. Run `npm run release:gate` with `TEST_DATABASE_URL` set before a release.
+   The gate runs the workspace type checks, applies every migration to a
+   scratch database through the deployment path, runs the full test suite and
+   the action-permission suites, and fails when any suite skips. Browser and
+   interface checks defer until `apps/web` grows their runners; add a
+   `test:e2e` and a `test:a11y` script there and the gate picks them up. Pass
+   `--strict` when cutting a release: it fails on a deferred check.
+6. Run `npm run admin -- recovery status` to inspect the recovery control
    state. Use `recovery init` on a fresh installation and `recovery begin`
    plus `recovery complete` after a restore. Run `recovery hold-actions`
    during recovery to disposition the actions a restore left behind.
-6. Run `npm run admin -- auth bootstrap` on a fresh installation to print the
+7. Run `npm run admin -- auth bootstrap` on a fresh installation to print the
    first-passkey enrollment token, and `npm run admin -- auth recover` after
    all passkeys are lost. Set `BASE_URL` to the deployed origin first; the
    token prints once and only its hash is stored.

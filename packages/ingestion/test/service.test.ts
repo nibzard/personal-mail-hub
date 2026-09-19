@@ -19,6 +19,7 @@ import {
   attachmentCacheKey,
   threads,
   type Storage,
+  dropTestDatabase,
 } from "@mail-hub/database";
 import { IngestionService, parseMime } from "../src/index.ts";
 import { DECODED_FOOBAR, nestedMessage, standardMessage } from "./fixtures.ts";
@@ -58,7 +59,7 @@ suite("IngestionService", () => {
     await pool?.end();
     await rm(root, { recursive: true, force: true }).catch(() => undefined);
     const admin = new Pool({ connectionString: maintenanceUrl() });
-    await admin.query(`drop database ${databaseName} with (force)`);
+    await dropTestDatabase(admin, databaseName);
     await admin.end();
   });
 

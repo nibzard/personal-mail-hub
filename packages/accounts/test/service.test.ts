@@ -9,6 +9,7 @@ import {
   folders as foldersTable,
   runMigrations,
   type MailHubDatabase,
+  dropTestDatabase,
 } from "@mail-hub/database";
 import { RecoveryBlockedError, RecoveryControls } from "@mail-hub/recovery";
 import { AccountError, AccountService, createCredentialCipher, parseCredentialsKey } from "../src/index.ts";
@@ -80,7 +81,7 @@ suite("account and identity management", () => {
     const url = new URL(testDatabaseUrl!);
     url.pathname = "/postgres";
     const admin = new Pool({ connectionString: url.toString() });
-    await admin.query(`drop database ${databaseName} with (force)`);
+    await dropTestDatabase(admin, databaseName);
     await admin.end();
   });
 

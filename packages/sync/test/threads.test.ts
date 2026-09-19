@@ -15,6 +15,7 @@ import {
   type Folder,
   type Message,
   type Storage,
+  dropTestDatabase,
 } from "@mail-hub/database";
 import { IngestionService } from "@mail-hub/ingestion";
 import {
@@ -103,7 +104,7 @@ suite("ThreadService", () => {
     await pool?.end();
     await rm(root, { recursive: true, force: true }).catch(() => undefined);
     const admin = new Pool({ connectionString: maintenanceUrl() });
-    await admin.query(`drop database ${databaseName} with (force)`);
+    await dropTestDatabase(admin, databaseName);
     await admin.end();
   });
 

@@ -22,6 +22,7 @@ import {
   type Message,
   type Recipients,
   type Storage,
+  dropTestDatabase,
 } from "@mail-hub/database";
 import { IngestionService, parseMime } from "@mail-hub/ingestion";
 import { RecoveryControls } from "@mail-hub/recovery";
@@ -229,7 +230,7 @@ suite("compose and send safety on the wire", () => {
     const url = new URL(testDatabaseUrl!);
     url.pathname = "/postgres";
     const admin = new Pool({ connectionString: url.toString() });
-    await admin.query(`drop database if exists ${databaseName} with (force)`);
+    await dropTestDatabase(admin, databaseName);
     await admin.end();
   });
 
@@ -1150,6 +1151,17 @@ suite("restored queued sends stay held", () => {
     }
   }
 
+  async function dropDb(name: string): Promise<void> {
+    const url = new URL(testDatabaseUrl!);
+    url.pathname = "/postgres";
+    const admin = new Pool({ connectionString: url.toString() });
+    try {
+      await dropTestDatabase(admin, name);
+    } finally {
+      await admin.end();
+    }
+  }
+
   function openPool(name: string): Pool {
     const url = new URL(testDatabaseUrl!);
     url.pathname = `/${name}`;
@@ -1180,8 +1192,8 @@ suite("restored queued sends stay held", () => {
   afterAll(async () => {
     await livePool?.end().catch(() => undefined);
     await restoredPool?.end().catch(() => undefined);
-    await adminQuery(`drop database if exists ${liveName} with (force)`);
-    await adminQuery(`drop database if exists ${backupName} with (force)`);
+    await dropDb(liveName);
+    await dropDb(backupName);
     await smtpServer?.stop();
     await rm(root, { recursive: true, force: true }).catch(() => undefined);
   });

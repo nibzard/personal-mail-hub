@@ -21,6 +21,7 @@
     "dev": "npm run dev --workspace=@mail-hub/web",
     "dev:api": "npm run dev --workspace=@mail-hub/api",
     "dev:worker": "npm run dev --workspace=@mail-hub/worker",
+    "release:gate": "node scripts/release-gate.mjs",
     "start": "npm run start --workspace=@mail-hub/api",
     "start:worker": "npm run start --workspace=@mail-hub/worker",
     "test": "npm run test --workspaces --if-present"

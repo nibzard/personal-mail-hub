@@ -14,6 +14,7 @@ import {
   runMigrations,
   type MailHubDatabase,
   type MessageOccurrence,
+  dropTestDatabase,
 } from "@mail-hub/database";
 import { RecoveryBlockedError, RecoveryControls } from "@mail-hub/recovery";
 import {
@@ -69,7 +70,7 @@ suite("ActionService", () => {
   afterAll(async () => {
     await pool?.end();
     const admin = new Pool({ connectionString: maintenanceUrl() });
-    await admin.query(`drop database ${databaseName} with (force)`);
+    await dropTestDatabase(admin, databaseName);
     await admin.end();
   });
 

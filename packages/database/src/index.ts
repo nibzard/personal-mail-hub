@@ -7,6 +7,7 @@ import * as schema from "./schema.ts";
 export * from "./schema.ts";
 export * from "./storage/index.ts";
 export { migrationsFolder, runMigrations } from "./migrate.ts";
+export { dropTestDatabase } from "./testing.ts";
 
 export { schema };
 

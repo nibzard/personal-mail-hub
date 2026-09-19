@@ -845,13 +845,14 @@
         "testing",
         "send"
       ],
-      "updated_at": "2026-09-19T08:26:29Z",
+      "updated_at": "2026-09-19T08:27:13Z",
       "files": [
-        "packages/send/test/acceptance.test.ts",
-        "packages/send/src/service.ts",
+        "package-lock.json",
         "packages/send/package.json",
+        "packages/send/src/service.ts",
+        "packages/send/test/acceptance.test.ts",
         "packages/sync/src/imap-session.ts",
-        "package-lock.json"
+        "to-do.json"
       ]
     },
     {
@@ -876,8 +877,8 @@
       "id": "T034",
       "title": "Run the release validation gate",
       "priority": 1,
-      "status": "todo",
-      "details": "Require type checks, migrations, integration tests, browser workflows, action permissions, and applicable interface checks before each release.",
+      "status": "done",
+      "details": "Done: the release validation gate ships as scripts/release-gate.mjs behind npm run release:gate and enforces the SPEC section 12 definition of done before each release. Checks: type checks in every workspace; migrations applied to a scratch database through the deployment path (npm run db:migrate), counted against the drizzle journal and re-run to prove a clean no-op; the full workspace suite with TEST_DATABASE_URL required up front and any failed, skipped, or empty vitest summary failing the gate, so a missing test database can no longer look green; and the action-permission suites (@mail-hub/actions plus @mail-hub/api, carrying the recovery-generation gate, scope validation, and the restore hold) run explicitly. browser-workflows and interface-checks auto-detect their apps/web runners (test:e2e, test:a11y) and stay deferred with their blocking tasks named (interface milestone T015+, validation T033); npm run release:gate -- --strict fails on a deferred check and is the mode for cutting a release. Preparing the gate surfaced a real intermittent suite failure: cleanup with DROP DATABASE ... WITH (FORCE) fails with \"permission denied to terminate process\" when a transient backend of another role (consistent with an autovacuum worker visiting a freshly churned scratch database) holds the database; it hit two different suites in two consecutive full-suite runs. All 17 cleanup call sites now share dropTestDatabase from @mail-hub/database, which retries the drop for up to five seconds, and the gate cleans its own scratch database the same way. Gate result on the committed tree: type checks pass in every workspace, 5 migrations applied and re-run clean, 432 tests across 13 workspaces with 0 failed and 0 skipped (verified twice in a row), and 87 tests green in the actions plus api permission suites. Browser workflows and interface checks remain deferred because no interface has shipped; T033 and T026 are still open, so the strict release mode reports FAIL on the deferrals until they land.",
       "depends_on": [
         "T026",
         "T030",
@@ -888,6 +889,29 @@
       "tags": [
         "testing",
         "release"
+      ],
+      "updated_at": "2026-09-19T08:44:10Z",
+      "files": [
+        "AGENTS.md",
+        "apps/api/test/restore-acceptance.test.ts",
+        "package.json",
+        "packages/accounts/test/service.test.ts",
+        "packages/actions/test/service.test.ts",
+        "packages/auth/test/service.test.ts",
+        "packages/compose/test/reply.test.ts",
+        "packages/compose/test/service.test.ts",
+        "packages/database/src/index.ts",
+        "packages/database/src/testing.ts",
+        "packages/database/test/migrations.test.ts",
+        "packages/ingestion/test/service.test.ts",
+        "packages/recovery/test/controls.test.ts",
+        "scripts/release-gate.mjs",
+        "packages/send/test/acceptance.test.ts",
+        "packages/sync/test/acceptance.test.ts",
+        "packages/sync/test/backfill.test.ts",
+        "packages/sync/test/steady.test.ts",
+        "packages/sync/test/threads.test.ts",
+        "to-do.json"
       ]
     }
   ]

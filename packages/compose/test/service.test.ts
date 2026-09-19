@@ -17,6 +17,7 @@ import {
   uploadKey,
   type MailHubDatabase,
   type Storage,
+  dropTestDatabase,
 } from "@mail-hub/database";
 import { RecoveryBlockedError, RecoveryControls, type MailHubTransaction } from "@mail-hub/recovery";
 import {
@@ -136,7 +137,7 @@ suite("draft editing and durable uploads", () => {
     const url = new URL(testDatabaseUrl!);
     url.pathname = "/postgres";
     const admin = new Pool({ connectionString: url.toString() });
-    await admin.query(`drop database ${databaseName} with (force)`);
+    await dropTestDatabase(admin, databaseName);
     await admin.end();
   });
 

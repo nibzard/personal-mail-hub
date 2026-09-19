@@ -14,6 +14,7 @@ import {
   runMigrations,
   type MailHubDatabase,
   type Storage,
+  dropTestDatabase,
 } from "@mail-hub/database";
 import { RecoveryBlockedError, RecoveryControls } from "@mail-hub/recovery";
 import {
@@ -151,6 +152,17 @@ suite("restore, held operations, and client replay", () => {
     }
   }
 
+  async function dropDb(name: string): Promise<void> {
+    const url = new URL(testDatabaseUrl!);
+    url.pathname = "/postgres";
+    const admin = new Pool({ connectionString: url.toString() });
+    try {
+      await dropTestDatabase(admin, name);
+    } finally {
+      await admin.end();
+    }
+  }
+
   function openPool(name: string): Pool {
     const url = new URL(testDatabaseUrl!);
     url.pathname = `/${name}`;
@@ -203,8 +215,8 @@ suite("restore, held operations, and client replay", () => {
   afterAll(async () => {
     await livePool?.end().catch(() => undefined);
     await restoredPool?.end().catch(() => undefined);
-    await adminQuery(`drop database if exists ${liveName} with (force)`);
-    await adminQuery(`drop database if exists ${backupName} with (force)`);
+    await dropDb(liveName);
+    await dropDb(backupName);
     await smtpServer?.stop();
     await rm(root, { recursive: true, force: true }).catch(() => undefined);
   });
