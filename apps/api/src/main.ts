@@ -3,11 +3,13 @@ import { RecoveryControls, describeControlStatus } from "@mail-hub/recovery";
 import { PasskeyAuthService, parseAuthConfig } from "@mail-hub/auth";
 import { AccountService, createCredentialCipher, parseCredentialsKey } from "@mail-hub/accounts";
 import { ComposeService } from "@mail-hub/compose";
+import { OutboundService } from "@mail-hub/send";
 import { runConnectionTest } from "@mail-hub/transport";
 import { registerAccountRoutes } from "./account-routes.ts";
 import { registerAuthRoutes } from "./auth-routes.ts";
 import { registerComposeRoutes } from "./compose-routes.ts";
 import { registerConnectionTestRoutes } from "./connection-test-routes.ts";
+import { registerSendRoutes } from "./send-routes.ts";
 import { buildApp } from "./app.ts";
 
 const connectionString = process.env.DATABASE_URL;
@@ -60,18 +62,26 @@ if (authConfig === null) {
   // Draft editing and uploads share the session and recovery gate; their
   // files persist in durable storage before the database acknowledges them
   // (SPEC F6). No mailbox credentials are involved, so they open without
-  // CREDENTIALS_KEY.
-  const composeService = new ComposeService(
-    db,
-    createStorage(process.env.STORAGE_ROOT ?? DEFAULT_STORAGE_ROOT),
-    controls,
-  );
+  // CREDENTIALS_KEY. Send snapshots persist in the same durable volume.
+  const storage = createStorage(process.env.STORAGE_ROOT ?? DEFAULT_STORAGE_ROOT);
+  const composeService = new ComposeService(db, storage, controls);
   await registerComposeRoutes(app, {
     service: composeService,
     origin: authConfig.origin,
     verifySession: (token) => authService.verifySession(token),
   });
   app.log.info("Compose ready: draft editing and durable uploads.");
+
+  // Queueing sends freezes a draft into immutable MIME bytes and locks the
+  // draft (SPEC F7). The API never submits mail: the worker claims queued
+  // rows, so this process needs no SMTP submitter or credentials here.
+  const outboundService = new OutboundService(db, storage, controls);
+  await registerSendRoutes(app, {
+    service: outboundService,
+    origin: authConfig.origin,
+    verifySession: (token) => authService.verifySession(token),
+  });
+  app.log.info("Send ready: queueing outbound snapshots.");
 
   // Account management seals mailbox passwords with CREDENTIALS_KEY (SPEC
   // section 9). Without a usable key the routes stay closed: storing plaintext

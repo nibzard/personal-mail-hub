@@ -8,6 +8,8 @@ import {
   waitForReadyService,
   type ReadyStatus,
 } from "@mail-hub/recovery";
+import { OutboundService } from "@mail-hub/send";
+import { submitSmtpMessage } from "@mail-hub/transport";
 import {
   BackfillService,
   BodyFetchService,
@@ -24,6 +26,12 @@ const SYNC_CYCLE_QUEUE = "sync.cycle";
 
 /** How often a cycle runs. Overridable for tests and slow deployments. */
 const DEFAULT_SYNC_CYCLE_CRON = "*/30 * * * * *";
+
+/** The queue that sweeps queued outbound snapshots into SMTP submissions. */
+const SEND_CYCLE_QUEUE = "send.cycle";
+
+/** How often queued sends are claimed. Overridable for tests and slow deployments. */
+const DEFAULT_SEND_CYCLE_CRON = "*/5 * * * * *";
 
 /** Durable originals live under this root (SPEC section 8). */
 const DEFAULT_STORAGE_ROOT = "data/storage";
@@ -90,6 +98,22 @@ async function main(databaseUrl: string): Promise<void> {
   const reconcile = new ReconciliationService(db);
   const runner = new SyncRunner(db, backfill, bodies, threads, steady, reconcile);
   const sessions = new ImapMailboxSessionFactory();
+  // Outbound submissions use the same stored credentials the sync cycles open
+  // (SPEC F7 step 3). The atomic claim inside the service is what enforces
+  // one submission per snapshot; this schedule only sweeps.
+  const outbound = new OutboundService(db, storage, controls, {
+    submit: submitSmtpMessage,
+    resolveCredentials: async (accountId) => {
+      const credentials = await accounts.resolveCredentials(accountId);
+      return {
+        host: credentials.smtp.host,
+        port: credentials.smtp.port,
+        security: credentials.smtp.security,
+        username: credentials.username,
+        password: credentials.password,
+      };
+    },
+  });
 
   await queue.createQueue(SYNC_CYCLE_QUEUE);
   await queue.work<{ generation: string }>(SYNC_CYCLE_QUEUE, { batchSize: 1 }, async (jobs) => {
@@ -117,8 +141,33 @@ async function main(databaseUrl: string): Promise<void> {
     }
   });
 
-  await armSchedule(queue, ready.generation);
+  await queue.createQueue(SEND_CYCLE_QUEUE);
+  await queue.work<{ generation: string }>(SEND_CYCLE_QUEUE, { batchSize: 1 }, async (jobs) => {
+    const job = jobs[0];
+    if (job === undefined) {
+      return;
+    }
+    const assessment = assessJob(await controls.readStatus(), job.data.generation);
+    if (assessment === "stale") {
+      console.warn(`Discarded a ${SEND_CYCLE_QUEUE} job from generation ${job.data.generation}.`);
+      return;
+    }
+    if (assessment === "blocked") {
+      throw new Error(`Recovery control state is not ready; the ${SEND_CYCLE_QUEUE} job will retry.`);
+    }
+
+    const summary = await outbound.executeQueued();
+    if (summary.submitted > 0 || summary.skippedStale > 0) {
+      console.log(
+        `Send cycle: ${summary.submitted} submitted, ${summary.skippedStale} held for reconciliation.`,
+      );
+    }
+  });
+
+  await armSchedule(queue, ready.generation, SYNC_CYCLE_QUEUE, process.env.SYNC_CYCLE_CRON ?? DEFAULT_SYNC_CYCLE_CRON);
   console.log(`Synchronization cycles scheduled (${process.env.SYNC_CYCLE_CRON ?? DEFAULT_SYNC_CYCLE_CRON}).`);
+  await armSchedule(queue, ready.generation, SEND_CYCLE_QUEUE, process.env.SEND_CYCLE_CRON ?? DEFAULT_SEND_CYCLE_CRON);
+  console.log(`Send cycles scheduled (${process.env.SEND_CYCLE_CRON ?? DEFAULT_SEND_CYCLE_CRON}).`);
 
   const stop = async () => {
     shutdown.abort();
@@ -166,20 +215,25 @@ async function runAccountCycle(
 }
 
 /**
- * Schedule cycles under the current generation. A schedule from an earlier
- * generation would only produce stale jobs, so replace it (SPEC section 7).
+ * Schedule one cycle queue under the current generation. A schedule from an
+ * earlier generation would only produce stale jobs, so replace it (SPEC
+ * section 7).
  */
-async function armSchedule(queue: ReturnType<typeof createJobQueue>, generation: string): Promise<void> {
-  const cron = process.env.SYNC_CYCLE_CRON ?? DEFAULT_SYNC_CYCLE_CRON;
-  const existing = await queue.getSchedule(SYNC_CYCLE_QUEUE);
+async function armSchedule(
+  queue: ReturnType<typeof createJobQueue>,
+  generation: string,
+  queueName: string,
+  cron: string,
+): Promise<void> {
+  const existing = await queue.getSchedule(queueName);
   if (existing !== null) {
     const scheduled = (existing.data as { generation?: string } | null)?.generation;
     if (scheduled === generation && existing.cron === cron) {
       return;
     }
-    await queue.unschedule(SYNC_CYCLE_QUEUE);
+    await queue.unschedule(queueName);
   }
-  await queue.schedule(SYNC_CYCLE_QUEUE, cron, { generation });
+  await queue.schedule(queueName, cron, { generation });
 }
 
 await main(connectionString);

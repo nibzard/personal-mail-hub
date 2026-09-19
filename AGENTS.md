@@ -49,6 +49,14 @@
   `recovery hold-actions`. The two-way executor applies explicit flag values
   and moves over the writable mailbox port, reads every write back, and
   reports conflicts and unknown outcomes instead of guessing.
+- `packages/send` contains the outbound pipeline: immutable send snapshots
+  frozen from drafts into exact MIME bytes, durable storage of those bytes
+  with their hash, an atomic queued-to-sending claim that submits each
+  snapshot exactly once over the verified SMTP port, recipient-level result
+  recording with conservative outcome classification, local sent records
+  keyed by account and original hash, and the draft lock that only a
+  definitive refusal releases. The worker sweeps queued rows on a cron; the
+  API only queues.
 - `packages/database` contains the Drizzle schema, SQL migrations, object
   storage, and pg-boss integration. Run `npm run db:generate` there after
   changing `src/schema.ts`; apply migrations with `npm run db:migrate`.

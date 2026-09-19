@@ -570,7 +570,7 @@
         "compose",
         "email"
       ],
-      "updated_at": "2026-09-19T05:16:44Z",
+      "updated_at": "2026-09-19T05:17:31Z",
       "files": [
         "AGENTS.md",
         "apps/api/src/compose-routes.ts",
@@ -589,8 +589,8 @@
       "id": "T021",
       "title": "Implement immutable outbound snapshots and SMTP sending",
       "priority": 1,
-      "status": "todo",
-      "details": "Generate and store exact MIME bytes, validate queued requests, enforce one submission, preserve recipient-level SMTP results, and create local sent records after acceptance.",
+      "status": "done",
+      "details": "Generate and store exact MIME bytes, validate queued requests, enforce one submission, preserve recipient-level SMTP results, and create local sent records after acceptance. Done: new @mail-hub/send package (snapshot freeze, MIME composition, Markdown render, atomic claim, outcome classification, local sent record), submitSmtpMessage in @mail-hub/transport, POST /drafts/:id/send and GET /outbound/:id routes, worker send.cycle sweep, and Postgres-backed tests.",
       "depends_on": [
         "T003",
         "T007",
@@ -600,6 +600,29 @@
       "tags": [
         "send",
         "safety"
+      ],
+      "updated_at": "2026-09-19T05:50:08Z",
+      "files": [
+        "packages/send/src/service.ts",
+        "packages/send/src/mime.ts",
+        "packages/send/src/render.ts",
+        "packages/send/src/smtp.ts",
+        "packages/send/src/errors.ts",
+        "packages/send/src/view.ts",
+        "packages/send/src/index.ts",
+        "packages/send/package.json",
+        "packages/send/tsconfig.json",
+        "packages/send/test/mime.test.ts",
+        "packages/send/test/service.test.ts",
+        "packages/transport/src/submit.ts",
+        "packages/transport/src/index.ts",
+        "packages/transport/test/submit.test.ts",
+        "packages/transport/test/fake-smtp-server.ts",
+        "packages/contracts/src/index.ts",
+        "apps/api/src/send-routes.ts",
+        "apps/api/src/main.ts",
+        "apps/worker/src/main.ts",
+        "AGENTS.md"
       ]
     },
     {

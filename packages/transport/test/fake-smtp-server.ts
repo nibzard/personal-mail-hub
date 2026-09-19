@@ -17,11 +17,29 @@ import type { TestCertificate } from "./test-certificates.ts";
 /** The session shapes the fake server can present. */
 export type FakeSmtpMode = "starttls" | "starttls-missing" | "implicit";
 
+/**
+ * One scripted submission conversation (SPEC F7 and section 12). The defaults
+ * accept everything; each field bends one stage so tests can prove the
+ * client's outcome classification.
+ */
+export interface FakeSmtpSubmissionScript {
+  /** Addresses rejected at `RCPT TO`, given `550` (default: none). */
+  rejectedRecipients?: string[];
+  /** Reject the sender at `MAIL FROM` with `550` (default: false). */
+  rejectSender?: boolean;
+  /** The final response after the message data (default: `250 2.0.0 Ok: queued`). */
+  finalResponse?: string;
+  /** Drop the connection after the message data instead of answering. */
+  dropAfterData?: boolean;
+}
+
 export interface FakeSmtpServerOptions {
   mode: FakeSmtpMode;
   certificate: TestCertificate;
   /** The only accepted login. `null` rejects every attempt. */
   auth: { user: string; pass: string } | null;
+  /** Submission behavior. Without it the server refuses mail commands. */
+  submission?: FakeSmtpSubmissionScript;
 }
 
 /** One recorded command line with the phase it arrived in. */
@@ -40,10 +58,20 @@ export class FakeSmtpServer {
   private buffer = "";
   private upgraded = false;
   private loginStage: "user" | "pass" | null = null;
+  private inDataMode = false;
   private closed = false;
 
   /** Every command line the server received, in order. */
   readonly commands: RecordedCommand[] = [];
+
+  /** The envelope sender of the current submission, as the client stated it. */
+  mailFrom: string | null = null;
+
+  /** Every envelope recipient the server accepted, in order. */
+  acceptedRecipients: string[] = [];
+
+  /** The message data lines of the current submission, exactly as received. */
+  dataLines: string[] = [];
 
   private constructor(server: net.Server, options: FakeSmtpServerOptions) {
     this.server = server;
@@ -108,6 +136,17 @@ export class FakeSmtpServer {
     return this.commands.some(({ line }) => line.includes(text));
   }
 
+  /**
+   * The submitted message bytes with SMTP dot-unstuffing applied. Compares
+   * byte for byte against the MIME object the client was told to submit.
+   */
+  receivedMessage(): Buffer {
+    return Buffer.from(
+      this.dataLines.map((line) => (line.startsWith(".") ? line.slice(1) : line)).join("\r\n"),
+      "binary",
+    );
+  }
+
   private onConnection(socket: net.Socket, phase: "plaintext" | "tls"): void {
     if (this.closed) {
       socket.destroy();
@@ -139,8 +178,56 @@ export class FakeSmtpServer {
   }
 
   private handleLine(socket: net.Socket, line: string, secure: boolean): void {
+    if (this.inDataMode) {
+      this.receiveDataLine(socket, line);
+      return;
+    }
+
     this.commands.push({ phase: secure ? "tls" : "plaintext", line });
     const command = line.toUpperCase();
+
+    if (command.startsWith("MAIL FROM")) {
+      const script = this.options.submission;
+      if (script === undefined) {
+        socket.write("503 5.5.1 This server accepts no mail\r\n");
+        return;
+      }
+      if (script.rejectSender) {
+        socket.write("550 5.7.1 Sender rejected\r\n");
+        return;
+      }
+      this.mailFrom = envelopeAddress(line);
+      socket.write("250 2.1.0 Ok\r\n");
+      return;
+    }
+
+    if (command.startsWith("RCPT TO")) {
+      const script = this.options.submission;
+      if (script === undefined) {
+        socket.write("503 5.5.1 This server accepts no mail\r\n");
+        return;
+      }
+      const address = envelopeAddress(line);
+      if (script.rejectedRecipients?.includes(address) === true) {
+        socket.write(`550 5.1.1 <${address}> User unknown\r\n`);
+        return;
+      }
+      this.acceptedRecipients.push(address);
+      socket.write("250 2.1.5 Ok\r\n");
+      return;
+    }
+
+    if (command === "DATA") {
+      const script = this.options.submission;
+      if (script === undefined) {
+        socket.write("503 5.5.1 This server accepts no mail\r\n");
+        return;
+      }
+      this.inDataMode = true;
+      this.dataLines = [];
+      socket.write("354 End data with <CR><LF>.<CR><LF>\r\n");
+      return;
+    }
 
     if (command === "STARTTLS") {
       if (secure) {
@@ -215,6 +302,22 @@ export class FakeSmtpServer {
     socket.write("502 5.5.1 Command not implemented\r\n");
   }
 
+  /** Collect one message-data line; the terminating dot ends the transfer. */
+  private receiveDataLine(socket: net.Socket, line: string): void {
+    if (line !== ".") {
+      this.dataLines.push(line);
+      return;
+    }
+    this.inDataMode = false;
+    const script = this.options.submission;
+    if (script?.dropAfterData === true) {
+      // The final response is lost; the client cannot know the outcome.
+      socket.destroy();
+      return;
+    }
+    socket.write(`${script?.finalResponse ?? "250 2.0.0 Ok: queued"}\r\n`);
+  }
+
   /** Validate one `AUTH PLAIN <base64>` payload against the accepted login. */
   private checkPlainAuth(payload: string): boolean {
     const expected = this.options.auth;
@@ -240,4 +343,14 @@ export class FakeSmtpServer {
     });
     secureSocket.resume();
   }
+}
+
+/** The bare address of one `MAIL FROM:<addr>` or `RCPT TO:<addr>` line. */
+function envelopeAddress(line: string): string {
+  const start = line.indexOf("<");
+  const end = line.indexOf(">", start);
+  if (start === -1 || end === -1) {
+    return line;
+  }
+  return line.slice(start + 1, end);
 }

@@ -300,6 +300,122 @@ export interface DraftUploadVerificationResponse {
   }[];
 }
 
+/** Send rejection codes: queueing an outbound snapshot and submitting it (SPEC F7). */
+export type SendErrorCode =
+  | "invalid_request"
+  | "not_found"
+  | "draft_stale"
+  | "draft_locked"
+  | "recipients_required"
+  | "upload_unverified"
+  | "idempotency_conflict"
+  | "send_unavailable";
+
+/** The body of a send route rejection. */
+export interface SendErrorBody {
+  error: {
+    code: SendErrorCode;
+    message: string;
+    /** Present on `draft_stale`: the revision the server currently holds. */
+    currentRevision?: number;
+  };
+}
+
+/** The wire status of one outbound snapshot (SPEC F7). */
+export type OutboundStatusWire = "queued" | "sending" | "sent" | "failed" | "outcome_unknown";
+
+/** The wire status of the separate Sent-copy append (SPEC F7 step 5). */
+export type SentCopyStatusWire = "pending" | "appending" | "stored" | "failed" | "unknown";
+
+/** One recipient-level SMTP result, without credentials. */
+export interface RecipientResultView {
+  address: string;
+  accepted: boolean;
+  response: unknown;
+}
+
+/** One outbound snapshot in its wire form. */
+export interface OutboundView {
+  id: string;
+  draftId: string | null;
+  accountId: string;
+  status: OutboundStatusWire;
+  sentCopyStatus: SentCopyStatusWire;
+  identity: MessageAddress;
+  recipients: MessageRecipients;
+  subject: string | null;
+  /** The generated identifier, frozen before SMTP. */
+  rfcMessageId: string;
+  recipientResults: RecipientResultView[];
+  smtpResponse: Record<string, unknown> | null;
+  lastError: Record<string, unknown> | null;
+  createdAt: string;
+  sentAt: string | null;
+}
+
+/** Response of `POST /drafts/:id/send` and the send status reads. */
+export interface OutboundResponse {
+  outbound: OutboundView;
+}
+
+/** The body of `POST /drafts/:id/send`. */
+export interface SendDraftRequestBody {
+  /** The idempotency key of this send request (SPEC F7 step 2). */
+  idempotencyKey: string;
+  /** The draft revision the sender based this request on. */
+  baseRevision: number;
+}
+
+/** Timeouts one SMTP submission may override. */
+export interface SmtpSubmitTimeouts {
+  connectMs?: number;
+  greetingMs?: number;
+  socketMs?: number;
+}
+
+/** One SMTP submission request against a verified endpoint (SPEC F7 step 3). */
+export interface SmtpSubmitRequest {
+  host: string;
+  port: number;
+  security: SmtpSecurityMode;
+  username: string;
+  password: string;
+  /** Envelope sender and every recipient, blind copies included. */
+  envelope: { from: string; to: string[] };
+  /** The exact, durably stored MIME bytes to submit. */
+  raw: Uint8Array;
+  timeouts?: SmtpSubmitTimeouts;
+  /** Test-only trust anchors. Production uses the system trust store. */
+  trustedCaPem?: string[];
+}
+
+/** One per-recipient SMTP outcome, recorded without credentials. */
+export interface SmtpRecipientOutcome {
+  address: string;
+  accepted: boolean;
+  /** The response line the server gave for this recipient, when one arrived. */
+  response: string | null;
+}
+
+/**
+ * How one SMTP submission ended (SPEC F7 steps 4 and 6). `accepted` means the
+ * final response was positive; `rejected` means a definitive refusal before
+ * any content was accepted; `unknown` covers every outcome the client cannot
+ * classify, including a lost final response.
+ */
+export type SmtpSubmitState = "accepted" | "rejected" | "unknown";
+
+/** The classified report of one SMTP submission attempt. */
+export interface SmtpSubmitReport {
+  state: SmtpSubmitState;
+  /** The final response line, when one arrived. */
+  response: string | null;
+  responseCode: number | null;
+  recipients: SmtpRecipientOutcome[];
+  /** The classified error, without credentials. Present when `state` is not `accepted`. */
+  error: { code: string; message: string } | null;
+}
+
 /** Connection test rejection codes, from `SPEC.md` F1 and section 9. */
 export type TransportErrorCode =
   | "network_error"
