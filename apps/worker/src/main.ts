@@ -1,4 +1,5 @@
 import { parseCredentialsKey, createCredentialCipher, AccountService } from "@mail-hub/accounts";
+import { ClassificationService, jevAdapterFromEnv } from "@mail-hub/classification";
 import { createDatabase, createJobQueue, createPool, createStorage } from "@mail-hub/database";
 import { IngestionService } from "@mail-hub/ingestion";
 import {
@@ -9,6 +10,7 @@ import {
   type ReadyStatus,
 } from "@mail-hub/recovery";
 import { OutboundService } from "@mail-hub/send";
+import { SettingsService } from "@mail-hub/settings";
 import { submitSmtpMessage } from "@mail-hub/transport";
 import {
   BackfillService,
@@ -38,6 +40,12 @@ const SENT_COPY_CYCLE_QUEUE = "send.sent-copy-cycle";
 
 /** How often due Sent copies and unknown outcomes are reconciled. */
 const DEFAULT_SENT_COPY_CYCLE_CRON = "*/15 * * * * *";
+
+/** The queue that classifies fetched messages in shadow mode (SPEC F8). */
+const CLASSIFY_CYCLE_QUEUE = "classify.cycle";
+
+/** How often pending classifications run. Overridable for tests. */
+const DEFAULT_CLASSIFY_CYCLE_CRON = "*/60 * * * * *";
 
 /** Durable originals live under this root (SPEC section 8). */
 const DEFAULT_STORAGE_ROOT = "data/storage";
@@ -97,6 +105,15 @@ async function main(databaseUrl: string): Promise<void> {
   const storage = createStorage(process.env.STORAGE_ROOT ?? DEFAULT_STORAGE_ROOT);
   const accounts = new AccountService(db, createCredentialCipher(credentialsKey), controls);
   const ingestion = new IngestionService(db, storage);
+
+  // Shadow-mode classification (SPEC F8). Without TYPE_SAFE_API_KEY the
+  // adapter stays null and the cycle reports itself unconfigured; mail
+  // synchronization and sending never wait on it either way.
+  const settings = new SettingsService(db, controls);
+  const classification = new ClassificationService(db, {
+    settings,
+    adapter: jevAdapterFromEnv(process.env),
+  });
   const backfill = new BackfillService(db);
   const bodies = new BodyFetchService(db, ingestion);
   const threads = new ThreadService(db);
@@ -223,6 +240,36 @@ async function main(databaseUrl: string): Promise<void> {
     }
   });
 
+  await queue.createQueue(CLASSIFY_CYCLE_QUEUE);
+  await queue.work<{ generation: string }>(CLASSIFY_CYCLE_QUEUE, { batchSize: 1 }, async (jobs) => {
+    const job = jobs[0];
+    if (job === undefined) {
+      return;
+    }
+    const assessment = assessJob(await controls.readStatus(), job.data.generation);
+    if (assessment === "stale") {
+      console.warn(`Discarded a ${CLASSIFY_CYCLE_QUEUE} job from generation ${job.data.generation}.`);
+      return;
+    }
+    if (assessment === "blocked") {
+      throw new Error(`Recovery control state is not ready; the ${CLASSIFY_CYCLE_QUEUE} job will retry.`);
+    }
+
+    // Classification failures never fail the queue: the service records a
+    // `class.error` event per failure and the circuit breaker opens from
+    // those, so a broken endpoint pauses suggestions without a retry storm.
+    const summary = await classification.runCycle();
+    if (summary.classified > 0) {
+      console.log(
+        `Classify cycle: ${summary.classified} answered ` +
+          `(manual ${summary.bySource.manual}, override ${summary.bySource.override}, ` +
+          `rule ${summary.bySource.rule}, jev ${summary.bySource.jev}).`,
+      );
+    } else if (summary.skipped === "circuit_open" || summary.skipped === "cost_cap") {
+      console.warn(`Classify cycle paused (${summary.skipped}).`);
+    }
+  });
+
   await armSchedule(queue, ready.generation, SYNC_CYCLE_QUEUE, process.env.SYNC_CYCLE_CRON ?? DEFAULT_SYNC_CYCLE_CRON);
   console.log(`Synchronization cycles scheduled (${process.env.SYNC_CYCLE_CRON ?? DEFAULT_SYNC_CYCLE_CRON}).`);
   await armSchedule(queue, ready.generation, SEND_CYCLE_QUEUE, process.env.SEND_CYCLE_CRON ?? DEFAULT_SEND_CYCLE_CRON);
@@ -235,6 +282,15 @@ async function main(databaseUrl: string): Promise<void> {
   );
   console.log(
     `Sent-copy cycles scheduled (${process.env.SENT_COPY_CYCLE_CRON ?? DEFAULT_SENT_COPY_CYCLE_CRON}).`,
+  );
+  await armSchedule(
+    queue,
+    ready.generation,
+    CLASSIFY_CYCLE_QUEUE,
+    process.env.CLASSIFY_CYCLE_CRON ?? DEFAULT_CLASSIFY_CYCLE_CRON,
+  );
+  console.log(
+    `Classify cycles scheduled (${process.env.CLASSIFY_CYCLE_CRON ?? DEFAULT_CLASSIFY_CYCLE_CRON}).`,
   );
 
   const stop = async () => {

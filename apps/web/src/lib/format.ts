@@ -98,3 +98,36 @@ export function formatAge(seconds: number | null): string {
   }
   return `${Math.floor(seconds / 86_400)} d`;
 }
+
+/** Display labels of the classification classes (SPEC F8). */
+const CLASS_HINT_LABELS: Record<string, string> = {
+  correspondence: "Correspondence",
+  receipt: "Receipt",
+  newsletter: "Newsletter",
+  notification: "Notification",
+  marketing: "Marketing",
+  security_alert: "Security alert",
+  bounce: "Bounce",
+  other: "Other",
+};
+
+/** The label of one class hint; an unknown value renders as it arrived. */
+export function classHintLabel(value: string): string {
+  return CLASS_HINT_LABELS[value] ?? value;
+}
+
+/** Who produced a classification suggestion, phrased for the reader (SPEC F8). */
+export function suggestionSourceLabel(source: string): string {
+  switch (source) {
+    case "manual":
+      return "your own placement";
+    case "override":
+      return "a sender override";
+    case "rule":
+      return "a deterministic rule";
+    case "jev":
+      return "Jev";
+    default:
+      return "classification";
+  }
+}

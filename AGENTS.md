@@ -50,6 +50,20 @@
   reasons, and remote extraction refused (`useAsync: false` plus a refusing
   fetch override). The redacted corpus under `test` pins the Markdown and
   clean-view output in snapshots, so a version bump is a deliberate review.
+- `packages/classification` contains the Jev integration in shadow mode
+  (SPEC F8): the pinned-model TypeSafe adapter behind `TYPE_SAFE_API_KEY`
+  with one bounded question set per call, the minimized input (sender,
+  subject, and the first 4 KB of body text with quoted chains stripped,
+  hashed into each stored decision), the four-level precedence — manual
+  placement, sender override, deterministic rules, then Jev for the residual
+  — with answers denormalized onto `messages` and raw answers kept in
+  `decisions`, and the guardrails the worker's `classify.cycle` queue runs
+  under: a circuit breaker that pauses on repeated failures and resumes after
+  a cooldown, a monthly cost cap estimated from recorded calls, the
+  per-account toggle, and the backfill gate that classifies only mail
+  ingested after the latest enabling when backfill is off. Suggestions are
+  visible in the reader and route nothing; the health report's circuit state
+  comes from the same durable records.
 - `packages/sync` contains the IMAP synchronization engine: resumable
   backfill in checkpointed UID windows newest first, background body
   fetching, steady-state polls with arrival bounds, flag refreshes, and
@@ -112,8 +126,9 @@
   counters the weekly review watches. Every number is read from durable
   records; the report never writes. The audit trail itself lives in the
   `events` table, where the sync, action, send, account, authentication,
-  and recovery services already record their milestones; classification
-  corrections and pauses join them with the Jev integration.
+  and recovery services already record their milestones; the classification
+  service records its failures and pauses there, and its circuit state is
+  injected as a structural reader so observability stays independent.
 - `packages/settings` contains the settings record (SPEC F10): theme,
   reading density, single-key shortcuts, the clean-view default, and the
   classification keys, stored as key-value pairs in the `settings` table

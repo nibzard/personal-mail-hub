@@ -136,6 +136,41 @@ suite("health service", () => {
     expect(report.queue.oldestPendingWorkAgeSeconds).toBeGreaterThanOrEqual(90);
   });
 
+  it("merges the circuit state the injected classification reader reports", async () => {
+    const wired = new HealthService(db, controls, {
+      readCircuit: async () => ({
+        circuit: "open" as const,
+        description: "Classification is paused: the breaker opened.",
+      }),
+    });
+    const health = await wired.readHealth();
+    expect(health.available).toBe(true);
+    if (health.available) {
+      // The circuit verdict comes from the reader; the counters still come
+      // from the durable records the fixtures wrote.
+      expect(health.report.classification).toEqual({
+        circuit: "open",
+        description: "Classification is paused: the breaker opened.",
+        calls: 1,
+        errors: 1,
+      });
+    }
+
+    const broken = new HealthService(db, controls, {
+      readCircuit: async () => {
+        throw new Error("circuit state unreadable");
+      },
+    });
+    const degraded = await broken.readHealth();
+    expect(degraded.available).toBe(true);
+    if (degraded.available) {
+      expect(degraded.report.classification.circuit).toBe("not_configured");
+      expect(degraded.report.classification.description).toBe(
+        "The classification circuit state could not be read.",
+      );
+    }
+  });
+
   it("degrades while recovery is not ready or readable", async () => {
     const blocked = new HealthService(db, {
       readStatus: async () =>

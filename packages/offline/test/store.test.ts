@@ -84,6 +84,13 @@ describe("recent mail", () => {
       htmlSanitized: "<p>Safe.</p>",
       textPlain: "Safe.",
       attachments: [],
+      classification: {
+        classHint: null,
+        source: null,
+        asksAction: null,
+        asksReply: null,
+        timeSensitive: null,
+      },
     });
 
     const rows = await store.cachedRows();

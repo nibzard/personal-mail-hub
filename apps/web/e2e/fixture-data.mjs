@@ -268,6 +268,13 @@ export const messageDetails = new Map(
         "<p>We booked the table for seven.</p><p>Bring the photos from the trip.</p>",
       textPlain: "We booked the table for seven.\n\nBring the photos from the trip.",
       attachments: [],
+      classification: {
+        classHint: "correspondence",
+        source: "jev",
+        asksAction: false,
+        asksReply: true,
+        timeSensitive: true,
+      },
     },
     {
       id: "m-002",
@@ -469,6 +476,13 @@ for (const item of messageRows) {
       htmlSanitized: null,
       textPlain: item.snippet,
       attachments: [],
+      classification: {
+        classHint: null,
+        source: null,
+        asksAction: null,
+        asksReply: null,
+        timeSensitive: null,
+      },
     });
   }
 }

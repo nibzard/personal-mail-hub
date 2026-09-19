@@ -1,7 +1,8 @@
-import { ArrowLeft, Download, Paperclip, Sparkles, Star } from "lucide-react";
+import { ArrowLeft, Download, Lightbulb, Paperclip, Sparkles, Star } from "lucide-react";
 import { useMemo, useState } from "react";
 import type {
   MessageAttachmentView,
+  MessageClassificationView,
   MessageDetailView,
   SearchResultItem,
 } from "@mail-hub/contracts";
@@ -11,7 +12,14 @@ import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { apiUrl } from "@/lib/api";
-import { formatBytes, formatCount, formatFullTime, senderLabel } from "@/lib/format";
+import {
+  classHintLabel,
+  formatBytes,
+  formatCount,
+  formatFullTime,
+  senderLabel,
+  suggestionSourceLabel,
+} from "@/lib/format";
 import { useCleanView, useInlineImages, useMessageDetail } from "@/mail/data";
 import { useAppSettings } from "@/settings/settings-context";
 import { prepareMessageDocument } from "@/mail/render";
@@ -155,6 +163,10 @@ export function ReaderPane({ message, onBack, onSessionLost, className }: Reader
                 )}
               </div>
 
+              {detail?.classification !== undefined && (
+                <ClassificationSuggestion classification={detail.classification} />
+              )}
+
               <div className="mt-4">
                 {detailResource.offlineFromCache && (
                   <p role="status" className="mb-3 rounded-lg border bg-surface px-3 py-1.5 text-muted-foreground">
@@ -222,6 +234,42 @@ export function ReaderPane({ message, onBack, onSessionLost, className }: Reader
         </>
       )}
     </section>
+  );
+}
+
+/**
+ * The visible classification suggestion (SPEC F8 shadow mode). Badges carry
+ * the advice; the caption states the contract — a suggestion never moves
+ * mail. A message the owner placed by hand carries no class and shows only
+ * what Jev flagged, or nothing at all.
+ */
+function ClassificationSuggestion({ classification }: { classification: MessageClassificationView }) {
+  const flags = [
+    classification.asksAction === true ? "Asks for action" : null,
+    classification.asksReply === true ? "Asks for a reply" : null,
+    classification.timeSensitive === true ? "Time-sensitive" : null,
+  ].filter((flag): flag is string => flag !== null);
+  if (classification.classHint === null && flags.length === 0) {
+    return null;
+  }
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-1.5 rounded-lg border bg-muted/40 px-3 py-2">
+      {classification.classHint !== null && (
+        <Badge variant="outline">
+          <Lightbulb aria-hidden="true" className="size-3" />
+          {classHintLabel(classification.classHint)}
+        </Badge>
+      )}
+      {flags.map((flag) => (
+        <Badge key={flag} variant="outline">
+          {flag}
+        </Badge>
+      ))}
+      <p className="min-w-0 flex-1 text-xs text-muted-foreground">
+        Suggested by {suggestionSourceLabel(classification.source ?? "")}. Shadow
+        mode: this never moves mail.
+      </p>
+    </div>
   );
 }
 

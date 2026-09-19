@@ -81,7 +81,7 @@ To manage the pieces as separate Coolify resources instead:
 | `STORAGE_ROOT` | no | Object storage root. The image default is `/app/data/storage`. |
 | `APP_ROLE` | no | `all` (default), `api`, or `worker`. Only the `api` and `all` roles run migrations. |
 | `TYPE_SAFE_API_KEY` | no | Jev classification key. Core mail never waits on it. |
-| `SYNC_CYCLE_CRON`, `SEND_CYCLE_CRON`, `SENT_COPY_CYCLE_CRON` | no | Worker schedule overrides. Set them only with a valid cron expression; an empty value is not a default. |
+| `SYNC_CYCLE_CRON`, `SEND_CYCLE_CRON`, `SENT_COPY_CYCLE_CRON`, `CLASSIFY_CYCLE_CRON` | no | Worker schedule overrides. Set them only with a valid cron expression; an empty value is not a default. |
 | `BACKUP_DIR`, `BACKUP_KEEP` | no | Backup destination (default `/backups`) and retention count (default 14). |
 | `PREFLIGHT_ALLOW_HTTP` | no | Set to `1` only for local trials, to accept an `http` `BASE_URL`. |
 

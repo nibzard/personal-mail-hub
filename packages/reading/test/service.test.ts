@@ -116,6 +116,39 @@ suite("ReadingService", () => {
     expect(detail.htmlSanitized).toContain('src="cid:chart@reports"');
   });
 
+  it("exposes the denormalized classification as a visible suggestion", async () => {
+    const messageId = await ingestedMessage(readerMessage());
+
+    // Before any answer: every field is null, so the reader renders nothing.
+    expect((await reading.readMessage(messageId)).classification).toEqual({
+      classHint: null,
+      source: null,
+      asksAction: null,
+      asksReply: null,
+      timeSensitive: null,
+    });
+
+    // Once an answer lands on the row, the same detail carries it (SPEC F8).
+    const db = createDatabase(pool);
+    await db
+      .update(messages)
+      .set({
+        classHint: "newsletter",
+        asksAction: false,
+        asksReply: false,
+        timeSensitive: true,
+        metadata: { classSource: "jev" },
+      })
+      .where(eq(messages.id, messageId));
+    expect((await reading.readMessage(messageId)).classification).toEqual({
+      classHint: "newsletter",
+      source: "jev",
+      asksAction: false,
+      asksReply: false,
+      timeSensitive: true,
+    });
+  });
+
   it("derives the clean view from the sanitized body on request", async () => {
     const messageId = await ingestedMessage(readerMessage());
     const view = await reading.readCleanView(messageId);

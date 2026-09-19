@@ -143,6 +143,7 @@ function toMessageDetailView(detail: MessageDetail): MessageDetailView {
     htmlSanitized: detail.htmlSanitized,
     textPlain: detail.textPlain,
     attachments: detail.attachments.map(toMessageAttachmentView),
+    classification: detail.classification,
   };
 }
 

@@ -2,6 +2,7 @@ import { createDatabase, createPool, createStorage } from "@mail-hub/database";
 import { RecoveryControls, describeControlStatus } from "@mail-hub/recovery";
 import { PasskeyAuthService, parseAuthConfig } from "@mail-hub/auth";
 import { AccountService, createCredentialCipher, parseCredentialsKey } from "@mail-hub/accounts";
+import { ClassificationService, jevAdapterFromEnv } from "@mail-hub/classification";
 import { ComposeService } from "@mail-hub/compose";
 import { OutboundService } from "@mail-hub/send";
 import { SearchService } from "@mail-hub/search";
@@ -58,8 +59,15 @@ if (status.state === "ready") {
 
 // The deployment health check (SPEC sections 10 and 11) runs without a
 // session and reports state honestly, blocked or not, so the platform and
-// the operator can watch recovery, sync lag, and queue age.
-const healthService = new HealthService(db, controls);
+// the operator can watch recovery, sync lag, and queue age. The
+// classification circuit comes from the same durable records the worker's
+// classify cycle reads; without TYPE_SAFE_API_KEY it reports not configured.
+const settingsService = new SettingsService(db, controls);
+const classificationService = new ClassificationService(db, {
+  settings: settingsService,
+  adapter: jevAdapterFromEnv(process.env),
+});
+const healthService = new HealthService(db, controls, classificationService);
 await registerHealthRoutes(app, { service: healthService });
 app.log.info("Health check ready: GET /healthz.");
 
@@ -78,7 +86,6 @@ if (authConfig === null) {
   // Settings read and write through the same session and recovery gate as
   // every durable client mutation (SPEC F10 and section 7). The sync status
   // the settings screen shows reads the durable records behind /healthz.
-  const settingsService = new SettingsService(db, controls);
   await registerSettingsRoutes(app, {
     service: settingsService,
     health: healthService,

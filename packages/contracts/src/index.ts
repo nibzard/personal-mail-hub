@@ -679,6 +679,53 @@ export interface MessageAttachmentView {
   inlineResolvable: boolean;
 }
 
+/** The message classes classification offers (SPEC F8 question set). */
+export const MESSAGE_CLASSES = [
+  "correspondence",
+  "receipt",
+  "newsletter",
+  "notification",
+  "marketing",
+  "security_alert",
+  "bounce",
+  "other",
+] as const;
+
+/** One message class, as `class_hint` stores it (SPEC F8). */
+export type MessageClass = (typeof MESSAGE_CLASSES)[number];
+
+/** The sender relationships classification offers (SPEC F8 question set). */
+export const SENDER_RELATIONSHIPS = [
+  "known_contact",
+  "service_in_use",
+  "bulk_sender",
+  "unknown",
+] as const;
+
+/** One sender relationship, as message metadata stores it (SPEC F8). */
+export type SenderRelationship = (typeof SENDER_RELATIONSHIPS)[number];
+
+/**
+ * Which precedence level answered for one message (SPEC F8): manual placement,
+ * a sender override, a deterministic rule, or Jev. Top wins.
+ */
+export type SuggestionSource = "manual" | "override" | "rule" | "jev";
+
+/**
+ * The visible classification suggestion for one message (SPEC F8 shadow
+ * mode). It never routes mail; the reader shows it as advice only.
+ */
+export interface MessageClassificationView {
+  /** The suggested class, or `null` while nothing has answered yet. */
+  classHint: MessageClass | null;
+  /** Which precedence level answered, or `null` before anything did. */
+  source: SuggestionSource | null;
+  /** Jev yes/no answers; `null` while no Jev call has answered. */
+  asksAction: boolean | null;
+  asksReply: boolean | null;
+  timeSensitive: boolean | null;
+}
+
 /** One message in full, as the reader shows it (SPEC F3). */
 export interface MessageDetailView {
   id: string;
@@ -695,6 +742,8 @@ export interface MessageDetailView {
   htmlSanitized: string | null;
   textPlain: string | null;
   attachments: MessageAttachmentView[];
+  /** The shadow-mode suggestion, never a routing decision (SPEC F8). */
+  classification: MessageClassificationView;
 }
 
 /** Response of `GET /messages/:id`. */

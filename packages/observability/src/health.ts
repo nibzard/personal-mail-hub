@@ -22,8 +22,8 @@ import { describeControlStatus, type ControlStatus } from "@mail-hub/recovery";
  */
 
 /**
- * The audit event a classifier failure records. Nothing writes it until the
- * Jev integration lands; until then the error count stays zero.
+ * The audit event a classifier failure records. The classification service
+ * writes one per failed Jev call; this report counts them (SPEC section 11).
  */
 export const CLASS_ERROR_EVENT = "class.error";
 
@@ -32,12 +32,21 @@ export type RecoveryControlsForHealth = {
   readStatus(): Promise<ControlStatus>;
 };
 
+/**
+ * The circuit verdict the classification service computes. `HealthService`
+ * takes it as a structural interface, so observability needs no dependency
+ * on the classifier itself (SPEC section 11).
+ */
+export type ClassificationCircuitForHealth = {
+  readCircuit(): Promise<Pick<HealthzClassification, "circuit" | "description">>;
+};
+
 /** What one health read produced. */
 export type HealthReport =
   | { available: true; report: HealthzResponse }
   | { available: false; database: HealthzDatabase; checkedAt: string };
 
-/** Classification circuit state while the Jev integration is absent. */
+/** Classification circuit state when no reader was wired in. */
 const CLASSIFICATION_NOT_CONFIGURED: HealthzClassification = {
   circuit: "not_configured",
   calls: 0,
@@ -49,10 +58,16 @@ const CLASSIFICATION_NOT_CONFIGURED: HealthzClassification = {
 export class HealthService {
   private readonly db: MailHubDatabase;
   private readonly controls: RecoveryControlsForHealth;
+  private readonly classification: ClassificationCircuitForHealth | null;
 
-  constructor(db: MailHubDatabase, controls: RecoveryControlsForHealth) {
+  constructor(
+    db: MailHubDatabase,
+    controls: RecoveryControlsForHealth,
+    classification?: ClassificationCircuitForHealth,
+  ) {
     this.db = db;
     this.controls = controls;
+    this.classification = classification ?? null;
   }
 
   /**
@@ -191,6 +206,7 @@ export class HealthService {
         },
         classification: {
           ...CLASSIFICATION_NOT_CONFIGURED,
+          ...(await this.classificationSection()),
           calls: sumAccounts(decisionStats, "calls"),
           errors: sumAccounts(errorStats, "errors"),
         },
@@ -202,6 +218,25 @@ export class HealthService {
         accounts,
       },
     };
+  }
+
+  /**
+   * The circuit verdict. The reader derives it from durable records; a read
+   * that fails leaves the not-configured shape rather than guessing, with a
+   * description that says so.
+   */
+  private async classificationSection(): Promise<Pick<HealthzClassification, "circuit" | "description">> {
+    if (this.classification === null) {
+      return { circuit: CLASSIFICATION_NOT_CONFIGURED.circuit, description: CLASSIFICATION_NOT_CONFIGURED.description };
+    }
+    try {
+      return await this.classification.readCircuit();
+    } catch {
+      return {
+        circuit: "not_configured",
+        description: "The classification circuit state could not be read.",
+      };
+    }
   }
 
   /** One timed round trip. Its failure is the only unavailable verdict. */

@@ -13,6 +13,7 @@
     "@fastify/cookie": "11.1.2",
     "@mail-hub/accounts": "0.1.0",
     "@mail-hub/auth": "0.1.0",
+    "@mail-hub/classification": "0.1.0",
     "@mail-hub/compose": "0.1.0",
     "@mail-hub/contracts": "0.1.0",
     "@mail-hub/database": "0.1.0",

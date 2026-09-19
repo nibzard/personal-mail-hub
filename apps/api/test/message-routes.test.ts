@@ -53,6 +53,13 @@ const DETAIL: MessageDetail = {
   htmlSanitized: '<p>Numbers look <b>great</b>.</p>',
   textPlain: "Numbers look great.",
   attachments: [ATTACHMENT],
+  classification: {
+    classHint: "correspondence",
+    source: "jev",
+    asksAction: false,
+    asksReply: true,
+    timeSensitive: false,
+  },
 };
 
 /** What the fake service recorded, for call assertions. */
@@ -188,6 +195,13 @@ describe("message routes", () => {
             inlineResolvable: true,
           },
         ],
+        classification: {
+          classHint: "correspondence",
+          source: "jev",
+          asksAction: false,
+          asksReply: true,
+          timeSensitive: false,
+        },
       },
     });
   });

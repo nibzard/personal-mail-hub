@@ -10,6 +10,12 @@ import {
   type Storage,
 } from "@mail-hub/database";
 import { ContentExtractor, type CleanView } from "@mail-hub/content";
+import {
+  MESSAGE_CLASSES,
+  type MessageClass,
+  type MessageClassificationView,
+  type SuggestionSource,
+} from "@mail-hub/contracts";
 import { ReadingError } from "./errors.ts";
 
 /**
@@ -66,6 +72,8 @@ export interface MessageDetail {
   htmlSanitized: string | null;
   textPlain: string | null;
   attachments: MessageAttachment[];
+  /** The visible, non-routing classification suggestion (SPEC F8). */
+  classification: MessageClassificationView;
 }
 
 /** One download: the attachment view and its verified decoded bytes. */
@@ -124,6 +132,7 @@ export class ReadingService {
       htmlSanitized: row.body?.htmlSanitized ?? null,
       textPlain: row.body?.textPlain ?? null,
       attachments: withInlineResolution(parts),
+      classification: classificationOf(row.message),
     };
   }
 
@@ -233,6 +242,30 @@ function withInlineResolution(parts: Attachment[]): MessageAttachment[] {
 
 function isImageContentType(contentType: string | null): boolean {
   return contentType !== null && contentType.trim().toLowerCase().startsWith("image/");
+}
+
+/**
+ * The suggestion one message row carries: the denormalized Jev answer, the
+ * precedence level that produced it, and the yes/no flags. It is advice for
+ * the reader, never a routing decision (SPEC F8).
+ */
+function classificationOf(message: typeof messages.$inferSelect): MessageClassificationView {
+  const metadata = message.metadata;
+  const source = metadata.classSource;
+  return {
+    classHint:
+      typeof message.classHint === "string" && (MESSAGE_CLASSES as readonly string[]).includes(message.classHint)
+        ? (message.classHint as MessageClass)
+        : null,
+    source: typeof source === "string" && isSuggestionSource(source) ? source : null,
+    asksAction: message.asksAction ?? null,
+    asksReply: message.asksReply ?? null,
+    timeSensitive: message.timeSensitive ?? null,
+  };
+}
+
+function isSuggestionSource(value: string): value is SuggestionSource {
+  return value === "manual" || value === "override" || value === "rule" || value === "jev";
 }
 
 function requireUuid(kind: string, id: string): void {
