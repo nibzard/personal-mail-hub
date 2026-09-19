@@ -264,7 +264,7 @@ export function AppShell({
         <Button
           variant="ghost"
           size="icon-sm"
-          className="lg:hidden"
+          className="max-md:size-11 lg:hidden"
           onClick={() => setPane("nav")}
           aria-label="Open navigation"
         >
@@ -295,7 +295,7 @@ export function AppShell({
         </div>
       </header>
 
-      <div className="relative flex min-h-0 flex-1">
+      <main className="relative flex min-h-0 flex-1 overflow-hidden">
         <div
           className={paneWrapperClass("nav", "lg:w-60 lg:shrink-0 lg:border-e")}
           inert={!threePane && pane !== "nav"}
@@ -343,7 +343,7 @@ export function AppShell({
             onSessionLost={onSessionLost}
           />
         </div>
-      </div>
+      </main>
 
       <p role="status" aria-live="polite" className="sr-only">
         {selected === null ? "" : `Selected: ${selected.subject ?? "(no subject)"}`}

@@ -346,6 +346,12 @@ export function useMessageList(
     loadingMore: boolean;
     offlineFromCache: boolean;
   }>({ phase: "loading", rows: [], total: 0, indexing: null, error: null, loadingMore: false, offlineFromCache: false });
+  // The failure path reads the entry as it stands now, not the one the
+  // effect closure captured: a page-one reload clears the rows before the
+  // request runs, so "is anything on screen" must answer for the cleared
+  // state. Without this, the offline cache only appears on a second retry.
+  const entryRef = useRef(entry);
+  entryRef.current = entry;
 
   // A new scope or query restarts the list from its first page. The reset
   // happens during render so the fetch effect never sees a stale page count.
@@ -455,7 +461,7 @@ export function useMessageList(
           }
           const failure = toApiError(error);
           if (live) {
-            const hadRows = entry.rows.length > 0;
+            const hadRows = entryRef.current.rows.length > 0;
             setEntry((current) => ({
               ...current,
               // Keep the rows already on screen; the failure stays inspectable

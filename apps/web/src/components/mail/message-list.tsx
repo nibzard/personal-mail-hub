@@ -79,7 +79,7 @@ export function MessageListPane({
         <Button
           variant="ghost"
           size="icon-sm"
-          className="ms-auto"
+          className="ms-auto max-md:size-11"
           onClick={onReload}
           disabled={state.phase === "loading"}
           aria-label="Refresh this view"

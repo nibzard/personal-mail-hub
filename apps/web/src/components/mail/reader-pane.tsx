@@ -74,7 +74,7 @@ export function ReaderPane({ message, onBack, onSessionLost, className }: Reader
             <Button
               variant="ghost"
               size="icon-sm"
-              className="-ms-1 lg:hidden"
+              className="-ms-1 max-md:size-11 lg:hidden"
               onClick={onBack}
               aria-label="Back to the message list"
             >

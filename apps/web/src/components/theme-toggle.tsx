@@ -23,7 +23,7 @@ export function ThemeToggle() {
       <DropdownMenuTrigger
         aria-label={`Theme: ${theme}`}
         className={[
-          "inline-flex size-control-md items-center justify-center",
+          "inline-flex size-control-md items-center justify-center max-md:size-11",
           "rounded-md text-muted-foreground",
           "transition-colors duration-control ease-out-quiet",
           "hover:bg-muted hover:text-foreground",
