@@ -639,22 +639,23 @@
         "send",
         "recovery"
       ],
-      "updated_at": "2026-09-19T06:31:11Z",
+      "updated_at": "2026-09-19T06:31:25Z",
       "files": [
+        "AGENTS.md",
+        "apps/worker/package.json",
+        "apps/worker/src/main.ts",
+        "package-lock.json",
         "packages/contracts/src/index.ts",
-        "packages/send/src/sent-copy.ts",
-        "packages/send/src/service.ts",
         "packages/send/src/errors.ts",
         "packages/send/src/index.ts",
-        "packages/send/test/service.test.ts",
+        "packages/send/src/sent-copy.ts",
+        "packages/send/src/service.ts",
         "packages/send/test/fake-sent-copy.ts",
-        "packages/sync/src/mailbox.ts",
+        "packages/send/test/service.test.ts",
         "packages/sync/src/imap-session.ts",
         "packages/sync/src/index.ts",
-        "apps/worker/src/main.ts",
-        "apps/worker/package.json",
-        "package-lock.json",
-        "AGENTS.md"
+        "packages/sync/src/mailbox.ts",
+        "to-do.json"
       ]
     },
     {
@@ -753,14 +754,28 @@
       "id": "T029",
       "title": "Build the fake mailbox and SMTP test harness",
       "priority": 1,
-      "status": "todo",
-      "details": "Provide scripted IMAP and SMTP scenarios for protocol faults, UID changes, expunges, malicious mail, attachment cases, interrupted sends, and session expiry.",
+      "status": "done",
+      "details": "Provide scripted IMAP and SMTP scenarios for protocol faults, UID changes, expunges, malicious mail, attachment cases, interrupted sends, and session expiry. Delivered as the @mail-hub/harness package: a real-wire scripted IMAP server (TLS, CONDSTORE, UIDPLUS, faults), a scripted SMTP submission server (STARTTLS/implicit, refusal and drop scripts), deterministic MIME fixtures, and suites that drive the production ImapFlow client and submitter. Transport keeps its own fakes; T031 may consolidate them onto this harness.",
       "depends_on": [
         "T001"
       ],
       "tags": [
         "testing",
         "harness"
+      ],
+      "updated_at": "2026-09-19T07:15:00Z",
+      "files": [
+        "packages/harness/package.json",
+        "packages/harness/tsconfig.json",
+        "packages/harness/src/certificates.ts",
+        "packages/harness/src/mailbox-store.ts",
+        "packages/harness/src/imap-server.ts",
+        "packages/harness/src/smtp-server.ts",
+        "packages/harness/src/fixtures.ts",
+        "packages/harness/src/index.ts",
+        "packages/harness/test/imap-server.test.ts",
+        "packages/harness/test/smtp-server.test.ts",
+        "packages/harness/test/fixtures.test.ts"
       ]
     },
     {
