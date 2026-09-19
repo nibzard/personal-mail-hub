@@ -20,7 +20,8 @@ import { loadFolder, recordAccountEvent } from "./store.ts";
  * and merges are what change identifiers — and emits one sync-status event
  * for the account. A folder generation change resets that folder's
  * checkpoints and occurrences, then backfill resumes with the cycle's
- * remaining budget.
+ * remaining budget. A failing folder or body job is contained and counted,
+ * so one stale job never costs the thread pass or the status event.
  */
 
 /** Windows one cycle fetches per folder before it moves on. */
@@ -62,6 +63,10 @@ export interface AccountCycleSummary {
   /** Thread jobs resolved and links they changed. */
   threadsResolved: number;
   threadLinksChanged: number;
+  /** Folders whose window, poll, or inventory failed and was contained. */
+  folderErrors: number;
+  /** Body jobs that failed, for example a stale job after a move. */
+  bodyErrors: number;
 }
 
 export interface CycleControl {
@@ -114,6 +119,8 @@ export class SyncRunner {
       inventories: 0,
       threadsResolved: 0,
       threadLinksChanged: 0,
+      folderErrors: 0,
+      bodyErrors: 0,
     };
 
     const accountFolders = await this.db
@@ -126,7 +133,13 @@ export class SyncRunner {
       if (aborted(control)) {
         break;
       }
-      await this.synchronizeFolder(session, accountId, folder, control, summary);
+      try {
+        await this.synchronizeFolder(session, accountId, folder, control, summary);
+      } catch {
+        // One failing folder never stops the folders that follow, the body
+        // jobs, or the status event; the next cycle retries it.
+        summary.folderErrors += 1;
+      }
       await yieldControl();
     }
 
@@ -135,9 +148,15 @@ export class SyncRunner {
       if (aborted(control)) {
         break;
       }
-      const outcome: BodyFetchOutcome = await this.bodies.fetchBody(session, accountId, job);
-      if (outcome.state === "fetched") {
-        summary.bodiesFetched += 1;
+      try {
+        const outcome: BodyFetchOutcome = await this.bodies.fetchBody(session, accountId, job);
+        if (outcome.state === "fetched") {
+          summary.bodiesFetched += 1;
+        }
+      } catch {
+        // One stale job — its occurrence moved or expired after the listing —
+        // is skipped, not allowed to abort the account cycle.
+        summary.bodyErrors += 1;
       }
       await yieldControl();
     }
@@ -179,7 +198,7 @@ export class SyncRunner {
       summary.batches += 1;
       budget -= 1;
       if (outcome.state === "generation_changed") {
-        await this.applyReset(accountId, current.id, outcome.observed, summary);
+        await this.applyReset(accountId, current.id, outcome.recorded, outcome.observed, summary);
         current = await loadFolder(this.db, accountId, current.id);
         continue;
       }
@@ -206,7 +225,7 @@ export class SyncRunner {
         summary.expungesMarked += poll.expunged;
       }
       if (poll.state === "generation_changed") {
-        await this.applyReset(accountId, current.id, poll.observed, summary);
+        await this.applyReset(accountId, current.id, poll.recorded, poll.observed, summary);
         current = await this.runResetBackfill(session, accountId, current.id, budget, control, summary);
       }
     }
@@ -223,7 +242,7 @@ export class SyncRunner {
         summary.expungesMarked += inventory.expunged;
       }
       if (inventory.state === "generation_changed") {
-        await this.applyReset(accountId, current.id, inventory.observed, summary);
+        await this.applyReset(accountId, current.id, inventory.recorded, inventory.observed, summary);
         await this.runResetBackfill(session, accountId, current.id, budget, control, summary);
       }
     }
@@ -244,7 +263,7 @@ export class SyncRunner {
       summary.batches += 1;
       budget -= 1;
       if (outcome.state === "generation_changed") {
-        await this.applyReset(accountId, folderId, outcome.observed, summary);
+        await this.applyReset(accountId, folderId, outcome.recorded, outcome.observed, summary);
         current = await loadFolder(this.db, accountId, folderId);
         continue;
       }
@@ -259,15 +278,20 @@ export class SyncRunner {
     return loadFolder(this.db, accountId, folderId);
   }
 
-  /** Count and apply one folder generation reset (SPEC F2 reconciliation). */
+  /**
+   * Count and apply one folder generation reset (SPEC F2 reconciliation). The
+   * caller's recorded generation guards the reset, so an observation another
+   * cycle already overtook changes nothing.
+   */
   private async applyReset(
     accountId: string,
     folderId: string,
+    recorded: number,
     observed: number,
     summary: AccountCycleSummary,
   ): Promise<void> {
     summary.generationChanges += 1;
-    const reset = await this.reconcile.resetFolderGeneration(accountId, folderId, observed);
+    const reset = await this.reconcile.resetFolderGeneration(accountId, folderId, recorded, observed);
     if (reset.state === "reset") {
       summary.resets += 1;
     }
@@ -301,6 +325,8 @@ export class SyncRunner {
       inventories: summary.inventories,
       threadsResolved: summary.threadsResolved,
       threadLinksChanged: summary.threadLinksChanged,
+      folderErrors: summary.folderErrors,
+      bodyErrors: summary.bodyErrors,
       // Header sync progress: how many folders still owe historical windows.
       backfillPendingFolders: pending[0]?.count ?? 0,
       // Body sync progress, independent of headers.

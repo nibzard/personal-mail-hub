@@ -238,8 +238,11 @@ export class SteadyStateService {
       return { imported, skipped, scanned };
     });
     if (committed === null) {
-      const recorded = (await loadFolder(this.db, accountId, folder.id)).uidvalidity ?? generation;
-      return { state: "generation_changed", folderId: folder.id, recorded, observed: generation };
+      // Another cycle already moved the folder while this poll was in flight.
+      // The committed generation stands: report it as observed, so the guarded
+      // reset recognizes the folder as already current.
+      const observed = (await loadFolder(this.db, accountId, folder.id)).uidvalidity ?? generation;
+      return { state: "generation_changed", folderId: folder.id, recorded: generation, observed };
     }
     return { state: "ok", bound, found: ordered.length, imported: committed.imported, skipped: committed.skipped };
   }
@@ -270,7 +273,10 @@ export class SteadyStateService {
           isNull(messageOccurrences.invalidatedAt),
         ),
       );
-    const absent = active.filter((row) => !present.has(row.uid));
+    // A UID above the snapshot bound is an arrival this snapshot never judged:
+    // the search window stops at the bound, so a concurrent import above it
+    // must not read as an expunge (SPEC F2).
+    const absent = active.filter((row) => row.uid <= bound && !present.has(row.uid));
     if (absent.length === 0) {
       return { state: "ok", count: 0 };
     }

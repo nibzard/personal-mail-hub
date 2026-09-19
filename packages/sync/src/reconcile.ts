@@ -23,7 +23,9 @@ import {
  * of the old generation are invalidated — a queued action target that names
  * one of them can no longer be refreshed — both checkpoints return to their
  * first-contact state, and the next backfill walks the new generation from
- * its own `UIDNEXT`. Stored messages, bodies, and originals never move.
+ * its own `UIDNEXT`. Stored messages, bodies, and originals never move. A
+ * reset applies only from the generation the caller recorded, so overlapping
+ * cycles never rewind a folder another cycle already moved.
  *
  * The nightly inventory compares one full folder UID set with the database:
  * active occurrences the server no longer holds are marked expunged, and
@@ -56,6 +58,13 @@ export type ResetOutcome =
       invalidated: number;
     }
   | { state: "already_current"; folderId: string; uidvalidity: number }
+  | {
+      /** The folder no longer holds the caller's recorded generation: another
+       * cycle already moved it, so this reset applies nothing. */
+      state: "superseded";
+      folderId: string;
+      uidvalidity: number;
+    }
   | { state: "uninitialized"; folderId: string };
 
 /** What one inventory did. */
@@ -100,12 +109,16 @@ export class ReconciliationService {
 
   /**
    * Apply one observed generation change: invalidate the old occurrences,
-   * reset both checkpoints, and hand the folder back to backfill. Idempotent:
-   * a reset that already happened reports `already_current`.
+   * reset both checkpoints, and hand the folder back to backfill. The reset
+   * applies only while the folder still holds the caller's `recorded`
+   * generation, so two overlapping cycles cannot rewind each other: a folder
+   * another cycle already moved reports `already_current` when it holds
+   * `observed` and `superseded` when it holds anything else.
    */
   async resetFolderGeneration(
     accountId: string,
     folderId: string,
+    recorded: number,
     observed: number,
   ): Promise<ResetOutcome> {
     requireUuid("account id", accountId);
@@ -117,6 +130,9 @@ export class ReconciliationService {
       }
       if (locked.uidvalidity === observed) {
         return { state: "already_current" as const, folderId, uidvalidity: observed };
+      }
+      if (locked.uidvalidity !== recorded) {
+        return { state: "superseded" as const, folderId, uidvalidity: locked.uidvalidity };
       }
 
       const invalidated = await tx
@@ -221,7 +237,9 @@ export class ReconciliationService {
         ),
       );
     const active = rows.filter((row) => row.expungedAt === null && row.invalidatedAt === null);
-    const absent = active.filter((row) => !presentSet.has(row.uid));
+    // A UID above the snapshot bound arrived after the search: this snapshot
+    // never judged it, so it stays for the poll that covers its range.
+    const absent = active.filter((row) => row.uid <= bound && !presentSet.has(row.uid));
 
     // Repairs only cover UIDs both scans should have reached: the arrivals
     // zone above the backfill bound, plus the whole folder once backfill

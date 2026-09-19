@@ -73,7 +73,12 @@ export type BackfillBatchOutcome =
       /** The folder generation changed; nothing from this call was applied. */
       state: "generation_changed";
       folderId: string;
+      /** The generation this call validated the folder against. */
       recorded: number;
+      /**
+       * The differing generation it found: the server's answer, or the value
+       * another cycle already committed under this call.
+       */
       observed: number;
     };
 
@@ -187,8 +192,11 @@ export class BackfillService {
     return this.db.transaction(async (tx) => {
       const locked = await lockFolder(tx, accountId, folderId);
       if (locked.uidvalidity !== mailbox.uidValidity) {
-        const recorded = locked.uidvalidity ?? mailbox.uidValidity;
-        return await generationChanged(tx, accountId, folderId, recorded, mailbox.uidValidity);
+        // Another cycle already moved the folder while this window was in
+        // flight. The committed generation stands: report it as observed, so
+        // the guarded reset recognizes the folder as already current.
+        const observed = locked.uidvalidity ?? mailbox.uidValidity;
+        return await generationChanged(tx, accountId, folderId, mailbox.uidValidity, observed);
       }
 
       let imported = 0;
@@ -263,7 +271,9 @@ async function initializeCheckpoints(
 > {
   const locked = await lockFolder(tx, folder.accountId, folder.id);
   if (locked.uidvalidity !== null && locked.uidvalidity !== mailbox.uidValidity) {
-    return { result: "generation_changed", recorded: locked.uidvalidity, observed: mailbox.uidValidity };
+    // Another worker initialized the folder first; its committed generation
+    // stands, and the guarded reset defers to it.
+    return { result: "generation_changed", recorded: mailbox.uidValidity, observed: locked.uidvalidity };
   }
   if (locked.uidvalidity !== null && locked.backfillBeforeUid !== null) {
     return { result: "initialized", fresh: false, folder: toInitialized(locked) };

@@ -1384,33 +1384,35 @@
         "recovery",
         "auth"
       ],
-      "updated_at": "2026-09-19T20:12:18Z",
+      "updated_at": "2026-09-19T20:12:40Z",
       "files": [
+        "apps/api/test/restore-acceptance.test.ts",
         "packages/auth/src/service.ts",
         "packages/auth/src/state.ts",
         "packages/auth/test/service.test.ts",
         "packages/recovery/src/controls.ts",
-        "packages/recovery/test/controls.test.ts",
-        "apps/api/test/restore-acceptance.test.ts"
+        "packages/recovery/test/controls.test.ts"
       ]
     },
     {
       "id": "T041",
       "title": "Fix the sync reconciliation races",
       "priority": 2,
-      "status": "todo",
-      "details": "resetFolderGeneration applies any observed generation whenever the folder holds something else (packages/sync/src/reconcile.ts:118-146, fed by runner.ts:263-274 and backfill.ts:187-192), and the runner forwards only the observed generation, never the recorded one. Two overlapping cycles on one account can therefore reset a folder to a stale generation, and the corrective re-import then inserts nothing because importHeaderRecord counts the invalidated fresh occurrences as existing, leaving every message in that folder invisible until the next real UIDVALIDITY change; reset only while the folder still holds the caller's recorded generation. Also guard the expunge comparison in steady.ts:258-273 so occurrences with a UID above the snapshot bound are never judged (a concurrent arrival between fetch and comparison is currently marked expunged and lost from active views permanently), and contain per-job and per-folder errors in runner.ts:133-156 with bodies.ts:234-237 so one stale body job (not_found after a move) no longer aborts the account cycle, skipping thread reconciliation and the sync.status event.",
+      "status": "done",
+      "details": "resetFolderGeneration applies any observed generation whenever the folder holds something else (packages/sync/src/reconcile.ts:118-146, fed by runner.ts:263-274 and backfill.ts:187-192), and the runner forwards only the observed generation, never the recorded one. Two overlapping cycles on one account can therefore reset a folder to a stale generation, and the corrective re-import then inserts nothing because importHeaderRecord counts the invalidated fresh occurrences as existing, leaving every message in that folder invisible until the next real UIDVALIDITY change; reset only while the folder still holds the caller's recorded generation. Also guard the expunge comparison in steady.ts:258-273 so occurrences with a UID above the snapshot bound are never judged (a concurrent arrival between fetch and comparison is currently marked expunged and lost from active views permanently), and contain per-job and per-folder errors in runner.ts:133-156 with bodies.ts:234-237 so one stale body job (not_found after a move) no longer aborts the account cycle, skipping thread reconciliation and the sync.status event. Fixed all three. resetFolderGeneration takes the caller's recorded generation and applies only while the folder still holds it, reporting already_current when the folder already moved to the observed generation and superseded when it holds anything else; the runner forwards both values, and the paths that find the folder moved under a commit (the backfill window commit, the checkpoint initialization, and the poll arrival commit) report the validated generation as recorded and the committed one as observed, so an overtaken observation never rewinds a folder. The expunge comparisons of the poll and the nightly inventory never judge a UID above their snapshot bound, so a concurrent arrival is no longer marked expunged. The cycle contains per-folder and per-job failures into folderErrors and bodyErrors counters on sync.status instead of aborting before thread reconciliation and the status event. The fake mailbox now keeps UIDNEXT from regressing inside one generation, the way a real server behaves.\n",
       "tags": [
         "sync",
         "safety"
       ],
-      "updated_at": "2026-09-19T17:39:46Z",
+      "updated_at": "2026-09-19T20:36:43Z",
       "files": [
+        "packages/sync/src/backfill.ts",
         "packages/sync/src/reconcile.ts",
         "packages/sync/src/runner.ts",
         "packages/sync/src/steady.ts",
-        "packages/sync/src/bodies.ts",
-        "packages/sync/test"
+        "packages/sync/test/backfill.test.ts",
+        "packages/sync/test/fake-mailbox.ts",
+        "packages/sync/test/steady.test.ts"
       ]
     },
     {

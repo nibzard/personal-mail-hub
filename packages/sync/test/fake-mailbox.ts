@@ -43,7 +43,9 @@ export class FakeMailboxSession implements MailboxSession {
   /**
    * The least UIDNEXT a select reports. A folder always reports at least its
    * newest UID plus one, so loading messages is enough; raise this field to
-   * script a server that reserved UIDs no message holds.
+   * script a server that reserved UIDs no message holds. Like a real server,
+   * UIDNEXT never regresses inside one generation: expunging the newest
+   * message keeps the reported value, so bound-based comparisons stay honest.
    */
   uidNext = 1;
   /** Folder path to messages, keyed by folder name. */
@@ -54,6 +56,8 @@ export class FakeMailboxSession implements MailboxSession {
   readonly selections: string[] = [];
 
   private current: string | null = null;
+  /** The greatest UIDNEXT reported per folder and generation. */
+  private readonly reportedUidNext = new Map<string, number>();
 
   /** Load one folder's messages. UIDs need no order; gaps may exist. */
   load(folder: string, messages: FakeMessage[]): this {
@@ -140,11 +144,15 @@ export class FakeMailboxSession implements MailboxSession {
     return this.mailboxes.get(this.current) ?? [];
   }
 
-  /** UIDNEXT for one folder: past its newest UID, never below the floor. */
+  /** UIDNEXT for one folder: past its newest UID, never below the floor or a
+   * value already reported for the same generation. */
   private nextUid(folder: string): number {
     const messages = this.mailboxes.get(folder) ?? [];
     const maxUid = messages.reduce((largest, message) => Math.max(largest, message.uid), 0);
-    return Math.max(this.uidNext, maxUid + 1);
+    const key = `${folder}:${this.uidValidity}`;
+    const reported = Math.max(this.uidNext, maxUid + 1, this.reportedUidNext.get(key) ?? 0);
+    this.reportedUidNext.set(key, reported);
+    return reported;
   }
 }
 

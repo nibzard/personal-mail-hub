@@ -342,6 +342,34 @@ suite("BackfillService", () => {
     expect((await folderRow(folder.id)).backfillBeforeUid).toBe(3);
   });
 
+  it("defers to the committed generation when a window's commit finds the folder moved", async () => {
+    const { accountId, folderIds } = await setupAccount(["INBOX"]);
+    const folder = folderIds.get("INBOX")!;
+    const session = new FakeMailboxSession();
+    session.load("INBOX", [fixture(1, "Moved window one"), fixture(2, "Moved window two")]);
+
+    const { backfill, db } = services(2);
+    await backfill.runBatch(session, accountId, folder.id); // initialize
+
+    // A competing cycle resets the folder while this window is in flight;
+    // this session's generation is still the one it validated.
+    const competing = new ReconciliationService(db);
+    const originalFetchHeaders = session.fetchHeaders.bind(session);
+    session.fetchHeaders = async (uids: number[]) => {
+      const records = await originalFetchHeaders(uids);
+      await competing.resetFolderGeneration(accountId, folder.id, 1, 2);
+      return records;
+    };
+
+    // The window is discarded, and the reported change names the generation
+    // this call validated against the committed one, so the guarded reset
+    // recognizes the folder as already current.
+    const outcome = await backfill.runBatch(session, accountId, folder.id);
+    expect(outcome).toMatchObject({ state: "generation_changed", recorded: 1, observed: 2 });
+    expect(await countMessages(accountId)).toBe(0);
+    expect((await folderRow(folder.id)).uidvalidity).toBe(2);
+  });
+
   it("indexes header text in the import transaction and keeps bodies pending", async () => {
     const { accountId, folderIds } = await setupAccount(["INBOX"]);
     const folder = folderIds.get("INBOX")!;

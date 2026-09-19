@@ -342,7 +342,7 @@ suite("SteadyStateService and ReconciliationService", () => {
     session.uidValidity = 2;
     session.load("INBOX", [fixture(1, "New generation one"), fixture(4, "New generation four")]);
 
-    const reset = await reconcile.resetFolderGeneration(accountId, folder.id, 2);
+    const reset = await reconcile.resetFolderGeneration(accountId, folder.id, 1, 2);
     expect(reset).toMatchObject({ state: "reset", recorded: 1, observed: 2, invalidated: 2 });
     expect(await folderRow(folder.id)).toMatchObject({
       uidvalidity: 2,
@@ -373,8 +373,219 @@ suite("SteadyStateService and ReconciliationService", () => {
     expect(resetEvents[0]).toMatchObject({ recorded: 1, observed: 2, invalidated: 2 });
 
     // A repeated reset for the same observed generation is a no-op.
-    const again = await reconcile.resetFolderGeneration(accountId, folder.id, 2);
+    const again = await reconcile.resetFolderGeneration(accountId, folder.id, 1, 2);
     expect(again).toMatchObject({ state: "already_current", uidvalidity: 2 });
+  });
+
+  it("refuses a reset another cycle's commit already overtook", async () => {
+    const { accountId, folderIds } = await setupAccount([{ name: "INBOX", role: "inbox" }]);
+    const folder = folderIds.get("INBOX")!;
+    const session = new FakeMailboxSession();
+    session.load("INBOX", [fixture(1, "Overtake old one"), fixture(2, "Overtake old two")]);
+
+    const { backfill, reconcile } = services();
+    await drain(backfill, session, accountId, folder);
+
+    // One cycle applies the change it observed: generation 1 becomes 2.
+    const applied = await reconcile.resetFolderGeneration(accountId, folder.id, 1, 2);
+    expect(applied).toMatchObject({ state: "reset", recorded: 1, observed: 2, invalidated: 2 });
+
+    // An overlapping cycle still holds the older observation 1 -> 3. The
+    // folder holds neither its recorded 1 nor its observed 3, so the reset
+    // must not rewind the generation the first cycle committed.
+    const stale = await reconcile.resetFolderGeneration(accountId, folder.id, 1, 3);
+    expect(stale).toMatchObject({ state: "superseded", uidvalidity: 2 });
+    expect((await folderRow(folder.id)).uidvalidity).toBe(2);
+    expect(await eventsOf("sync.folder_generation_reset", folder.id)).toHaveLength(1);
+  });
+
+  it("keeps a competing cycle's reset when its generation overtook the poll", async () => {
+    const { accountId, folderIds } = await setupAccount([{ name: "INBOX", role: "inbox" }]);
+    const folder = folderIds.get("INBOX")!;
+    const session = new FakeMailboxSession();
+    session.load("INBOX", [fixture(1, "Overtake old one"), fixture(2, "Overtake old two")]);
+
+    const mine = services();
+    await drain(mine.backfill, session, accountId, folder);
+
+    // The server moves to generation 2 before this cycle polls.
+    session.uidValidity = 2;
+    session.load("INBOX", [fixture(1, "Overtake mid one"), fixture(2, "Overtake mid two")]);
+
+    // During the poll's selection the server moves again, to generation 3,
+    // and a fresher cycle resets the folder and backfills generation 3.
+    const theirs = services();
+    const fresher = new FakeMailboxSession();
+    fresher.uidValidity = 3;
+    fresher.load("INBOX", [fixture(1, "Overtake new one"), fixture(2, "Overtake new two")]);
+    const originalSelect = session.select.bind(session);
+    let armed = true;
+    session.select = async (name: string) => {
+      const state = await originalSelect(name);
+      if (armed) {
+        armed = false;
+        session.uidValidity = 3;
+        session.load("INBOX", [fixture(1, "Overtake new one"), fixture(2, "Overtake new two")]);
+        await theirs.reconcile.resetFolderGeneration(accountId, folder.id, 1, 3);
+        await drain(theirs.backfill, fresher, accountId, folder);
+      }
+      return state;
+    };
+
+    const runner = new SyncRunner(
+      createDatabase(pool),
+      mine.backfill,
+      mine.bodies,
+      new ThreadService(createDatabase(pool)),
+      mine.steady,
+      mine.reconcile,
+    );
+    const summary = await runner.runAccountCycle(session, accountId);
+
+    // The poll's observation (1 -> 2) was overtaken: no reset rewound the
+    // folder, and the generation the fresher cycle committed stays usable.
+    expect(summary).toMatchObject({ generationChanges: 1, resets: 0, bodiesFetched: 2, folderErrors: 0 });
+    expect((await folderRow(folder.id)).uidvalidity).toBe(3);
+    expect(await eventsOf("sync.folder_generation_reset", folder.id)).toHaveLength(1);
+    const rows = await occurrenceRows(accountId, folder.id);
+    expect(rows.map((row) => [row.uidvalidity, row.uid, row.invalidatedAt !== null, row.expungedAt !== null])).toEqual([
+      [1, 1, true, false],
+      [1, 2, true, false],
+      [3, 1, false, false],
+      [3, 2, false, false],
+    ]);
+    expect(await eventsOf("sync.status", accountId)).toHaveLength(1);
+  });
+
+  it("reports the committed generation when a poll's commit finds the folder moved", async () => {
+    const { accountId, folderIds } = await setupAccount([{ name: "INBOX", role: "inbox" }]);
+    const folder = folderIds.get("INBOX")!;
+    const session = new FakeMailboxSession();
+    const one = fixture(1, "Moved commit one");
+    const two = fixture(2, "Moved commit two");
+    session.load("INBOX", [one, two]);
+
+    const { backfill, steady } = services();
+    await drain(backfill, session, accountId, folder);
+
+    // An arrival is due, and a competing cycle resets the folder to
+    // generation 2 after this poll fetched the arrival.
+    session.load("INBOX", [one, two, fixture(3, "Moved commit three")]);
+    const { reconcile: competing } = services();
+    const originalRevalidate = session.revalidate.bind(session);
+    let armed = true;
+    session.revalidate = async () => {
+      const state = await originalRevalidate();
+      if (armed) {
+        armed = false;
+        await competing.resetFolderGeneration(accountId, folder.id, 1, 2);
+      }
+      return state;
+    };
+
+    // The poll discards its rows and names the committed generation as the
+    // observed one, so the guarded reset recognizes the folder as current.
+    const poll = await steady.pollFolder(session, accountId, folder.id);
+    expect(poll).toMatchObject({ state: "generation_changed", recorded: 1, observed: 2 });
+    expect((await folderRow(folder.id)).uidvalidity).toBe(2);
+    expect(await countMessages(accountId)).toBe(2);
+    expect(await eventsOf(FOLDER_POLLED_EVENT, folder.id)).toEqual([]);
+  });
+
+  it("never judges an arrival above the expunge snapshot bound", async () => {
+    const { accountId, folderIds } = await setupAccount([{ name: "INBOX", role: "inbox" }]);
+    const folder = folderIds.get("INBOX")!;
+    const session = new FakeMailboxSession();
+    const one = fixture(1, "Bound one");
+    const two = fixture(2, "Bound two");
+    session.load("INBOX", [one, two]);
+
+    const { backfill, steady, db } = services();
+    await drain(backfill, session, accountId, folder);
+
+    // A concurrent cycle imports an arrival that lands after this poll's
+    // snapshot bound; the search window stops below it.
+    const originalSearch = session.searchUids.bind(session);
+    let armed = true;
+    session.searchUids = async (low: number, high: number) => {
+      if (armed && low === 1) {
+        armed = false;
+        const three = fixture(3, "Bound three");
+        session.load("INBOX", [one, two, three]);
+        const [row] = await db.insert(messages).values({ accountId }).returning({ id: messages.id });
+        await db.insert(messageOccurrences).values({
+          accountId,
+          messageId: row!.id,
+          folderId: folder.id,
+          uidvalidity: 1,
+          uid: 3,
+          internalDate: new Date(Date.UTC(2026, 8, 7, 11, 0, 0)),
+        });
+      }
+      return originalSearch(low, high);
+    };
+
+    const poll = await steady.pollFolder(session, accountId, folder.id);
+    expect(poll).toMatchObject({ state: "polled", expunged: 0 });
+
+    // The concurrent arrival stays active; only a snapshot that covers its
+    // UID may judge it.
+    const rows = await occurrenceRows(accountId, folder.id);
+    expect(rows.map((row) => [row.uid, row.expungedAt !== null])).toEqual([
+      [1, false],
+      [2, false],
+      [3, false],
+    ]);
+
+    // The next poll covers UID 3 through its own bound and keeps it.
+    const repeat = await steady.pollFolder(session, accountId, folder.id);
+    expect(repeat).toMatchObject({ state: "polled", expunged: 0, flagsObserved: 3 });
+  });
+
+  it("contains a failed folder and a stale body job without losing the cycle", async () => {
+    const { accountId, folderIds } = await setupAccount([
+      { name: "INBOX", role: "inbox" },
+      { name: "Vanished" },
+    ]);
+    const inbox = folderIds.get("INBOX")!;
+    const session = new FakeMailboxSession();
+    session.load("INBOX", [fixture(1, "Contained one"), fixture(2, "Contained two")]);
+    // No mailbox named Vanished exists: its select fails inside the cycle.
+
+    const { backfill, bodies, steady, reconcile, db } = services();
+    await drain(backfill, session, accountId, inbox);
+    const moved = (await occurrenceRows(accountId, inbox.id))[0]!;
+
+    // The first body fetch moves the second job's message: its occurrence is
+    // expunged by the time the runner loads the stale job.
+    const originalFetchOriginal = session.fetchOriginal.bind(session);
+    let armed = true;
+    session.fetchOriginal = async (uid: number) => {
+      if (armed) {
+        armed = false;
+        await db
+          .update(messageOccurrences)
+          .set({ expungedAt: new Date() })
+          .where(eq(messageOccurrences.id, moved.id));
+      }
+      return originalFetchOriginal(uid);
+    };
+
+    const runner = new SyncRunner(
+      createDatabase(pool),
+      backfill,
+      bodies,
+      new ThreadService(createDatabase(pool)),
+      steady,
+      reconcile,
+    );
+    const summary = await runner.runAccountCycle(session, accountId);
+
+    // Both failures were contained; the cycle still fetched the healthy body,
+    // reconciled threads, and emitted its status event.
+    expect(summary).toMatchObject({ folderErrors: 1, bodyErrors: 1, bodiesFetched: 1 });
+    expect(await eventsOf("sync.status", accountId)).toHaveLength(1);
+    expect(await countMessages(accountId)).toBe(2);
   });
 
   it("polls the Inbox every minute and other folders every quarter hour", async () => {
