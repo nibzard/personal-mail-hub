@@ -17,6 +17,7 @@
     "@mail-hub/contracts": "0.1.0",
     "@mail-hub/database": "0.1.0",
     "@mail-hub/ingestion": "0.1.0",
+    "@mail-hub/observability": "0.1.0",
     "@mail-hub/reading": "0.1.0",
     "@mail-hub/recovery": "0.1.0",
     "@mail-hub/search": "0.1.0",

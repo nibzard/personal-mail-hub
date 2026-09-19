@@ -8,10 +8,12 @@ import { SearchService } from "@mail-hub/search";
 import { IngestionService } from "@mail-hub/ingestion";
 import { ReadingService } from "@mail-hub/reading";
 import { runConnectionTest } from "@mail-hub/transport";
+import { HealthService } from "@mail-hub/observability";
 import { registerAccountRoutes } from "./account-routes.ts";
 import { registerAuthRoutes } from "./auth-routes.ts";
 import { registerComposeRoutes } from "./compose-routes.ts";
 import { registerConnectionTestRoutes } from "./connection-test-routes.ts";
+import { registerHealthRoutes } from "./health-routes.ts";
 import { registerMessageRoutes } from "./message-routes.ts";
 import { registerSearchRoutes } from "./search-routes.ts";
 import { registerSendRoutes } from "./send-routes.ts";
@@ -51,6 +53,13 @@ if (status.state === "ready") {
     `Mail mutations blocked: ${describeControlStatus(status)}. Run 'npm run admin -- recovery begin' after a restore.`,
   );
 }
+
+// The deployment health check (SPEC sections 10 and 11) runs without a
+// session and reports state honestly, blocked or not, so the platform and
+// the operator can watch recovery, sync lag, and queue age.
+const healthService = new HealthService(db, controls);
+await registerHealthRoutes(app, { service: healthService });
+app.log.info("Health check ready: GET /healthz.");
 
 // Passkey authentication closes until BASE_URL names the deployed origin
 // (SPEC section 9). Enrollment cannot verify WebAuthn origins without it.

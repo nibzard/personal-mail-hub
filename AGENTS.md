@@ -87,6 +87,16 @@
   same message, and attachment downloads that serve the disposable cache
   only after its decoded hash and size verify, else regenerate from the
   verified original without changing the attachment id.
+- `packages/observability` contains the health report behind
+  `GET /healthz`: one database round trip, the recovery control state, sync
+  lag and the per-account metrics (messages synced, bodies fetched, last
+  full reconciliation, Jev calls and errors), queue age over the job queue
+  and the durable pending work, the classification circuit, and the send
+  counters the weekly review watches. Every number is read from durable
+  records; the report never writes. The audit trail itself lives in the
+  `events` table, where the sync, action, send, account, authentication,
+  and recovery services already record their milestones; classification
+  corrections and pauses join them with the Jev integration.
 - `packages/database` contains the Drizzle schema, SQL migrations, object
   storage, and pg-boss integration, plus the retrying scratch-database cleanup
   (`dropTestDatabase`) the PostgreSQL suites share. Run `npm run db:generate`

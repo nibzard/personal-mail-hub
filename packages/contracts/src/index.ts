@@ -8,6 +8,127 @@ export interface HealthResponse {
   version: typeof API_VERSION;
 }
 
+/** The overall verdict of `GET /healthz` (SPEC section 11). */
+export type HealthzStatus = "ok" | "degraded";
+
+/** Database reachability, proven by one round trip. */
+export interface HealthzDatabase {
+  state: "ok" | "unavailable";
+  /** Round-trip time of the probe, in milliseconds. */
+  roundTripMs: number | null;
+}
+
+/** Recovery control state as the health check reports it. */
+export interface HealthzRecovery {
+  state:
+    | "ready"
+    | "reconciling"
+    | "generation_mismatch"
+    | "uninitialized"
+    | "config_missing"
+    | "unknown";
+  /** Mode of the `service_state` row, when one exists. */
+  mode: "ready" | "reconciling" | null;
+  /** Generation the database holds, when one exists. */
+  generation: string | null;
+  /** Generation deployment configuration holds, when configured. */
+  deploymentGeneration: string | null;
+  /** Operator-readable summary. Never includes secrets. */
+  description: string;
+}
+
+/** Queue age across the job queue and the durable work rows. */
+export interface HealthzQueue {
+  /** `unknown` when the queue schema is absent, so nothing can be read. */
+  state: "ok" | "unknown";
+  /** Pending jobs in the queue, or `null` when unreadable. */
+  depth: number | null;
+  /** When the oldest pending job was created. */
+  oldestJobAt: string | null;
+  /** Age of the oldest pending job, in seconds. */
+  oldestJobAgeSeconds: number | null;
+  /** When the oldest queued send or pending action was created. */
+  oldestPendingWorkAt: string | null;
+  /** Age of that oldest queued send or pending action, in seconds. */
+  oldestPendingWorkAgeSeconds: number | null;
+}
+
+/** Classification state as the health check reports it (SPEC section 11). */
+export interface HealthzClassification {
+  circuit: "closed" | "open" | "not_configured";
+  /** Recorded Jev answers, from the `decisions` table. */
+  calls: number;
+  /** Recorded Jev failures, from `class.error` audit events. */
+  errors: number;
+  /** Operator-readable summary. Never includes message content. */
+  description: string;
+}
+
+/** Body of `GET /healthz` when the database round trip fails. */
+export interface HealthzUnavailableBody {
+  error: {
+    code: "database_unavailable";
+    message: string;
+  };
+}
+
+/** Outbound counters for the weekly review (SPEC section 11). */
+export interface HealthzSends {
+  queued: number;
+  failed: number;
+  outcomeUnknown: number;
+}
+
+/** Synchronization lag of one account. */
+export interface HealthzSyncLag {
+  /** When the account's newest sync cycle ended, or `null` when none ran. */
+  lastCycleAt: string | null;
+  /** Seconds since that cycle, or `null` when none ran. */
+  cycleAgeSeconds: number | null;
+  /** Folders that still owe backfill windows, from the newest cycle report. */
+  backfillPendingFolders: number | null;
+  /** Messages whose body has not been fetched yet. */
+  pendingBodies: number;
+}
+
+/** The per-account metrics `GET /healthz` tracks (SPEC section 11). */
+export interface HealthzAccountMetrics {
+  messagesSynced: number;
+  bodiesFetched: number;
+  /** When the newest full-folder inventory completed, or `null` when none ran. */
+  lastFullReconciliationAt: string | null;
+  jevCalls: number;
+  jevErrors: number;
+}
+
+/** Lag and metrics of one account. */
+export interface HealthzAccount {
+  accountId: string;
+  label: string;
+  color: string;
+  sync: HealthzSyncLag;
+  metrics: HealthzAccountMetrics;
+}
+
+/**
+ * Response of `GET /healthz`: database round trip, sync lag per account,
+ * oldest queued job, classification circuit state, and recovery mode (SPEC
+ * sections 10 and 11).
+ */
+export interface HealthzResponse {
+  service: "api";
+  status: HealthzStatus;
+  version: typeof API_VERSION;
+  /** When the report was assembled, as an ISO 8601 timestamp. */
+  checkedAt: string;
+  database: HealthzDatabase;
+  recovery: HealthzRecovery;
+  queue: HealthzQueue;
+  classification: HealthzClassification;
+  sends: HealthzSends;
+  accounts: HealthzAccount[];
+}
+
 /** Recovery gate rejection codes, from `SPEC.md` sections 7 and 10. */
 export type RecoveryErrorCode =
   | "invalid_recovery_generation"

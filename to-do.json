@@ -796,7 +796,7 @@
         "pwa",
         "offline"
       ],
-      "updated_at": "2026-09-19T12:56:49Z",
+      "updated_at": "2026-09-19T12:58:44Z",
       "files": [
         "AGENTS.md",
         "apps/api/src/account-routes.ts",
@@ -872,8 +872,8 @@
       "id": "T027",
       "title": "Implement health checks, audit events, and metrics",
       "priority": 2,
-      "status": "todo",
-      "details": "Expose health state for the database, synchronization lag, queue age, classifier state, and recovery mode. Record required audit events and account metrics.",
+      "status": "done",
+      "details": "Done: new @mail-hub/observability package behind GET /healthz (SPEC sections 10 and 11). One database round trip gates the report; a failed trip answers 503 with the error body and nothing is guessed. With the database reachable the report carries: the recovery control state (state, mode, both generations, operator description) with status ok only when mode is ready; per account, sync lag from the newest sync.status event (last cycle time, cycle age, backfill-pending folders) plus the SPEC metrics (messages synced, bodies fetched, pending bodies, last full reconciliation from the newest sync.folder_inventory event, Jev calls from decisions, Jev errors from class.error audit events); queue age from the pg-boss pending set (state unknown, not an error, before the worker creates the schema) and the oldest queued send or pending action; the classification circuit, honestly not_configured until the Jev integration (T025) lands; and the queued, failed, and outcome_unknown send counters for the weekly review. Audit-trail verification: the events table already records every required event for implemented flows: sync milestones, flag changes through action.queued, action.applied, action.completed, and action.restored_held, sends through the send.* family, and the account, authentication (including credential changes), and recovery events; classification corrections and pauses arrive with T025 and T026, which will also drive the circuit state beyond not_configured. Verified: npm run check clean in every workspace and the full suite with TEST_DATABASE_URL passes 560 tests across 18 workspaces with nothing skipped, including the new 5-test observability suite (real PostgreSQL, real pg-boss schema) and 3 new healthz route tests.",
       "depends_on": [
         "T003",
         "T009",
@@ -881,6 +881,22 @@
       ],
       "tags": [
         "observability"
+      ],
+      "updated_at": "2026-09-19T13:14:07Z",
+      "files": [
+        "AGENTS.md",
+        "apps/api/package.json",
+        "apps/api/src/health-routes.ts",
+        "apps/api/src/main.ts",
+        "apps/api/test/health-routes.test.ts",
+        "package-lock.json",
+        "packages/contracts/src/index.ts",
+        "packages/observability/package.json",
+        "packages/observability/src/health.ts",
+        "packages/observability/src/index.ts",
+        "packages/observability/test/health.test.ts",
+        "packages/observability/tsconfig.json",
+        "to-do.json"
       ]
     },
     {
