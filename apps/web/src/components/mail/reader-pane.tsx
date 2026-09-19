@@ -58,6 +58,10 @@ export function ReaderPane({ message, onBack, onSessionLost, className }: Reader
   return (
     <section
       aria-label="Message reader"
+      // An outer focus target beside the sandboxed body frame: while the
+      // frame holds focus, its key events stay isolated, so keyboard users
+      // need a reachable element back on the shell (SPEC F11).
+      tabIndex={-1}
       className={cn("flex min-h-0 flex-col bg-surface", className)}
     >
       {message === null ? (

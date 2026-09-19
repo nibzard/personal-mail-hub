@@ -21,6 +21,7 @@ export function MessageRow({ item, selected, showAccount, onSelect }: MessageRow
   return (
     <button
       type="button"
+      data-message-row={item.messageId}
       aria-current={selected ? "true" : undefined}
       onClick={() => onSelect(item)}
       className={cn(

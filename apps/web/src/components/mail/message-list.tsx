@@ -1,5 +1,5 @@
 import { RotateCw, Search } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import type { SearchResultItem } from "@mail-hub/contracts";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -35,6 +35,8 @@ export interface MessageListPaneProps {
   onSelect: (item: SearchResultItem) => void;
   showAccountLabels: boolean;
   onSessionLost: () => void;
+  /** The search box the `/` shortcut and the palette focus (SPEC F3). */
+  searchInputRef?: RefObject<HTMLInputElement | null>;
   className?: string;
 }
 
@@ -50,6 +52,7 @@ export function MessageListPane({
   onSelect,
   showAccountLabels,
   onSessionLost,
+  searchInputRef,
   className,
 }: MessageListPaneProps) {
   const rowHeight = useRowHeight();
@@ -57,12 +60,17 @@ export function MessageListPane({
 
   return (
     <section
+      id="message-list"
       aria-label={`${title} message list`}
       aria-busy={state.phase === "loading" || undefined}
       className={cn("flex min-h-0 flex-col bg-background", className)}
     >
       <header className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
-        <h2 className="truncate font-semibold">{title}</h2>
+        {/* Focusable, so palette focus restoration has a heading target
+            when the opener is gone (SPEC F11). */}
+        <h2 id="message-list-heading" tabIndex={-1} className="truncate font-semibold">
+          {title}
+        </h2>
         {state.phase === "ready" && (
           <p className="shrink-0 text-muted-foreground">
             {formatCount(state.rows.length)} of {formatCount(state.total)}
@@ -95,6 +103,7 @@ export function MessageListPane({
             className="pointer-events-none absolute start-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
           />
           <Input
+            ref={searchInputRef}
             type="search"
             value={query}
             onChange={(event) => onQueryChange(event.target.value)}
@@ -337,6 +346,23 @@ function RowWindow({
       onLoadMore();
     }
   }, [end, rows.length, canLoadMore, loadingMore, onLoadMore]);
+
+  // Keep the keyboard selection inside the visible window (SPEC F3, j/k).
+  // Selection by pointer is already visible, so it never fights the scroll.
+  useEffect(() => {
+    const index = rows.findIndex((row) => row.messageId === selectedId);
+    const element = scrollerRef.current;
+    if (index < 0 || element === null) {
+      return;
+    }
+    const top = index * rowHeight;
+    const bottom = top + rowHeight;
+    if (top < element.scrollTop) {
+      element.scrollTop = top;
+    } else if (bottom > element.scrollTop + element.clientHeight) {
+      element.scrollTop = bottom - element.clientHeight;
+    }
+  }, [selectedId, rows, rowHeight]);
 
   return (
     <div

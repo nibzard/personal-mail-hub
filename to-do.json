@@ -558,7 +558,7 @@
       "title": "Build the safe message reader and attachment routes",
       "priority": 2,
       "status": "done",
-      "details": "Done: new @mail-hub/reading service (message detail over sanitized derivatives only; a cid: reference resolves only when exactly one part of the same message holds that Content-ID and is an image, so ambiguous identifiers stay download items; downloads serve the disposable cache only after its decoded hash and size verify, else regenerate from the verified original keeping the attachment id) plus GET /messages/:id and GET /messages/:id/attachments/:attachmentId routes with session-gated, hash-verified downloads and injection-safe Content-Type/Content-Disposition headers. Ingestion now parses with skipImageLinks so mailparser no longer inlines cid: references by picking the first part of a duplicated Content-ID (SPEC section 8 violation); the stored derivative keeps cid: and the reader resolves it. Web reader: sandboxed iframe (no scripts, no same-origin) with its own CSP (default-src none, img-src data: plus https: only after Load images), quote chains collapsed behind one Show trimmed content toggle, remote images blocked by default with a per-message Load images decision, verified inline images fetched as data URLs, honest not-fetched state, plain-text rendering, and an attachment list with authenticated downloads. Release gate re-verified: PASS with the two known deferred checks; 489 workspace tests, 98 action/api permission tests, 0 failed, 0 skipped.",
+      "details": "Done: new @mail-hub/reading service (message detail over sanitized derivatives only; a cid: reference resolves only when exactly one part of the same message holds that Content-ID and is an image, so ambiguous identifiers stay download items; downloads serve the disposable cache only after its decoded hash and size verify, else regenerate from the verified original keeping the attachment id) plus GET /messages/:id and GET /messages/:id/attachments/:attachmentId routes with session-gated, hash-verified downloads and injection-safe Content-Type/Content-Disposition headers. Ingestion now parses with skipImageLinks so mailparser no longer inlines cid: references by picking the first part of a duplicated Content-ID (SPEC section 8 violation); the stored derivative keeps cid: and the reader resolves it. Web reader: sandboxed iframe (no scripts, no same-origin) with its own CSP (default-src none, img-src data: plus https: only after Load images), quote chains collapsed behind one Show trimmed content toggle, remote images blocked by default with a per-message Load images decision, verified inline images fetched as data URLs, honest not-fetched state, plain-text rendering, and an attachment list with authenticated downloads. Release gate re-verified: PASS with the two known deferred checks; 489 workspace tests, 98 action/api permission tests, 0 failed, 0 skipped. Re-verified 2026-09-19 after commit f84f2c5, which the loop had reset to doing: the release gate passes (every workspace type-checks, 7 migrations applied and re-run clean on a scratch database, 489 workspace tests and 98 action/api permission tests, none failed or skipped, the two known deferred checks aside) and no code changes were needed, so this pass made no new commit.",
       "depends_on": [
         "T007",
         "T015"
@@ -568,7 +568,7 @@
         "reading",
         "security"
       ],
-      "updated_at": "2026-09-19T11:40:00Z",
+      "updated_at": "2026-09-19T11:43:29Z",
       "files": [
         "AGENTS.md",
         "apps/api/package.json",
@@ -617,8 +617,8 @@
       "id": "T018",
       "title": "Implement the command palette and keyboard controls",
       "priority": 2,
-      "status": "todo",
-      "details": "Add discoverable commands, nested choices, platform labels, shortcut scope, focus restoration, and touch alternatives.",
+      "status": "done",
+      "details": "Done. One cmdk palette over a shared command registry: grouped commands with unavailable reasons and scope notes, nested choosers (theme with current marker, folders grouped by account, Escape pops the choice first), word-prefix filtering that keeps registry order, and platform labels (Cmd on Apple, Ctrl elsewhere; Cmd+P left to printing). The shell binds one keydown listener: Ctrl/Cmd+K toggles the palette, and the SPEC F3 single keys (j/k/o/e/u/s/r//) stay inert in inputs, editable content, and dialogs, ignore composition, and refuse repeats for mutations. Focus restoration runs from Radix onCloseAutoFocus: keep focus a command placed, else the opener, the selected row, the list heading, or the Commands button. Touch: the Commands button grows to 44 px on mobile and palette rows keep a 44 px minimum height. Note for a later pass: the nav toggle and ThemeToggle in the header remain under 44 px on mobile (pre-existing T015 scope).",
       "depends_on": [
         "T014",
         "T015"
@@ -626,6 +626,22 @@
       "tags": [
         "ui",
         "accessibility"
+      ],
+      "updated_at": "2026-09-19T12:23:35Z",
+      "files": [
+        "apps/web/package.json",
+        "apps/web/src/lib/platform.ts",
+        "apps/web/src/lib/keyboard.ts",
+        "apps/web/src/lib/focus.ts",
+        "apps/web/src/shortcuts.ts",
+        "apps/web/src/mail/commands.ts",
+        "apps/web/src/components/ui/command.tsx",
+        "apps/web/src/components/mail/command-palette.tsx",
+        "apps/web/src/components/mail/app-shell.tsx",
+        "apps/web/src/components/mail/message-list.tsx",
+        "apps/web/src/components/mail/message-row.tsx",
+        "apps/web/src/components/mail/reader-pane.tsx",
+        "apps/web/test/commands.test.ts"
       ]
     },
     {

@@ -1,12 +1,29 @@
-import { PanelLeft } from "lucide-react";
-import { useState } from "react";
+import { Command as CommandIcon, PanelLeft } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AccountSummary, SearchResultItem } from "@mail-hub/contracts";
 import { Button } from "@/components/ui/button";
+import { Kbd } from "@/components/ui/kbd";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { useDebouncedValue, useMediaQuery } from "@/lib/hooks";
+import { shouldRunSingleKey } from "@/lib/keyboard";
+import { rescueDialogFocus } from "@/lib/focus";
+import {
+  isPaletteShortcut,
+  paletteShortcutKeys,
+  shortcutPlatform,
+} from "@/lib/platform";
 import { cn } from "@/lib/utils";
+import { setSingleKeyShortcuts, useSingleKeyShortcuts } from "@/shortcuts";
+import { useTheme } from "@/theme";
 import { useFolderIndex, useMessageList } from "@/mail/data";
+import {
+  buildMailCommands,
+  nextSelectedIndex,
+  shortcutCommandId,
+  type MailCommand,
+} from "@/mail/commands";
 import { scopeKey, scopeTitle, type MailScope } from "@/mail/view";
+import { CommandPalette } from "./command-palette";
 import { MessageListPane } from "./message-list";
 import { NavPane } from "./nav-pane";
 import { ReaderPane } from "./reader-pane";
@@ -16,6 +33,11 @@ import { ReaderPane } from "./reader-pane";
  * pane at a time below them. The panes stay mounted on small screens, so
  * back navigation restores the list's scroll position and selection. The
  * navigation collapses first, behind the menu button in the header.
+ *
+ * The shell also owns the keyboard controls (SPEC F11): one keydown
+ * listener dispatches the palette chord and the single-key shortcuts
+ * through the shared command registry, so one key event can never submit
+ * two actions.
  */
 
 /** Which pane is visible below the three-pane breakpoint. */
@@ -41,21 +63,185 @@ export function AppShell({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [pane, setPane] = useState<Pane>("list");
   const threePane = useMediaQuery(THREE_PANE_QUERY);
+  const { theme, setTheme } = useTheme();
+  const singleKeyShortcuts = useSingleKeyShortcuts();
+  const platform = useMemo(shortcutPlatform, []);
+  const [paletteOpen, setPaletteOpen] = useState(false);
 
   const rows = list.state.phase === "ready" ? list.state.rows : [];
   const selected = rows.find((row) => row.messageId === selectedId) ?? null;
   const title = scopeTitle(scope, accounts, folders.data);
 
-  const handleScopeChange = (next: MailScope) => {
+  const commandsButtonRef = useRef<HTMLButtonElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const paletteOpenerRef = useRef<HTMLElement | null>(null);
+  const paletteOpenRef = useRef(paletteOpen);
+  paletteOpenRef.current = paletteOpen;
+
+  // The single keydown listener reads the latest state through refs, so it
+  // is bound exactly once (SPEC F11).
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
+  const singleKeyRef = useRef(singleKeyShortcuts);
+  singleKeyRef.current = singleKeyShortcuts;
+
+  const handleScopeChange = useCallback((next: MailScope) => {
     setScope(next);
     setSelectedId(null);
     setPane("list");
-  };
+  }, []);
 
-  const handleSelect = (item: SearchResultItem) => {
+  const handleSelect = useCallback((item: SearchResultItem) => {
     setSelectedId(item.messageId);
     setPane("reader");
+  }, []);
+
+  const openPalette = useCallback(() => {
+    // Remember what held focus before the dialog traps it, so closing can
+    // return there (SPEC F11).
+    const active = document.activeElement;
+    paletteOpenerRef.current = active instanceof HTMLElement ? active : null;
+    setPaletteOpen(true);
+  }, []);
+
+  const focusSearch = useCallback(() => {
+    // Placed one frame later, after the palette starts closing, so the
+    // dialog's focus trap does not reclaim it. The restore step then keeps
+    // it, because it only acts when focus landed nowhere.
+    window.requestAnimationFrame(() => {
+      const input = searchInputRef.current;
+      if (input !== null) {
+        input.focus();
+        input.select();
+      }
+    });
+  }, []);
+
+  const moveSelection = useCallback((step: 1 | -1) => {
+    const current = rowsRef.current;
+    const index = current.findIndex((row) => row.messageId === selectedRef.current?.messageId);
+    const next = nextSelectedIndex(current.length, index, step);
+    const row = next === null ? undefined : current[next];
+    if (row !== undefined) {
+      setSelectedId(row.messageId);
+    }
+  }, []);
+
+  const openSelection = useCallback(() => {
+    const row = rowsRef.current.find((entry) => entry.messageId === selectedRef.current?.messageId);
+    if (row !== undefined) {
+      handleSelect(row);
+    }
+  }, [handleSelect]);
+
+  const commands = useMemo<MailCommand[]>(
+    () =>
+      buildMailCommands({
+        accounts,
+        folders: folders.data,
+        scope,
+        rows,
+        selected,
+        singleKeyShortcuts,
+        theme,
+        handlers: {
+          changeScope: handleScopeChange,
+          focusSearch,
+          moveSelection,
+          openSelection,
+          setTheme,
+          setSingleKeyShortcuts,
+        },
+      }),
+    [
+      accounts,
+      folders.data,
+      scope,
+      rows,
+      selected,
+      singleKeyShortcuts,
+      theme,
+      handleScopeChange,
+      focusSearch,
+      moveSelection,
+      openSelection,
+      setTheme,
+    ],
+  );
+  const commandsRef = useRef(commands);
+  commandsRef.current = commands;
+
+  const dispatchKeydown = useRef<(event: KeyboardEvent) => void>(() => {});
+  dispatchKeydown.current = (event: KeyboardEvent) => {
+    // The palette chord works everywhere, including while an input or the
+    // editor holds focus. `Cmd+P` and `Ctrl+P` stay reserved for printing.
+    if (isPaletteShortcut(event, platform)) {
+      event.preventDefault();
+      if (paletteOpenRef.current) {
+        setPaletteOpen(false);
+      } else {
+        openPalette();
+      }
+      return;
+    }
+    if (event.metaKey || event.ctrlKey || event.altKey) {
+      return;
+    }
+    if (!singleKeyRef.current) {
+      return;
+    }
+    const commandId = shortcutCommandId(event.key, { selected: selectedRef.current });
+    if (commandId === null) {
+      return;
+    }
+    const command = commandsRef.current.find((entry) => entry.id === commandId);
+    if (
+      command === undefined ||
+      command.choices !== undefined ||
+      command.unavailableReason !== null
+    ) {
+      return;
+    }
+    if (!shouldRunSingleKey(event, { mutation: command.shortcut?.mutation ?? false })) {
+      return;
+    }
+    event.preventDefault();
+    command.run?.();
   };
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => dispatchKeydown.current(event);
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  const handlePaletteOpenChange = useCallback((open: boolean) => {
+    setPaletteOpen(open);
+  }, []);
+
+  /**
+   * Runs once the palette dialog has fully unmounted: keep any focus a
+   * command placed, else return to the opener, else the nearest surviving
+   * row, the list heading, or the Commands button (SPEC F11).
+   */
+  const restorePaletteFocus = useCallback(() => {
+    rescueDialogFocus([
+      () => {
+        const opener = paletteOpenerRef.current;
+        return opener !== null && opener !== document.body && opener.isConnected
+          ? opener
+          : null;
+      },
+      () =>
+        document.querySelector<HTMLElement>(
+          "#message-list [data-message-row][aria-current='true']",
+        ),
+      () => document.querySelector<HTMLElement>("#message-list-heading"),
+      () => commandsButtonRef.current,
+    ]);
+  }, []);
 
   /** Off-screen panes slide rather than unmount, keeping their scroll. */
   const paneWrapperClass = (name: Pane, widthClasses: string) =>
@@ -73,7 +259,7 @@ export function AppShell({
 
   return (
     <div className="flex h-dvh flex-col bg-background text-foreground [padding-bottom:env(safe-area-inset-bottom)]">
-      <header className="flex h-control-lg shrink-0 items-center gap-2 border-b bg-surface px-2 lg:px-3">
+      <header className="flex h-control-lg max-md:h-11 shrink-0 items-center gap-2 border-b bg-surface px-2 lg:px-3">
         <Button
           variant="ghost"
           size="icon-sm"
@@ -85,7 +271,24 @@ export function AppShell({
         </Button>
         <h1 className="font-semibold">Mail</h1>
         <span className="truncate text-muted-foreground">{title}</span>
-        <div className="ms-auto">
+        <div className="ms-auto flex items-center gap-1">
+          <Button
+            ref={commandsButtonRef}
+            variant="ghost"
+            size="sm"
+            className="gap-1.5 max-md:size-11 max-md:px-0"
+            onClick={openPalette}
+            aria-label={`Commands (${paletteShortcutKeys(platform).join("+")})`}
+            aria-keyshortcuts={platform === "apple" ? "Meta+K" : "Control+K"}
+          >
+            <CommandIcon aria-hidden="true" className="size-4" />
+            <span className="hidden md:inline">Commands</span>
+            <span className="hidden md:inline-flex items-center gap-0.5" aria-hidden="true">
+              {paletteShortcutKeys(platform).map((key) => (
+                <Kbd key={key}>{key}</Kbd>
+              ))}
+            </span>
+          </Button>
           <ThemeToggle />
         </div>
       </header>
@@ -123,6 +326,7 @@ export function AppShell({
             onSelect={handleSelect}
             showAccountLabels={scope.kind !== "account"}
             onSessionLost={onSessionLost}
+            searchInputRef={searchInputRef}
           />
         </div>
 
@@ -142,6 +346,13 @@ export function AppShell({
       <p role="status" aria-live="polite" className="sr-only">
         {selected === null ? "" : `Selected: ${selected.subject ?? "(no subject)"}`}
       </p>
+
+      <CommandPalette
+        open={paletteOpen}
+        onOpenChange={handlePaletteOpenChange}
+        commands={commands}
+        onRestoreFocus={restorePaletteFocus}
+      />
     </div>
   );
 }
