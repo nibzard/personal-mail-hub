@@ -1404,7 +1404,7 @@
         "sync",
         "safety"
       ],
-      "updated_at": "2026-09-19T20:36:43Z",
+      "updated_at": "2026-09-19T20:37:14Z",
       "files": [
         "packages/sync/src/backfill.ts",
         "packages/sync/src/reconcile.ts",
@@ -1412,26 +1412,40 @@
         "packages/sync/src/steady.ts",
         "packages/sync/test/backfill.test.ts",
         "packages/sync/test/fake-mailbox.ts",
-        "packages/sync/test/steady.test.ts"
+        "packages/sync/test/steady.test.ts",
+        "to-do.json"
       ]
     },
     {
       "id": "T042",
       "title": "Bound parsing and original-fetch memory",
       "priority": 2,
-      "status": "todo",
+      "status": "done",
       "details": "Parsing holds the whole original, every decoded attachment, and the sanitized DOM in memory at once (packages/ingestion/src/parse.ts:81-157 with service.ts:91-110; only hashes are persisted), and sync buffers each complete original in memory via fetchOne with source enabled and no size cap (packages/sync/src/imap-session.ts:164-177). Steady state also loads every active occurrence of a folder on each poll (steady.ts:319-336) and fetches an unbounded arrival range in one transaction after downtime (steady.ts:207-209). One oversized message on the 2 GB shared API and worker process can terminate sync, send, and reading together, against the SPEC section 10 rule to stream originals to disk and bound parsing. Add a maximum message size policy (reject or skip with an event above the bound), stream originals into the durable store instead of buffering them, batch the flag-refresh and arrival ranges, and document the chosen bound.",
       "tags": [
         "sync",
         "ingestion",
         "reliability"
       ],
-      "updated_at": "2026-09-19T17:39:46Z",
+      "updated_at": "2026-09-19T21:10:16Z",
       "files": [
+        "packages/contracts/src/index.ts",
+        "packages/ingestion/src/errors.ts",
         "packages/ingestion/src/parse.ts",
         "packages/ingestion/src/service.ts",
+        "packages/ingestion/src/index.ts",
+        "packages/database/src/storage/fs-object-store.ts",
+        "packages/sync/src/mailbox.ts",
         "packages/sync/src/imap-session.ts",
-        "packages/sync/src/steady.ts"
+        "packages/sync/src/bodies.ts",
+        "packages/sync/src/store.ts",
+        "packages/sync/src/steady.ts",
+        "packages/harness/src/imap-server.ts",
+        "packages/sync/test/fake-mailbox.ts",
+        "packages/sync/test/steady.test.ts",
+        "packages/ingestion/test/service.test.ts",
+        "packages/database/test/storage.test.ts",
+        "SPEC.md"
       ]
     },
     {

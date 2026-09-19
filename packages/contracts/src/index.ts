@@ -887,7 +887,8 @@ export type IngestionErrorCode =
   | "original_missing"
   | "original_mismatch"
   | "locator_unresolved"
-  | "bytes_mismatch";
+  | "bytes_mismatch"
+  | "message_too_large";
 
 /** Settings rejection code, from `SPEC.md` F10 and section 7. */
 export type SettingsErrorCode = "invalid_request";

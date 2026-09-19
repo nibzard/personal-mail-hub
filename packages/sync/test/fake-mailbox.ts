@@ -4,6 +4,7 @@ import type {
   MailboxHeaders,
   MailboxSession,
   MailboxState,
+  OriginalDownload,
 } from "../src/mailbox.ts";
 
 /**
@@ -33,7 +34,7 @@ export interface FakeFailures {
   search?: Error;
   fetchHeaders?: Error;
   fetchFlags?: Error;
-  fetchOriginal?: Error;
+  streamOriginal?: Error;
   revalidate?: Error;
 }
 
@@ -110,10 +111,36 @@ export class FakeMailboxSession implements MailboxSession {
       }));
   }
 
-  async fetchOriginal(uid: number): Promise<Uint8Array | null> {
-    this.failOnce("fetchOriginal");
+  async streamOriginal(uid: number): Promise<OriginalDownload | null> {
+    this.failOnce("streamOriginal");
     const message = this.messagesOfCurrent().find((candidate) => candidate.uid === uid);
-    return message === undefined ? null : completeBytes(message);
+    if (message === undefined) {
+      return null;
+    }
+    const bytes = completeBytes(message);
+    const chunks = async function* (): AsyncGenerator<Uint8Array> {
+      yield bytes;
+    };
+    return {
+      expectedSize: bytes.byteLength,
+      chunks: chunks(),
+      discard: () => undefined,
+    };
+  }
+
+  async fetchOriginal(uid: number): Promise<Uint8Array | null> {
+    const download = await this.streamOriginal(uid);
+    if (download === null) {
+      return null;
+    }
+    let bytes = new Uint8Array(0);
+    for await (const chunk of download.chunks) {
+      const merged = new Uint8Array(bytes.byteLength + chunk.byteLength);
+      merged.set(bytes);
+      merged.set(chunk, bytes.byteLength);
+      bytes = merged;
+    }
+    return bytes.byteLength === 0 ? null : bytes;
   }
 
   async revalidate(): Promise<MailboxState> {

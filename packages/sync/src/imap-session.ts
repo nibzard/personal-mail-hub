@@ -7,6 +7,7 @@ import type {
   MoveWriteResult,
   WritableActionMailbox,
 } from "@mail-hub/actions";
+import { MAX_MESSAGE_BYTES } from "@mail-hub/ingestion";
 import { resolveTimeouts, verifiedTlsOptions } from "@mail-hub/transport";
 import { SyncError } from "./errors.ts";
 import {
@@ -18,6 +19,7 @@ import {
   type MailboxSession,
   type MailboxSessionFactory,
   type MailboxState,
+  type OriginalDownload,
   type SentCopyMailboxSession,
 } from "./mailbox.ts";
 
@@ -161,19 +163,56 @@ export class ImapMailboxSession implements MailboxSession, WritableActionMailbox
     return records;
   }
 
-  async fetchOriginal(uid: number): Promise<Uint8Array | null> {
-    const message = await this.guard("fetch", (client) =>
-      client.fetchOne(String(uid), { source: true }, { uid: true }),
+  async streamOriginal(uid: number): Promise<OriginalDownload | null> {
+    // A whole-message download: no part, streamed in bounded chunks, with the
+    // server's own size report attached. Like every fetch here it peeks, so
+    // importing a mailbox never sets `\Seen`.
+    const download = await this.guard("download", (client) =>
+      client.download(String(uid), undefined, { uid: true }),
     );
-    if (message === false || message === undefined) {
+    // The library answers an empty object when the message does not exist.
+    if (download === undefined || download.meta === undefined || download.content === undefined) {
       return null;
+    }
+    return {
+      expectedSize: download.meta.expectedSize ?? null,
+      chunks: download.content,
+      discard: () => {
+        // Destroying the output aborts the library's fetch loop and frees
+        // the connection for the next command.
+        download.content.destroy();
+      },
+    };
+  }
+
+  async fetchOriginal(uid: number): Promise<Uint8Array | null> {
+    const download = await this.streamOriginal(uid);
+    if (download === null) {
+      return null;
+    }
+    const parts: Uint8Array[] = [];
+    let sizeBytes = 0;
+    try {
+      for await (const chunk of download.chunks) {
+        if (sizeBytes + chunk.byteLength > MAX_MESSAGE_BYTES) {
+          // The whole-byte view keeps the ingestion bound: a caller that
+          // asked for everything of an oversized message gets a typed
+          // refusal, not a buffer the deployment cannot hold.
+          throw new SyncError(
+            "invalid_request",
+            `The message is above the ${MAX_MESSAGE_BYTES}-byte maximum and cannot be read whole.`,
+          );
+        }
+        parts.push(chunk);
+        sizeBytes += chunk.byteLength;
+      }
+    } catch (cause) {
+      download.discard();
+      throw cause;
     }
     // A message that exists always has bytes; a zero-length answer means the
     // server answered with nothing usable.
-    if (message.source === undefined || message.source.byteLength === 0) {
-      return null;
-    }
-    return message.source;
+    return sizeBytes === 0 ? null : Buffer.concat(parts);
   }
 
   async revalidate(): Promise<MailboxState> {

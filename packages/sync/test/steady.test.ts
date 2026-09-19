@@ -12,12 +12,13 @@ import {
   folders,
   messageOccurrences,
   messages,
+  originalMessageKey,
   runMigrations,
   type Folder,
   type Storage,
   dropTestDatabase,
 } from "@mail-hub/database";
-import { IngestionService } from "@mail-hub/ingestion";
+import { IngestionService, MAX_MESSAGE_BYTES } from "@mail-hub/ingestion";
 import {
   BackfillService,
   BodyFetchService,
@@ -228,6 +229,141 @@ suite("SteadyStateService and ReconciliationService", () => {
     const polled = await eventsOf(FOLDER_POLLED_EVENT, folder.id);
     expect(polled).toHaveLength(2);
     expect(polled.at(-1)).toMatchObject({ bound: 5, imported: 0 });
+  });
+
+  it("imports a downtime backlog in bounded batches with the same totals", async () => {
+    const { accountId, folderIds } = await setupAccount([{ name: "INBOX", role: "inbox" }]);
+    const folder = folderIds.get("INBOX")!;
+    const session = new FakeMailboxSession();
+    session.load("INBOX", [fixture(1, "Backlog one"), fixture(2, "Backlog two")]);
+
+    const { backfill } = services();
+    await drain(backfill, session, accountId, folder);
+
+    // Seven arrivals land during downtime; the poll owes them all at once.
+    session.load(
+      "INBOX",
+      Array.from({ length: 9 }, (_, index) => fixture(index + 1, `Backlog ${index + 1}`)),
+    );
+
+    // Every remote read stays inside its batch bound while the poll runs.
+    const headerWindows: number[][] = [];
+    const flagWindows: number[][] = [];
+    const originalFetchHeaders = session.fetchHeaders.bind(session);
+    const originalFetchFlags = session.fetchFlags.bind(session);
+    session.fetchHeaders = async (uids: number[]) => {
+      headerWindows.push([...uids]);
+      return originalFetchHeaders(uids);
+    };
+    session.fetchFlags = async (uids: number[]) => {
+      flagWindows.push([...uids]);
+      return originalFetchFlags(uids);
+    };
+
+    const batched = new SteadyStateService(createDatabase(pool), { arrivalBatch: 3, flagBatch: 2 });
+    const poll = await batched.pollFolder(session, accountId, folder.id);
+    expect(poll).toMatchObject({
+      state: "polled",
+      bound: 9,
+      found: 7,
+      imported: 7,
+      flagsObserved: 9,
+      flagsChanged: 0,
+      expunged: 0,
+    });
+    expect((await folderRow(folder.id)).arrivalScannedUid).toBe(9);
+
+    // Header windows never exceed the arrival batch; flag pages never exceed
+    // the flag batch, and the occurrences were read page by page.
+    expect(headerWindows.length).toBe(3);
+    expect(headerWindows.map((uids) => uids.length)).toEqual([3, 3, 1]);
+    expect(flagWindows.length).toBe(5);
+    expect(flagWindows.every((uids) => uids.length <= 2)).toBe(true);
+    expect(await countMessages(accountId)).toBe(9);
+  });
+
+  it("skips oversized messages at import and never lists them as body jobs", async () => {
+    const { accountId, folderIds } = await setupAccount([{ name: "INBOX", role: "inbox" }]);
+    const folder = folderIds.get("INBOX")!;
+    const session = new FakeMailboxSession();
+    session.load("INBOX", [fixture(1, "Huge one"), fixture(2, "Small two")]);
+
+    // The server reports the first message above the maximum size.
+    const originalFetchHeaders = session.fetchHeaders.bind(session);
+    session.fetchHeaders = async (uids: number[]) => {
+      const records = await originalFetchHeaders(uids);
+      return records.map((record) =>
+        record.uid === 1 ? { ...record, sizeBytes: MAX_MESSAGE_BYTES + 1 } : record,
+      );
+    };
+
+    const { backfill, bodies } = services();
+    await drain(backfill, session, accountId, folder);
+
+    const db = createDatabase(pool);
+    const rows = await db
+      .select({ id: messages.id, subject: messages.subject, sizeBytes: messages.sizeBytes, fetchedBody: messages.fetchedBody })
+      .from(messages)
+      .where(eq(messages.accountId, accountId))
+      .orderBy(messages.subject);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ sizeBytes: MAX_MESSAGE_BYTES + 1, fetchedBody: false });
+
+    // The decision is on the audit trail exactly once, with the bound named.
+    const skipped = await eventsOf("message.body_skipped", rows[0]!.id);
+    expect(skipped).toEqual([{ accountId, folderId: folder.id, uid: 1, sizeBytes: MAX_MESSAGE_BYTES + 1, maxBytes: MAX_MESSAGE_BYTES }]);
+
+    // Only the message inside the bound stays a body job.
+    expect(await bodies.pendingBodyCount(accountId)).toBe(1);
+    expect((await bodies.pendingBodies(accountId, 10)).map((job) => job.uid)).toEqual([2]);
+  });
+
+  it("skips a body whose server size drifted past the bound", async () => {
+    const { accountId, folderIds } = await setupAccount([{ name: "INBOX", role: "inbox" }]);
+    const folder = folderIds.get("INBOX")!;
+    const session = new FakeMailboxSession();
+    session.load("INBOX", [fixture(1, "Drifts large")]);
+
+    const { backfill, bodies } = services();
+    await drain(backfill, session, accountId, folder);
+    const job = (await bodies.pendingBodies(accountId, 10))[0]!;
+
+    // The stored size was inside the bound; the download now reports more.
+    let discarded = false;
+    const originalStreamOriginal = session.streamOriginal.bind(session);
+    session.streamOriginal = async (uid: number) => {
+      const download = await originalStreamOriginal(uid);
+      return download === null
+        ? null
+        : {
+            ...download,
+            expectedSize: MAX_MESSAGE_BYTES + 1,
+            discard: () => {
+              discarded = true;
+            },
+          };
+    };
+
+    const outcome = await bodies.fetchBody(session, accountId, job);
+    expect(outcome).toMatchObject({ state: "skipped_oversized", sizeBytes: MAX_MESSAGE_BYTES + 1 });
+    // The oversized download was stopped without draining it.
+    expect(discarded).toBe(true);
+
+    // The observed size moved onto the row, so the job stops qualifying, and
+    // the skip is on the audit trail.
+    const db = createDatabase(pool);
+    const [row] = await db
+      .select({ id: messages.id, sizeBytes: messages.sizeBytes, fetchedBody: messages.fetchedBody })
+      .from(messages)
+      .where(eq(messages.accountId, accountId));
+    expect(row).toMatchObject({ sizeBytes: MAX_MESSAGE_BYTES + 1, fetchedBody: false });
+    expect(await eventsOf("message.body_skipped", row!.id)).toEqual([
+      { accountId, sizeBytes: MAX_MESSAGE_BYTES + 1, maxBytes: MAX_MESSAGE_BYTES },
+    ]);
+    expect(await bodies.pendingBodyCount(accountId)).toBe(0);
+    // Nothing was stored for the skipped original.
+    expect(row!.id).toBeDefined();
+    await expect(storage.durable.stat(originalMessageKey(row!.id))).resolves.toBeNull();
   });
 
   it("marks absent occurrences expunged while keeping the message and its original", async () => {
@@ -558,9 +694,9 @@ suite("SteadyStateService and ReconciliationService", () => {
 
     // The first body fetch moves the second job's message: its occurrence is
     // expunged by the time the runner loads the stale job.
-    const originalFetchOriginal = session.fetchOriginal.bind(session);
+    const originalStreamOriginal = session.streamOriginal.bind(session);
     let armed = true;
-    session.fetchOriginal = async (uid: number) => {
+    session.streamOriginal = async (uid: number) => {
       if (armed) {
         armed = false;
         await db
@@ -568,7 +704,7 @@ suite("SteadyStateService and ReconciliationService", () => {
           .set({ expungedAt: new Date() })
           .where(eq(messageOccurrences.id, moved.id));
       }
-      return originalFetchOriginal(uid);
+      return originalStreamOriginal(uid);
     };
 
     const runner = new SyncRunner(

@@ -1,5 +1,6 @@
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import {
+  events,
   folders,
   messageOccurrences,
   messages,
@@ -7,7 +8,7 @@ import {
   type MailHubDatabase,
   type MessageOccurrence,
 } from "@mail-hub/database";
-import type { IngestionService } from "@mail-hub/ingestion";
+import { IngestionService, MAX_MESSAGE_BYTES } from "@mail-hub/ingestion";
 import { SyncError } from "./errors.ts";
 import type { MailboxSession } from "./mailbox.ts";
 
@@ -17,9 +18,11 @@ import type { MailboxSession } from "./mailbox.ts";
  * One imported message row with `fetched_body = false` is one durable body
  * job: it was committed with the boundary that covers it, so a restart never
  * loses one. This service lists those jobs per account, newest first, and
- * resolves each through an open session: fetch the complete bytes, confirm
- * the folder generation held, then hand the bytes to ingestion, which stores
- * the original durably before any derived row changes.
+ * resolves each through an open session: stream the complete bytes straight
+ * into durable storage, confirm the folder generation held, then parse and
+ * apply what was stored. An original above the maximum message size never
+ * becomes a body job — header import already skipped it with an event — and
+ * a size that drifted past the bound is skipped the same way here.
  */
 
 /** One durable body job: a message and one active occurrence to fetch it by. */
@@ -44,6 +47,12 @@ export type BodyFetchOutcome =
     }
   | { state: "already_fetched"; messageId: string }
   | { state: "missing"; messageId: string }
+  | {
+      /** The server now reports a size above the maximum; nothing was read. */
+      state: "skipped_oversized";
+      messageId: string;
+      sizeBytes: number;
+    }
   | { state: "generation_changed"; messageId: string; recorded: number; observed: number };
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -156,8 +165,10 @@ export class BodyFetchService {
 
   /**
    * Fetch and ingest one pending body through an open session. The bytes are
-   * read only after the folder generation matches the occurrence's, and they
-   * are ingested only after the generation is confirmed to have held.
+   * read only after the folder generation matches the occurrence's, they are
+   * streamed into durable storage without passing through a whole-message
+   * buffer, and they are applied only after the generation is confirmed to
+   * have held.
    */
   async fetchBody(
     session: MailboxSession,
@@ -179,14 +190,30 @@ export class BodyFetchService {
         observed: mailbox.uidValidity,
       };
     }
-    const bytes = await session.fetchOriginal(target.occurrence.uid);
-    if (bytes === null) {
+    const download = await session.streamOriginal(target.occurrence.uid);
+    if (download === null) {
       // Expunged on the server. The row stays pending; reconciliation owns
       // expunge marking (SPEC F2 steady state).
       return { state: "missing", messageId: pending.messageId };
     }
+    if (download.expectedSize !== null && download.expectedSize > MAX_MESSAGE_BYTES) {
+      // The recorded size was inside the bound but the message grew, or the
+      // server misreported it at import time. Record the observed size so
+      // the row stops qualifying as a body job, the way import-time skipping
+      // would have (SPEC section 10).
+      download.discard();
+      await this.skipOversized(accountId, target.message.id, download.expectedSize);
+      return { state: "skipped_oversized", messageId: pending.messageId, sizeBytes: download.expectedSize };
+    }
+    const staged = await this.ingestion.stageOriginal({
+      messageId: target.message.id,
+      source: download.chunks,
+      expectedSize: download.expectedSize,
+    });
     const recheck = await session.revalidate();
     if (recheck.uidValidity !== target.occurrence.uidvalidity) {
+      // The staged object stays unreferenced and waits for garbage
+      // collection; the next fetch of this job stages again.
       return {
         state: "generation_changed",
         messageId: pending.messageId,
@@ -195,10 +222,10 @@ export class BodyFetchService {
       };
     }
 
-    const result = await this.ingestion.ingestOriginal({
+    const result = await this.ingestion.applyStagedOriginal({
       accountId,
       messageId: target.message.id,
-      bytes,
+      staged,
     });
     return {
       state: "fetched",
@@ -207,6 +234,27 @@ export class BodyFetchService {
       removedMessageId: result.removedMessageId,
       sha256: result.sha256,
     };
+  }
+
+  /**
+   * Record one size-policy skip: the observed size moves onto the message
+   * row, so it no longer qualifies as a body job, and one audit event names
+   * the bound that applied. The headers stay imported and readable.
+   */
+  private async skipOversized(accountId: string, messageId: string, sizeBytes: number): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      await tx
+        .update(messages)
+        .set({ sizeBytes })
+        .where(and(eq(messages.id, messageId), eq(messages.accountId, accountId)));
+      await tx.insert(events).values({
+        actor: "system",
+        type: "message.body_skipped",
+        entityType: "message",
+        entityId: messageId,
+        payload: { accountId, sizeBytes, maxBytes: MAX_MESSAGE_BYTES },
+      });
+    });
   }
 
   /** The occurrence, its folder, and its logical message, verified to belong together. */
@@ -248,6 +296,11 @@ function pendingBodyConditions(accountId: string) {
     isNull(messageOccurrences.invalidatedAt),
     // Only the current folder generation resolves UIDs.
     eq(folders.uidvalidity, messageOccurrences.uidvalidity),
+    // Messages above the maximum size stay header-only: parsing one would
+    // hold more than the deployment can spare (SPEC section 10). A size the
+    // server never reported cannot be judged yet, so it stays fetchable and
+    // the stream itself enforces the bound.
+    or(isNull(messages.sizeBytes), lte(messages.sizeBytes, MAX_MESSAGE_BYTES)),
   );
 }
 

@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import {
   folders,
   messageOccurrences,
@@ -20,12 +20,14 @@ import {
  * Steady-state folder polling (SPEC F2).
  *
  * A poll selects the folder, captures `UIDNEXT - 1` as its arrival bound, and
- * imports arrivals above `arrival_scanned_uid` through that bound in one
- * transaction with the bound itself. It then compares the server's UID set
- * with the active occurrences of the current generation and marks absent ones
- * expunged, and refreshes flags in bounded batches without change-tracking
- * extensions. Every database commit rechecks the folder generation first, so
- * a worker discards its results when the generation moves under it.
+ * imports arrivals above `arrival_scanned_uid` through that bound in bounded
+ * batches, each committing with the checkpoint it covered. It then compares
+ * the server's UID set with the active occurrences of the current generation
+ * and marks absent ones expunged, and refreshes flags in bounded batches
+ * without change-tracking extensions, reading the occurrences themselves in
+ * pages of the same size. Every database commit rechecks the folder
+ * generation first, so a worker discards its results when the generation
+ * moves under it.
  */
 
 /** The event that marks one folder polled; its newest row sets the due time. */
@@ -39,6 +41,9 @@ export const OTHER_FOLDER_POLL_INTERVAL_MS = 15 * 60_000;
 
 /** Flags move in bounded batches, like header windows. */
 export const DEFAULT_FLAG_BATCH = 200;
+
+/** Arrivals import in bounded batches, like header windows (SPEC F2). */
+export const DEFAULT_ARRIVAL_BATCH = 200;
 
 /** What one poll did. */
 export type PollOutcome =
@@ -73,10 +78,13 @@ interface FlagChange {
 export interface SteadyStateOptions {
   /** Maximum occurrences per flag fetch. */
   flagBatch?: number;
+  /** Maximum UIDs one arrival import fetches and commits. */
+  arrivalBatch?: number;
 }
 
 export class SteadyStateService {
   private readonly flagBatch: number;
+  private readonly arrivalBatch: number;
 
   constructor(
     private readonly db: MailHubDatabase,
@@ -87,6 +95,11 @@ export class SteadyStateService {
       throw new SyncError("invalid_request", "The flag batch size must be a positive integer.");
     }
     this.flagBatch = flagBatch;
+    const arrivalBatch = options.arrivalBatch ?? DEFAULT_ARRIVAL_BATCH;
+    if (!Number.isSafeInteger(arrivalBatch) || arrivalBatch < 1) {
+      throw new SyncError("invalid_request", "The arrival batch size must be a positive integer.");
+    }
+    this.arrivalBatch = arrivalBatch;
   }
 
   /** The poll interval of one folder: the Inbox polls every minute. */
@@ -186,8 +199,11 @@ export class SteadyStateService {
 
   /**
    * Import arrivals above `arrival_scanned_uid` through the captured bound.
-   * The rows and the bound commit together, so a restart re-covers at most the
-   * range it did not commit (SPEC F2 steady state).
+   * The range moves in bounded batches — downtime can owe thousands of UIDs —
+   * and each batch commits its rows with the checkpoint it covered, so a
+   * restart re-covers at most the batch in flight. The last batch carries the
+   * poll's bound itself, so UIDs the search found nothing for above the
+   * newest arrival are never searched again (SPEC F2 steady state).
    */
   private async importArrivals(
     session: MailboxSession,
@@ -205,46 +221,66 @@ export class SteadyStateService {
     }
 
     const uids = await session.searchUids(folder.arrivalScannedUid + 1, bound);
-    const ordered = [...uids].sort((a, b) => b - a);
-    const records = ordered.length > 0 ? await session.fetchHeaders(ordered) : [];
-
-    // Discard the fetch when the generation moved before its commit (SPEC F2).
-    const recheck = await session.revalidate();
-    if (recheck.uidValidity !== generation) {
-      return { state: "generation_changed", folderId: folder.id, recorded: generation, observed: recheck.uidValidity };
+    // Ascending: one batch's checkpoint is the newest UID it imported.
+    const ordered = [...uids].sort((a, b) => a - b);
+    const windows: number[][] = [];
+    for (let offset = 0; offset < ordered.length; offset += this.arrivalBatch) {
+      windows.push(ordered.slice(offset, offset + this.arrivalBatch));
+    }
+    if (windows.length === 0) {
+      // The range holds no message; its bound still needs one commit.
+      windows.push([]);
     }
 
-    const committed = await this.db.transaction(async (tx) => {
-      const locked = await lockFolder(tx, accountId, folder.id);
-      if (locked.uidvalidity !== generation) {
-        return null;
+    let found = 0;
+    let imported = 0;
+    let skipped = 0;
+    for (let index = 0; index < windows.length; index += 1) {
+      const window = windows[index]!;
+      const records = await session.fetchHeaders(window);
+
+      // Discard the fetch when the generation moved before its commit (SPEC F2).
+      const recheck = await session.revalidate();
+      if (recheck.uidValidity !== generation) {
+        return { state: "generation_changed", folderId: folder.id, recorded: generation, observed: recheck.uidValidity };
       }
-      let imported = 0;
-      let skipped = 0;
-      for (const record of records) {
-        const wasImported = await importHeaderRecord(tx, accountId, folder.id, generation, record);
-        if (wasImported) {
-          imported += 1;
-        } else {
-          skipped += 1;
+
+      const committed = await this.db.transaction(async (tx) => {
+        const locked = await lockFolder(tx, accountId, folder.id);
+        if (locked.uidvalidity !== generation) {
+          return null;
         }
+        let batchImported = 0;
+        let batchSkipped = 0;
+        for (const record of records) {
+          const wasImported = await importHeaderRecord(tx, accountId, folder.id, generation, record);
+          if (wasImported) {
+            batchImported += 1;
+          } else {
+            batchSkipped += 1;
+          }
+        }
+        // The checkpoint is monotonic: only a higher value moves it.
+        const covered = index === windows.length - 1 ? bound : window[window.length - 1]!;
+        const scanned = Math.max(locked.arrivalScannedUid, covered);
+        await tx
+          .update(folders)
+          .set({ arrivalScannedUid: scanned })
+          .where(eq(folders.id, folder.id));
+        return { imported: batchImported, skipped: batchSkipped };
+      });
+      if (committed === null) {
+        // Another cycle already moved the folder while this poll was in
+        // flight. The committed generation stands: report it as observed, so
+        // the guarded reset recognizes the folder as already current.
+        const observed = (await loadFolder(this.db, accountId, folder.id)).uidvalidity ?? generation;
+        return { state: "generation_changed", folderId: folder.id, recorded: generation, observed };
       }
-      // The bound is monotonic: only a higher bound moves the checkpoint.
-      const scanned = Math.max(locked.arrivalScannedUid, bound);
-      await tx
-        .update(folders)
-        .set({ arrivalScannedUid: scanned })
-        .where(eq(folders.id, folder.id));
-      return { imported, skipped, scanned };
-    });
-    if (committed === null) {
-      // Another cycle already moved the folder while this poll was in flight.
-      // The committed generation stands: report it as observed, so the guarded
-      // reset recognizes the folder as already current.
-      const observed = (await loadFolder(this.db, accountId, folder.id)).uidvalidity ?? generation;
-      return { state: "generation_changed", folderId: folder.id, recorded: generation, observed };
+      found += window.length;
+      imported += committed.imported;
+      skipped += committed.skipped;
     }
-    return { state: "ok", bound, found: ordered.length, imported: committed.imported, skipped: committed.skipped };
+    return { state: "ok", bound, found, imported, skipped };
   }
 
   /**
@@ -312,9 +348,12 @@ export class SteadyStateService {
   }
 
   /**
-   * Refresh observed flags in bounded batches. Only a changed observation
-   * writes: the revision stays stable while the server state does, so a
-   * queued action target does not go stale because a poll looked at it.
+   * Refresh observed flags in bounded batches. The occurrences themselves are
+   * read in pages of the same bound — a folder can hold every message an
+   * account ever kept — and each page commits its own changes after the
+   * generation is rechecked. Only a changed observation writes: the revision
+   * stays stable while the server state does, so a queued action target does
+   * not go stale because a poll looked at it.
    */
   private async refreshFlags(
     session: MailboxSession,
@@ -322,31 +361,40 @@ export class SteadyStateService {
     folderId: string,
     generation: number,
   ): Promise<{ state: "ok"; observed: number; changed: number } | { state: "generation_changed"; recorded: number; observed: number }> {
-    const occurrences = await this.db
-      .select({
-        id: messageOccurrences.id,
-        uid: messageOccurrences.uid,
-        unread: messageOccurrences.unread,
-        flagged: messageOccurrences.flagged,
-      })
-      .from(messageOccurrences)
-      .where(
-        and(
-          eq(messageOccurrences.accountId, accountId),
-          eq(messageOccurrences.folderId, folderId),
-          eq(messageOccurrences.uidvalidity, generation),
-          isNull(messageOccurrences.expungedAt),
-          isNull(messageOccurrences.invalidatedAt),
-        ),
-      )
-      .orderBy(messageOccurrences.uid);
-
     let observed = 0;
-    const changes: FlagChange[] = [];
-    for (let offset = 0; offset < occurrences.length; offset += this.flagBatch) {
-      const batch = occurrences.slice(offset, offset + this.flagBatch);
+    let changed = 0;
+    // Keyset pagination on the UID: one page's newest UID is the next page's
+    // exclusive lower bound, so no page depends on row offsets.
+    let uidAfter = 0;
+    for (;;) {
+      const batch = await this.db
+        .select({
+          id: messageOccurrences.id,
+          uid: messageOccurrences.uid,
+          unread: messageOccurrences.unread,
+          flagged: messageOccurrences.flagged,
+        })
+        .from(messageOccurrences)
+        .where(
+          and(
+            eq(messageOccurrences.accountId, accountId),
+            eq(messageOccurrences.folderId, folderId),
+            eq(messageOccurrences.uidvalidity, generation),
+            isNull(messageOccurrences.expungedAt),
+            isNull(messageOccurrences.invalidatedAt),
+            gt(messageOccurrences.uid, uidAfter),
+          ),
+        )
+        .orderBy(messageOccurrences.uid)
+        .limit(this.flagBatch);
+      if (batch.length === 0) {
+        break;
+      }
+      uidAfter = batch[batch.length - 1]!.uid;
+
       const answers = await session.fetchFlags(batch.map((row) => row.uid));
       const byUid = new Map(answers.map((answer) => [answer.uid, answer]));
+      const changes: FlagChange[] = [];
       for (const occurrence of batch) {
         // A UID the server omitted from the answer no longer exists; expunge
         // detection owns that marking.
@@ -363,38 +411,39 @@ export class SteadyStateService {
           });
         }
       }
-    }
-    if (changes.length === 0) {
-      return { state: "ok", observed, changed: 0 };
-    }
+      if (changes.length === 0) {
+        continue;
+      }
 
-    const recheck = await session.revalidate();
-    if (recheck.uidValidity !== generation) {
-      return { state: "generation_changed", recorded: generation, observed: recheck.uidValidity };
-    }
-    const applied = await this.db.transaction(async (tx) => {
-      const locked = await lockFolder(tx, accountId, folderId);
-      if (locked.uidvalidity !== generation) {
-        return null;
+      const recheck = await session.revalidate();
+      if (recheck.uidValidity !== generation) {
+        return { state: "generation_changed", recorded: generation, observed: recheck.uidValidity };
       }
-      for (const change of changes) {
-        await tx
-          .update(messageOccurrences)
-          .set({
-            unread: change.unread,
-            flagged: change.flagged,
-            // Increment in the statement itself, so a revision another writer
-            // committed between the read and this lock still counts.
-            revision: sql`${messageOccurrences.revision} + 1`,
-            observedAt: new Date(),
-          })
-          .where(eq(messageOccurrences.id, change.occurrenceId));
+      const applied = await this.db.transaction(async (tx) => {
+        const locked = await lockFolder(tx, accountId, folderId);
+        if (locked.uidvalidity !== generation) {
+          return null;
+        }
+        for (const change of changes) {
+          await tx
+            .update(messageOccurrences)
+            .set({
+              unread: change.unread,
+              flagged: change.flagged,
+              // Increment in the statement itself, so a revision another writer
+              // committed between the read and this lock still counts.
+              revision: sql`${messageOccurrences.revision} + 1`,
+              observedAt: new Date(),
+            })
+            .where(eq(messageOccurrences.id, change.occurrenceId));
+        }
+        return changes.length;
+      });
+      if (applied === null) {
+        return { state: "generation_changed", recorded: generation, observed: generation };
       }
-      return changes.length;
-    });
-    if (applied === null) {
-      return { state: "generation_changed", recorded: generation, observed: generation };
+      changed += applied;
     }
-    return { state: "ok", observed, changed: applied };
+    return { state: "ok", observed, changed };
   }
 }

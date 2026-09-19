@@ -93,8 +93,13 @@ The hardest component. It follows the checkpoint design in
    a successful fetch.
 5. Mark backfill complete when all ranges down to UID 1 are scanned.
    Persist progress independently from new arrivals.
-6. Fetch complete messages in background jobs. Store original bytes durably
-   before marking bodies fetched. Parse, sanitize, and index derived content.
+6. Fetch complete messages in background jobs. Stream each original to
+   durable storage chunk by chunk; never buffer a whole message. Store
+   original bytes durably before marking bodies fetched. Parse, sanitize,
+   and index derived content.
+7. Skip the body of a message the server reports above the maximum message
+   size. Headers and the occurrence stay; one `message.body_skipped` event
+   records the size and the bound.
 
 Use one IMAP connection per account during backfill. Yield between batches
 so polls and user actions can run. A restart repeats only uncommitted batches.
@@ -103,7 +108,8 @@ so polls and user actions can run. A restart repeats only uncommitted batches.
 
 - Poll each Inbox every 60 seconds. Poll other folders every 15 minutes.
 - Capture `UIDNEXT - 1` on each poll. Fetch arrivals above
-  `arrival_scanned_uid` through that bound, then commit the bound with the rows.
+  `arrival_scanned_uid` through that bound in bounded batches. Each batch
+  commits its rows with the checkpoint it covered; the last carries the bound.
 - Refresh flags for existing occurrences. Without change-tracking extensions,
   fetch flags in bounded batches across the folder.
 - IDLE is an optional later upgrade. Polling is the baseline.
@@ -955,6 +961,13 @@ Notes:
   language later is a reindex, not a redesign.
 - Original MIME bytes are durable records, including raw HTML and attachments.
   Never render originals directly. `bodies` contains sanitized derivatives only.
+- Originals stream from the mailbox into durable storage chunk by chunk.
+  Parsing reads them back under the maximum message size, 50 MiB. The bound
+  keeps one parse inside the memory a 2 GB deployment shares. It sits above
+  the 25 MiB upload cap with full base64 framing and matches what the largest
+  providers accept. Messages above it keep headers and occurrences; body
+  fetching skips them with a `message.body_skipped` event that names the
+  size and the bound.
 - Body parsing and the `messages.body_index_text` update commit together.
   Header indexing does not wait for a body row.
 - Accepted outgoing mail uses the same message and body tables. Acceptance,

@@ -75,7 +75,13 @@ export interface RecordedAppend {
 
 /** One parsed argument token of a command line. */
 type Token =
-  | { type: "atom"; value: string; section: string | null }
+  | {
+      type: "atom";
+      value: string;
+      section: string | null;
+      /** The `<origin.count>` byte range attached to a section, when present. */
+      partial?: { start: number; count: number | null };
+    }
   | { type: "string"; value: string }
   | { type: "list"; items: Token[] }
   | { type: "literal"; value: Buffer };
@@ -583,12 +589,20 @@ export class ScriptedImapServer {
       }
       const name = token.value.toUpperCase();
       if (token.section !== null) {
-        const literal = sectionLiteral(message.bytes, token.section);
+        let literal = sectionLiteral(message.bytes, token.section);
         if (literal === null) {
           return null;
         }
+        // A byte range attached to the section answers only that window, and
+        // the response echoes the origin alone (RFC 3501 partial syntax).
+        let origin = "";
+        if (token.partial !== undefined) {
+          const { start, count } = token.partial;
+          literal = literal.subarray(start, count === null ? undefined : start + count);
+          origin = `<${start}>`;
+        }
         // The response echoes the item with its section, minus `.PEEK`.
-        const item = `${token.value.toUpperCase().replace(/\.PEEK$/, "")}[${token.section}]`;
+        const item = `${token.value.toUpperCase().replace(/\.PEEK$/, "")}[${token.section}]${origin}`;
         // One response piece: the echoed item, the size marker with the CRLF
         // it terminates on, then the payload itself. A following item
         // separates with the space `items.join` adds.
@@ -1041,12 +1055,18 @@ function parseQuoted(body: string, start: number): { value: string; next: number
 /**
  * Parse one atom. A `[...]` section attached to it (as in
  * `BODY.PEEK[HEADER.FIELDS (DATE)]`) is kept apart from the item name,
- * because the response echoes the section without the `.PEEK` marker.
+ * because the response echoes the section without the `.PEEK` marker. A
+ * `<origin.count>` byte range may follow the section, as the partial FETCH
+ * of a streaming download uses.
  */
-function parseAtom(body: string, start: number): { value: string; section: string | null; next: number } {
+function parseAtom(
+  body: string,
+  start: number,
+): { value: string; section: string | null; partial?: { start: number; count: number | null }; next: number } {
   let position = start;
   let value = "";
   let section: string | null = null;
+  let partial: { start: number; count: number | null } | undefined;
   while (position < body.length) {
     const character = body[position]!;
     if (character === " " || character === "(" || character === ")") {
@@ -1058,10 +1078,23 @@ function parseAtom(body: string, start: number): { value: string; section: strin
       position = end + 1;
       continue;
     }
+    // `<` opens a byte range only directly after a section; anywhere else it
+    // is an ordinary atom character.
+    if (character === "<" && section !== null && partial === undefined) {
+      const end = body.indexOf(">", position);
+      const range = /^(\d+)(?:\.(\d+))?$/.exec(body.slice(position + 1, end === -1 ? body.length : end));
+      if (range !== null) {
+        partial = { start: Number(range[1]), count: range[2] === undefined ? null : Number(range[2]) };
+        position = end === -1 ? body.length : end + 1;
+        continue;
+      }
+    }
     value += character;
     position += 1;
   }
-  return { value, section, next: position };
+  return partial === undefined
+    ? { value, section, next: position }
+    : { value, section, partial, next: position };
 }
 
 /** Find the `]` that closes the section opened at `start`. */

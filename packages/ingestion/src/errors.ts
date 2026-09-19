@@ -14,6 +14,7 @@ const HTTP_STATUS_BY_CODE: Record<IngestionErrorCode, number> = {
   original_mismatch: 500,
   locator_unresolved: 500,
   bytes_mismatch: 500,
+  message_too_large: 413,
 };
 
 /** An ingestion rejection with its HTTP status. */

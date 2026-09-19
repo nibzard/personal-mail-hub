@@ -15,7 +15,7 @@ import {
 import type { MailHubTransaction } from "@mail-hub/recovery";
 import { createHash } from "node:crypto";
 import { IngestionError } from "./errors.ts";
-import { LOCATOR_VERSION, parseMime, type ParsedMessage } from "./parse.ts";
+import { LOCATOR_VERSION, MAX_MESSAGE_BYTES, parseMime, type ParsedMessage } from "./parse.ts";
 import { HtmlSanitizer, SANITIZER_VERSION } from "./sanitize.ts";
 import {
   BODY_INDEX_MAX_CHARS,
@@ -53,6 +53,33 @@ export interface IngestOriginalInput {
   accountId: string;
   messageId: string;
   bytes: Uint8Array;
+}
+
+/** One original to stream into durable storage, before anything parses. */
+export interface StageOriginalInput {
+  messageId: string;
+  /** The complete message bytes, chunked; never buffered whole. */
+  source: AsyncIterable<Uint8Array>;
+  /**
+   * The size the server reported for the message, when known. An original
+   * already above the maximum is rejected before any byte moves.
+   */
+  expectedSize?: number | null;
+}
+
+/** One original durably stored and hashed, not yet parsed or applied. */
+export interface StagedOriginal {
+  messageId: string;
+  storageKey: string;
+  sha256: string;
+  sizeBytes: number;
+}
+
+/** Apply one staged original to its provisional logical message. */
+export interface ApplyStagedInput {
+  accountId: string;
+  messageId: string;
+  staged: StagedOriginal;
 }
 
 /** Outcome of one ingestion call. `messageId` is always the surviving row. */
@@ -94,45 +121,110 @@ export class IngestionService {
     if (input.bytes.byteLength === 0) {
       throw new IngestionError("invalid_request", "Original message bytes are empty.");
     }
+    if (input.bytes.byteLength > MAX_MESSAGE_BYTES) {
+      throw tooLarge(input.bytes.byteLength);
+    }
+    const staged = await this.stageOriginal({
+      messageId: input.messageId,
+      source: oneChunk(input.bytes),
+      expectedSize: input.bytes.byteLength,
+    });
+    return this.applyStagedOriginal({ accountId: input.accountId, messageId: input.messageId, staged });
+  }
 
-    const sha256 = sha256Hex(input.bytes);
-    // Durable storage first: the referencing transaction commits only after
-    // this write finishes (SPEC section 8).
-    const storageKey = originalMessageKey(input.messageId);
-    const existing = await this.storage.durable.stat(storageKey);
-    if (existing === null || existing.sha256 !== sha256 || existing.sizeBytes !== input.bytes.byteLength) {
-      const stored = await this.storage.durable.put(storageKey, input.bytes);
-      if (stored.sha256 !== sha256) {
-        throw new IngestionError("original_mismatch", "Stored original bytes did not hash to the computed value.");
-      }
+  /**
+   * Stream one original into durable storage without buffering it whole
+   * (SPEC section 10: stream originals to disk). The write finishes and the
+   * hash is known before the caller applies anything, so the staged bytes are
+   * the record from this point on. A stream that crosses the maximum size
+   * aborts mid-write: the store never renames a partial object into place,
+   * and anything already stored under the key stays untouched.
+   */
+  async stageOriginal(input: StageOriginalInput): Promise<StagedOriginal> {
+    requireUuid("message id", input.messageId);
+    if (input.expectedSize !== undefined && input.expectedSize !== null && input.expectedSize > MAX_MESSAGE_BYTES) {
+      throw tooLarge(input.expectedSize);
     }
 
-    const parsed = await parseMime(input.bytes);
-    const derived = this.deriveBody(parsed);
+    const storageKey = originalMessageKey(input.messageId);
+    const stored = await this.storage.durable.putStream(storageKey, bounded(input.source));
+    if (stored.sizeBytes === 0) {
+      // Nothing the server answered was usable; an empty object must not
+      // masquerade as this message's original.
+      await this.storage.durable.remove(storageKey);
+      throw new IngestionError("invalid_request", "Original message bytes are empty.");
+    }
+    return { messageId: input.messageId, storageKey, sha256: stored.sha256, sizeBytes: stored.sizeBytes };
+  }
 
-    // Two workers can ingest byte-identical copies for different provisional
-    // rows at once. The unique (account, hash) index serializes them; the
-    // loser retries once and takes the merge path.
+  /**
+   * Parse one staged original and persist its derived records. The staged
+   * hash and size must still match the stored bytes, so an object another
+   * writer replaced between staging and this call is an error, never a guess.
+   */
+  async applyStagedOriginal(input: ApplyStagedInput): Promise<IngestResult> {
+    requireUuid("account id", input.accountId);
+    requireUuid("message id", input.messageId);
+    if (input.staged.messageId !== input.messageId) {
+      throw new IngestionError("invalid_request", "The staged original belongs to a different message.");
+    }
+
+    const original = await this.storage.durable.get(input.staged.storageKey);
+    if (original.byteLength > MAX_MESSAGE_BYTES) {
+      throw tooLarge(original.byteLength);
+    }
+    if (original.byteLength !== input.staged.sizeBytes || sha256Hex(original) !== input.staged.sha256) {
+      throw new IngestionError("original_mismatch", "The stored original no longer matches its staged hash or size.");
+    }
+
+    const parsed = await parseMime(original);
+    const derived = this.deriveBody(parsed);
+    return this.commitParsed(
+      input.accountId,
+      input.messageId,
+      parsed,
+      derived,
+      input.staged.storageKey,
+      input.staged.sha256,
+      input.staged.sizeBytes,
+    );
+  }
+
+  /**
+   * Commit one parsed original in a single transaction. Two workers can
+   * ingest byte-identical copies for different provisional rows at once: the
+   * unique (account, hash) index serializes them, the loser retries once, and
+   * the retry takes the merge path.
+   */
+  private async commitParsed(
+    accountId: string,
+    messageId: string,
+    parsed: ParsedMessage,
+    derived: { textPlain: string | null; htmlSanitized: string | null; bodyText: string | null },
+    storageKey: string,
+    sha256: string,
+    sizeBytes: number,
+  ): Promise<IngestResult> {
     for (let attempt = 0; ; attempt += 1) {
       try {
         return await this.db.transaction(async (tx) => {
-          const row = await lockMessage(tx, input.accountId, input.messageId);
+          const row = await lockMessage(tx, accountId, messageId);
           const duplicate = await tx
             .select()
             .from(messages)
             .where(
               and(
-                eq(messages.accountId, input.accountId),
+                eq(messages.accountId, accountId),
                 eq(messages.originalSha256, sha256),
-                ne(messages.id, input.messageId),
+                ne(messages.id, messageId),
               ),
             )
             .limit(1);
 
           if (duplicate[0] !== undefined) {
-            return this.mergeDuplicate(tx, input.accountId, row, duplicate[0].id, sha256, input.bytes.byteLength, parsed);
+            return this.mergeDuplicate(tx, accountId, row, duplicate[0].id, sha256, sizeBytes, parsed);
           }
-          return this.applyIngested(tx, input.accountId, row, parsed, derived, storageKey, sha256, input.bytes.byteLength);
+          return this.applyIngested(tx, accountId, row, parsed, derived, storageKey, sha256, sizeBytes);
         });
       } catch (cause) {
         if (attempt === 0 && isUniqueViolation(cause)) {
@@ -432,6 +524,35 @@ function requireUuid(kind: string, id: string): void {
 
 function truncate(text: string, maxChars: number): string {
   return text.length <= maxChars ? text : text.slice(0, maxChars);
+}
+
+/** The rejection every entry point shares for originals above the bound. */
+function tooLarge(sizeBytes: number): IngestionError {
+  return new IngestionError(
+    "message_too_large",
+    `The message is ${sizeBytes} bytes, above the ${MAX_MESSAGE_BYTES}-byte maximum this deployment parses.`,
+  );
+}
+
+/** Present complete bytes to a streaming stage without copying them. */
+async function* oneChunk(bytes: Uint8Array): AsyncGenerator<Uint8Array> {
+  yield bytes;
+}
+
+/**
+ * Pass chunks through while they stay inside the maximum message size. The
+ * first chunk that crosses the bound throws, which stops the download and
+ * aborts the store's write before any partial object becomes visible.
+ */
+async function* bounded(source: AsyncIterable<Uint8Array>): AsyncGenerator<Uint8Array> {
+  let streamed = 0;
+  for await (const chunk of source) {
+    if (streamed + chunk.byteLength > MAX_MESSAGE_BYTES) {
+      throw tooLarge(streamed + chunk.byteLength);
+    }
+    streamed += chunk.byteLength;
+    yield chunk;
+  }
 }
 
 function sha256Hex(bytes: Uint8Array): string {

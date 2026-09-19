@@ -24,6 +24,18 @@ import { parseDateHeader, toEmailAddress, toEmailAddresses, toRecipients } from 
 /** Locator version this module writes and resolves. */
 export const LOCATOR_VERSION = 1 as const;
 
+/**
+ * The largest original this system parses and stores, 50 MiB.
+ *
+ * Parsing needs the whole original plus every decoded attachment and the
+ * sanitized DOM at once, so this one bound caps the parser's share of the
+ * 2 GB the deployment shares between the API and the workers (SPEC section
+ * 10). It sits above the 25 MiB one-upload cap with full base64 framing, and
+ * matches the 50 MB the largest providers still accept. Header import keeps
+ * messages above the bound; only their body fetch is skipped with an event.
+ */
+export const MAX_MESSAGE_BYTES = 50 * 1024 * 1024;
+
 /** Embedded messages nest rarely; deeper wrappers stay undivided attachments. */
 const MAX_EMBEDDED_DEPTH = 5;
 

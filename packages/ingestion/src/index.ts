@@ -6,13 +6,22 @@
  * one ingestion call persists in a single transaction.
  */
 export { IngestionError } from "./errors.ts";
-export { LOCATOR_VERSION, parseMime, type LocatedPart, type ParsedMessage } from "./parse.ts";
+export {
+  LOCATOR_VERSION,
+  MAX_MESSAGE_BYTES,
+  parseMime,
+  type LocatedPart,
+  type ParsedMessage,
+} from "./parse.ts";
 export { HtmlSanitizer, SANITIZER_VERSION } from "./sanitize.ts";
 export {
   IngestionService,
+  type ApplyStagedInput,
   type IngestOriginalInput,
   type IngestResult,
   type RegeneratedAttachment,
+  type StageOriginalInput,
+  type StagedOriginal,
 } from "./service.ts";
 export {
   BODY_INDEX_MAX_CHARS,

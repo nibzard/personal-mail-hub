@@ -7,7 +7,7 @@ import {
   type Folder,
   type MailHubDatabase,
 } from "@mail-hub/database";
-import { markThreadJobsDirty } from "@mail-hub/ingestion";
+import { markThreadJobsDirty, MAX_MESSAGE_BYTES } from "@mail-hub/ingestion";
 import type { MailHubTransaction } from "@mail-hub/recovery";
 import { SyncError } from "./errors.ts";
 import { parseHeaderBlock } from "./headers.ts";
@@ -171,6 +171,20 @@ export async function importHeaderRecord(
     unread: record.unread,
     flagged: record.flagged,
   });
+
+  // A message the server already reports above the maximum size keeps its
+  // headers and occurrence, but its body is never fetched: parsing it would
+  // hold more memory than the deployment shares (SPEC section 10). The event
+  // is the audit record of that decision, taken once at import.
+  if (record.sizeBytes > MAX_MESSAGE_BYTES) {
+    await tx.insert(events).values({
+      actor: "system",
+      type: "message.body_skipped",
+      entityType: "message",
+      entityId: inserted[0]!.id,
+      payload: { accountId, folderId, uid: record.uid, sizeBytes: record.sizeBytes, maxBytes: MAX_MESSAGE_BYTES },
+    });
+  }
 
   // The new row is one thread-reconciliation job (`thread_dirty` defaults to
   // true), and a reused `Message-ID` changes the holder set of that

@@ -79,6 +79,18 @@ describe("durable object store", () => {
     await expect(storage.durable.get(streamKey)).resolves.toEqual(Buffer.from(BINARY_BYTES));
   });
 
+  it("reports a failing caller stream as its own error and keeps stored bytes", async () => {
+    const refusal = new Error("policy refusal");
+    async function* failing(): AsyncIterable<Uint8Array> {
+      yield BINARY_BYTES.subarray(0, 4);
+      throw refusal;
+    }
+    await expect(storage.durable.putStream(key, failing())).rejects.toBe(refusal);
+    // The failed write never became visible: the object under the key keeps
+    // the bytes the earlier test stored and verified.
+    await expect(storage.durable.verify(key, sha256Hex(BINARY_BYTES))).resolves.toBe(true);
+  });
+
   it("recomputes metadata when the sidecar is lost", async () => {
     await rm(`${join(root, "durable", ...key.split("/"))}.meta.json`, { force: true });
     await expect(storage.durable.stat(key)).resolves.toMatchObject({

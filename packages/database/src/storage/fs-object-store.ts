@@ -140,6 +140,12 @@ class FsObjectStore implements ObjectStore {
     } catch (cause) {
       await handle.close().catch(() => undefined);
       await unlink(tempPath).catch(() => undefined);
+      if (!fromStorageLayer(cause)) {
+        // The caller's stream failed on its own terms — for example a size
+        // policy aborting an oversized download. Report that failure as
+        // itself, so it stays distinguishable from an input or output fault.
+        throw cause;
+      }
       throw new StorageError("io_failed", `Failed to write object ${key}: ${errorText(cause)}`);
     }
 
@@ -221,6 +227,20 @@ function isENOENT(cause: unknown): boolean {
     cause !== null &&
     "code" in cause &&
     (cause as { code?: unknown }).code === "ENOENT"
+  );
+}
+
+/** Whether a write failure came from this store or the filesystem it uses. */
+function fromStorageLayer(cause: unknown): boolean {
+  if (cause instanceof StorageError) {
+    return true;
+  }
+  // Node reports filesystem faults as system errors with these fields.
+  return (
+    typeof cause === "object" &&
+    cause !== null &&
+    "errno" in cause &&
+    "syscall" in cause
   );
 }
 

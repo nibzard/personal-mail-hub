@@ -21,7 +21,7 @@ import {
   type Storage,
   dropTestDatabase,
 } from "@mail-hub/database";
-import { IngestionService, parseMime } from "../src/index.ts";
+import { IngestionService, MAX_MESSAGE_BYTES, parseMime } from "../src/index.ts";
 import { DECODED_FOOBAR, nestedMessage, standardMessage } from "./fixtures.ts";
 
 /**
@@ -302,4 +302,70 @@ suite("IngestionService", () => {
       code: "not_found",
     });
   });
+
+  it("stages a streamed original and applies it in a second step", async () => {
+    const { account, message } = await provisionalMessage();
+    const bytes = standardMessage();
+    async function* chunks(): AsyncIterable<Uint8Array> {
+      yield bytes.subarray(0, 32);
+      yield bytes.subarray(32);
+    }
+
+    const staged = await service.stageOriginal({
+      messageId: message.id,
+      source: chunks(),
+      expectedSize: bytes.byteLength,
+    });
+
+    expect(staged).toMatchObject({
+      messageId: message.id,
+      storageKey: originalMessageKey(message.id),
+      sizeBytes: bytes.byteLength,
+    });
+    await expect(storage.durable.verify(staged.storageKey, staged.sha256)).resolves.toBe(true);
+
+    const result = await service.applyStagedOriginal({ accountId: account.id, messageId: message.id, staged });
+    expect(result).toMatchObject({ result: "ingested", sha256: staged.sha256, sizeBytes: bytes.byteLength });
+
+    const db = createDatabase(pool);
+    const row = (await db.select().from(messages).where(eq(messages.id, message.id)))[0]!;
+    expect(row.fetchedBody).toBe(true);
+    expect(row.originalSha256).toBe(staged.sha256);
+  });
+
+  it("rejects an original the server already reported above the bound", async () => {
+    const { message } = await provisionalMessage();
+
+    await expect(
+      service.stageOriginal({ messageId: message.id, source: emptyStream(), expectedSize: MAX_MESSAGE_BYTES + 1 }),
+    ).rejects.toMatchObject({ name: "IngestionError", code: "message_too_large" });
+    await expect(storage.durable.stat(originalMessageKey(message.id))).resolves.toBeNull();
+  });
+
+  it("aborts a stream that crosses the bound without storing a partial object", async () => {
+    const { message } = await provisionalMessage();
+    // One buffer past half the bound, streamed twice: the second chunk crosses.
+    const half = new Uint8Array(Math.floor(MAX_MESSAGE_BYTES / 2) + 1);
+    async function* oversized(): AsyncIterable<Uint8Array> {
+      yield half;
+      yield half;
+    }
+
+    await expect(
+      service.stageOriginal({ messageId: message.id, source: oversized() }),
+    ).rejects.toMatchObject({ name: "IngestionError", code: "message_too_large" });
+    await expect(storage.durable.stat(originalMessageKey(message.id))).resolves.toBeNull();
+  });
+
+  it("rejects whole bytes above the bound before anything is stored", async () => {
+    const { account, message } = await provisionalMessage();
+
+    await expect(
+      service.ingestOriginal({ accountId: account.id, messageId: message.id, bytes: new Uint8Array(MAX_MESSAGE_BYTES + 1) }),
+    ).rejects.toMatchObject({ name: "IngestionError", code: "message_too_large" });
+    await expect(storage.durable.stat(originalMessageKey(message.id))).resolves.toBeNull();
+  });
 });
+
+/** A source that ends without yielding anything. */
+async function* emptyStream(): AsyncIterable<Uint8Array> {}

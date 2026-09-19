@@ -59,6 +59,20 @@ export interface MailboxFlags {
   modseq?: string | null;
 }
 
+/** One streamed original download from the selected folder. */
+export interface OriginalDownload {
+  /**
+   * `RFC822.SIZE` exactly as the server reported it with the download.
+   * `null` when the answer carried no size. A size already above the maximum
+   * message size lets the caller skip the message without reading a byte.
+   */
+  expectedSize: number | null;
+  /** The complete message bytes, chunked. Consuming them streams off the wire. */
+  chunks: AsyncIterable<Uint8Array>;
+  /** Stop the download without draining it, releasing the connection. */
+  discard(): void;
+}
+
 /** One open mailbox connection bound to a single selected folder at a time. */
 export interface MailboxSession {
   /**
@@ -80,7 +94,19 @@ export interface MailboxSession {
    */
   fetchFlags(uids: number[]): Promise<MailboxFlags[]>;
 
-  /** The complete bytes of one message, or `null` when the UID no longer exists. */
+  /**
+   * Stream the complete bytes of one message, or `null` when the UID no
+   * longer exists. The bytes move chunk by chunk, so importing mail never
+   * buffers a whole original in memory (SPEC section 10).
+   */
+  streamOriginal(uid: number): Promise<OriginalDownload | null>;
+
+  /**
+   * The complete bytes of one message, or `null` when the UID no longer
+   * exists. The bytes arrive streamed and collected under the same maximum
+   * message size as ingestion, so this whole-byte view stays bounded; the
+   * Sent-copy verification of mail this system authored uses it.
+   */
   fetchOriginal(uid: number): Promise<Uint8Array | null>;
 
   /** Re-select the current folder and report its generation again. */
