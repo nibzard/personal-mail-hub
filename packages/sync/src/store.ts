@@ -7,6 +7,7 @@ import {
   type Folder,
   type MailHubDatabase,
 } from "@mail-hub/database";
+import { markThreadJobsDirty } from "@mail-hub/ingestion";
 import type { MailHubTransaction } from "@mail-hub/recovery";
 import { SyncError } from "./errors.ts";
 import { parseHeaderBlock } from "./headers.ts";
@@ -170,6 +171,14 @@ export async function importHeaderRecord(
     unread: record.unread,
     flagged: record.flagged,
   });
+
+  // The new row is one thread-reconciliation job (`thread_dirty` defaults to
+  // true), and a reused `Message-ID` changes the holder set of that
+  // identifier: rows already referencing it must re-decide, which can remove
+  // an unsafe link (SPEC F2). The marks commit with the imported rows.
+  if (header.messageId !== null) {
+    await markThreadJobsDirty(tx, accountId, { identifiers: [header.messageId] });
+  }
   return true;
 }
 

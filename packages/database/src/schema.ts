@@ -195,6 +195,12 @@ export const messages = pgTable(
     threadId: uuid("thread_id"),
     parentMessageId: uuid("parent_message_id"),
     threadLinkState: text("thread_link_state").$type<ThreadLinkState>().notNull().default("pending"),
+    /**
+     * Durable thread-reconciliation job marker (SPEC F2). Every transaction
+     * that imports, changes, or removes message identifiers sets it; one
+     * bounded reconciliation pass clears it as the row resolves.
+     */
+    threadDirty: boolean("thread_dirty").notNull().default(true),
     sender: jsonb("sender").$type<EmailAddress>(),
     /** Null means the header is absent; an empty array means it was invalid or empty. */
     replyTo: jsonb("reply_to").$type<EmailAddress[]>(),
@@ -245,6 +251,12 @@ export const messages = pgTable(
     index("messages_message_id_idx").on(t.messageId),
     index("messages_account_id_in_reply_to_idx").on(t.accountId, t.inReplyTo),
     index("messages_reference_ids_idx").using("gin", t.referenceIds),
+    // Children of one parent, for thread-membership propagation after a link
+    // changes; and the dirty set, newest first, for bounded reconciliation.
+    index("messages_parent_message_id_idx").on(t.parentMessageId),
+    index("messages_thread_dirty_idx")
+      .on(t.accountId, sql`${t.sentAt} desc`)
+      .where(sql`"thread_dirty"`),
     index("messages_class_hint_idx").on(t.classHint).where(sql`"class_hint" is not null`),
     index("messages_search_idx").using("gin", t.search),
     index("messages_sender_text_trgm_idx").using("gin", sql`${t.senderText} gin_trgm_ops`),

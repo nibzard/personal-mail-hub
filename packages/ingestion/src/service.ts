@@ -24,6 +24,7 @@ import {
   recipientsIndexText,
   senderIndexText,
 } from "./text.ts";
+import { markThreadJobsDirty } from "./thread-jobs.ts";
 
 /**
  * Durable MIME ingestion (SPEC F2 backfill step 6 and section 8).
@@ -38,6 +39,8 @@ import {
  * 3. A byte-identical duplicate inside one account merges into the existing
  *    logical message: occurrences and derived records move across, and the
  *    provisional row disappears.
+ * 4. Both paths mark their thread-reconciliation jobs — the changed row and
+ *    every row referencing its identifiers — inside the same transaction.
  *
  * Workers call this after the recovery gate; the job wrapper owns that gate,
  * so ingestion itself never runs while service state is not `ready`.
@@ -127,9 +130,9 @@ export class IngestionService {
             .limit(1);
 
           if (duplicate[0] !== undefined) {
-            return this.mergeDuplicate(tx, row, duplicate[0].id, sha256, input.bytes.byteLength, parsed);
+            return this.mergeDuplicate(tx, input.accountId, row, duplicate[0].id, sha256, input.bytes.byteLength, parsed);
           }
-          return this.applyIngested(tx, row, parsed, derived, storageKey, sha256, input.bytes.byteLength);
+          return this.applyIngested(tx, input.accountId, row, parsed, derived, storageKey, sha256, input.bytes.byteLength);
         });
       } catch (cause) {
         if (attempt === 0 && isUniqueViolation(cause)) {
@@ -205,7 +208,8 @@ export class IngestionService {
   /** Update one logical message with parsed and indexed content (SPEC section 8). */
   private async applyIngested(
     tx: MailHubTransaction,
-    row: { id: string; sentAt: Date | null },
+    accountId: string,
+    row: { id: string; sentAt: Date | null; messageId: string | null },
     parsed: ParsedMessage,
     derived: { textPlain: string | null; htmlSanitized: string | null; bodyText: string | null },
     storageKey: string,
@@ -257,6 +261,14 @@ export class IngestionService {
 
     await upsertAttachments(tx, row.id, parsed.attachments);
 
+    // The full parse can rewrite the grouping hint, so this row re-decides its
+    // own parent link and every row that referenced the old or the new
+    // identifier re-decides too (SPEC F2). The marks commit with the headers.
+    await markThreadJobsDirty(tx, accountId, {
+      messageIds: [row.id],
+      identifiers: [row.messageId, parsed.messageId],
+    });
+
     await tx.insert(events).values({
       actor: "system",
       type: "message.ingested",
@@ -284,7 +296,8 @@ export class IngestionService {
    */
   private async mergeDuplicate(
     tx: MailHubTransaction,
-    provisional: { id: string },
+    accountId: string,
+    provisional: { id: string; messageId: string | null },
     survivorId: string,
     sha256: string,
     sizeBytes: number,
@@ -314,6 +327,14 @@ export class IngestionService {
     await tx.delete(bodies).where(eq(bodies.messageId, removedId));
     await tx.delete(messages).where(eq(messages.id, removedId));
 
+    // One holder of the identifier remains, so the survivor and every row that
+    // referenced either holder re-decide: an ambiguous child can link now, and
+    // the children that just moved across rejoin the survivor's thread (SPEC F2).
+    await markThreadJobsDirty(tx, accountId, {
+      messageIds: [survivorId],
+      identifiers: [provisional.messageId, parsed.messageId],
+    });
+
     await tx.insert(events).values({
       actor: "system",
       type: "message.merged",
@@ -338,9 +359,9 @@ async function lockMessage(
   tx: MailHubTransaction,
   accountId: string,
   messageId: string,
-): Promise<{ id: string; sentAt: Date | null }> {
+): Promise<{ id: string; sentAt: Date | null; messageId: string | null }> {
   const rows = await tx
-    .select({ id: messages.id, sentAt: messages.sentAt })
+    .select({ id: messages.id, sentAt: messages.sentAt, messageId: messages.messageId })
     .from(messages)
     .where(and(eq(messages.id, messageId), eq(messages.accountId, accountId)))
     .for("update")

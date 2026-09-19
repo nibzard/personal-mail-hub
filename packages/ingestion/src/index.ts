@@ -27,3 +27,4 @@ export {
   toEmailAddresses,
   toRecipients,
 } from "./text.ts";
+export { markThreadJobsDirty, type ThreadJobMarking } from "./thread-jobs.ts";

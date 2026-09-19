@@ -19,11 +19,13 @@
   encrypted connection is verified.
 - `packages/ingestion` contains durable MIME ingestion: original-byte storage
   before processing, header and body parsing, HTML sanitizing, index text,
-  and verified attachment locators with hash-checked regeneration.
+  verified attachment locators with hash-checked regeneration, and the
+  thread-job marks that identity changes leave for reconciliation.
 - `packages/sync` contains the IMAP synchronization engine: resumable
   backfill in checkpointed UID windows newest first, background body
   fetching, steady-state polls with arrival bounds, flag refreshes, and
   expunge detection, folder-generation resets, nightly inventory
+  reconciliation, logical-message merging with parent linking and thread
   reconciliation, and one bounded cycle per account per cron run.
 - `packages/database` contains the Drizzle schema, SQL migrations, object
   storage, and pg-boss integration. Run `npm run db:generate` there after

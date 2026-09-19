@@ -301,11 +301,12 @@
         "sync",
         "imap"
       ],
-      "updated_at": "2026-09-19T01:51:13Z",
+      "updated_at": "2026-09-19T01:55:03Z",
       "files": [
         "AGENTS.md",
         "apps/worker/src/main.ts",
         "packages/database/drizzle/0002_cultivated_pixie.sql",
+        "packages/database/drizzle/0002_cultured_pixie.sql",
         "packages/database/drizzle/meta/0002_snapshot.json",
         "packages/database/drizzle/meta/_journal.json",
         "packages/database/src/schema.ts",
@@ -328,8 +329,8 @@
       "id": "T010",
       "title": "Implement logical-message merging and thread reconciliation",
       "priority": 1,
-      "status": "todo",
-      "details": "Deduplicate verified copies within an account and safely link parents using message identifiers while preserving ambiguous and pending cases.",
+      "status": "done",
+      "details": "Logical-message threading per SPEC F2. Messages carry a durable thread_dirty job mark; every import, body reparse, and byte-identical merge marks the rows whose parent links depend on the changed identifiers, in the same transaction (markThreadJobsDirty in packages/ingestion). ThreadService reconciles marked rows in bounded newest-first passes, one transaction per row: parent from the single valid In-Reply-To identifier or the last valid References identifier, one holder links, none stays pending, and conflicting identifiers, self-links, duplicate holders, and cycles stay unlinked and ambiguous; subject and participant similarity never links, and holders in another account never parent a message. Membership recomputes with each link: the row and its descendants move to the chain root thread, a detached row starts a fresh thread, and old thread records remain for drafts and snapshots. SyncRunner resolves a bounded number of thread jobs per cycle after body jobs and reports threadsResolved, threadLinksChanged, and pendingThreads in sync.status.",
       "depends_on": [
         "T007",
         "T008"
@@ -337,6 +338,26 @@
       "tags": [
         "sync",
         "threading"
+      ],
+      "updated_at": "2026-09-19T03:07:24Z",
+      "files": [
+        "packages/database/src/schema.ts",
+        "packages/database/drizzle/0003_magical_zodiak.sql",
+        "packages/database/drizzle/meta/_journal.json",
+        "packages/database/drizzle/meta/0003_snapshot.json",
+        "packages/ingestion/src/thread-jobs.ts",
+        "packages/ingestion/src/service.ts",
+        "packages/ingestion/src/index.ts",
+        "packages/sync/src/store.ts",
+        "packages/sync/src/threads.ts",
+        "packages/sync/src/runner.ts",
+        "packages/sync/src/index.ts",
+        "apps/worker/src/main.ts",
+        "packages/sync/test/threads.test.ts",
+        "packages/sync/test/thread-reference.test.ts",
+        "packages/sync/test/backfill.test.ts",
+        "packages/sync/test/steady.test.ts",
+        "AGENTS.md"
       ]
     },
     {

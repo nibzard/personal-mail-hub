@@ -24,6 +24,7 @@ import {
   ReconciliationService,
   SteadyStateService,
   SyncRunner,
+  ThreadService,
   type BackfillBatchOutcome,
 } from "../src/index.ts";
 import { FakeMailboxSession, type FakeMessage } from "./fake-mailbox.ts";
@@ -477,7 +478,7 @@ suite("BackfillService", () => {
 
     const { backfill, bodies } = services(1);
     // Archive spends four windows at this size: initialize, one UID, two gaps.
-    const runner = new SyncRunner(createDatabase(pool), backfill, bodies, new SteadyStateService(createDatabase(pool)), new ReconciliationService(createDatabase(pool)), { batchesPerFolder: 4 });
+    const runner = new SyncRunner(createDatabase(pool), backfill, bodies, new ThreadService(createDatabase(pool)), new SteadyStateService(createDatabase(pool)), new ReconciliationService(createDatabase(pool)), { batchesPerFolder: 4 });
     const first = await runner.runAccountCycle(session, accountId);
     expect(first).toMatchObject({
       folders: 2,

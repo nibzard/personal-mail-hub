@@ -16,6 +16,7 @@ import {
   SteadyStateService,
   SyncError,
   SyncRunner,
+  ThreadService,
 } from "@mail-hub/sync";
 
 /** The queue that drives one synchronization cycle across every account. */
@@ -84,9 +85,10 @@ async function main(databaseUrl: string): Promise<void> {
   const ingestion = new IngestionService(db, storage);
   const backfill = new BackfillService(db);
   const bodies = new BodyFetchService(db, ingestion);
+  const threads = new ThreadService(db);
   const steady = new SteadyStateService(db);
   const reconcile = new ReconciliationService(db);
-  const runner = new SyncRunner(db, backfill, bodies, steady, reconcile);
+  const runner = new SyncRunner(db, backfill, bodies, threads, steady, reconcile);
   const sessions = new ImapMailboxSessionFactory();
 
   await queue.createQueue(SYNC_CYCLE_QUEUE);

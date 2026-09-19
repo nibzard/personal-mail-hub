@@ -8,8 +8,10 @@
  * rows themselves. Steady state polls each folder on its cadence: arrivals
  * above the scanned bound, flag refreshes, and expunge detection, with a
  * nightly full inventory and generation resets that hand a folder back to
- * backfill. One session per account carries the whole cycle, yielding between
- * batches.
+ * backfill. Logical-message threading resolves parents from message
+ * identifiers only, keeps ambiguous and pending links unlinked, and moves
+ * whole chains onto their root's thread. One session per account carries the
+ * whole cycle, yielding between batches.
  */
 export { SyncError, type SyncErrorCode } from "./errors.ts";
 export {
@@ -48,10 +50,20 @@ export {
   SyncRunner,
   DEFAULT_BATCHES_PER_FOLDER,
   DEFAULT_BODIES_PER_CYCLE,
+  DEFAULT_THREADS_PER_CYCLE,
   type AccountCycleSummary,
   type CycleControl,
   type SyncRunnerOptions,
 } from "./runner.ts";
+export {
+  DEFAULT_THREAD_BATCH,
+  ThreadService,
+  extractMessageIds,
+  resolveParentReference,
+  type ParentReference,
+  type ThreadOptions,
+  type ThreadReconciliationSummary,
+} from "./threads.ts";
 export {
   FOLDER_POLLED_EVENT,
   INBOX_POLL_INTERVAL_MS,

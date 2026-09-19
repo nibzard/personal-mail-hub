@@ -27,6 +27,7 @@ import {
   ReconciliationService,
   SteadyStateService,
   SyncRunner,
+  ThreadService,
 } from "../src/index.ts";
 import { FakeMailboxSession, type FakeMessage } from "./fake-mailbox.ts";
 
@@ -485,7 +486,7 @@ suite("SteadyStateService and ReconciliationService", () => {
     session.load("INBOX", [fixture(1, "Runner one"), fixture(2, "Runner two")]);
 
     const { backfill, bodies, steady, reconcile } = services();
-    const runner = new SyncRunner(createDatabase(pool), backfill, bodies, steady, reconcile);
+    const runner = new SyncRunner(createDatabase(pool), backfill, bodies, new ThreadService(createDatabase(pool)), steady, reconcile);
     const first = await runner.runAccountCycle(session, accountId);
     expect(first).toMatchObject({
       folders: 1,
@@ -521,7 +522,7 @@ suite("SteadyStateService and ReconciliationService", () => {
 
     const { backfill, bodies, steady, reconcile } = services();
     // One body per cycle leaves two messages waiting for their bodies.
-    const runner = new SyncRunner(createDatabase(pool), backfill, bodies, steady, reconcile, {
+    const runner = new SyncRunner(createDatabase(pool), backfill, bodies, new ThreadService(createDatabase(pool)), steady, reconcile, {
       bodiesPerCycle: 1,
     });
     await runner.runAccountCycle(session, accountId);
@@ -547,7 +548,7 @@ suite("SteadyStateService and ReconciliationService", () => {
     );
     // Two batches of two windows import half the folder; one body per cycle
     // leaves the rest of the imported half waiting for their bodies.
-    const slowRunner = new SyncRunner(createDatabase(pool), slowBackfill, slowBodies, slowSteady, slowReconcile, {
+    const slowRunner = new SyncRunner(createDatabase(pool), slowBackfill, slowBodies, new ThreadService(createDatabase(pool)), slowSteady, slowReconcile, {
       batchesPerFolder: 2,
       bodiesPerCycle: 1,
     });
@@ -575,7 +576,7 @@ suite("SteadyStateService and ReconciliationService", () => {
     session.load("INBOX", [fixture(1, "Cycle new one"), fixture(2, "Cycle new two")]);
 
     const { bodies } = services();
-    const runner = new SyncRunner(createDatabase(pool), backfill, bodies, steady, reconcile);
+    const runner = new SyncRunner(createDatabase(pool), backfill, bodies, new ThreadService(createDatabase(pool)), steady, reconcile);
     const summary = await runner.runAccountCycle(session, accountId);
     expect(summary).toMatchObject({
       generationChanges: 1,

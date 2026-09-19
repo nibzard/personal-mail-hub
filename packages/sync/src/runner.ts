@@ -6,6 +6,7 @@ import type { BodyFetchOutcome, BodyFetchService } from "./bodies.ts";
 import type { MailboxSession } from "./mailbox.ts";
 import type { ReconciliationService } from "./reconcile.ts";
 import type { SteadyStateService } from "./steady.ts";
+import type { ThreadService } from "./threads.ts";
 import { loadFolder, recordAccountEvent } from "./store.ts";
 
 /**
@@ -15,9 +16,11 @@ import { loadFolder, recordAccountEvent } from "./store.ts";
  * so polls and user actions keep their turn. A cycle runs a bounded number of
  * windows per folder that still needs them, polls the folders whose interval
  * is due, runs a nightly inventory when that interval is due, resolves a
- * bounded number of body jobs, and emits one sync-status event for the
- * account. A folder generation change resets that folder's checkpoints and
- * occurrences, then backfill resumes with the cycle's remaining budget.
+ * bounded number of body jobs, then a bounded number of thread jobs — bodies
+ * and merges are what change identifiers — and emits one sync-status event
+ * for the account. A folder generation change resets that folder's
+ * checkpoints and occurrences, then backfill resumes with the cycle's
+ * remaining budget.
  */
 
 /** Windows one cycle fetches per folder before it moves on. */
@@ -26,11 +29,16 @@ export const DEFAULT_BATCHES_PER_FOLDER = 10;
 /** Body jobs one cycle resolves per account. */
 export const DEFAULT_BODIES_PER_CYCLE = 25;
 
+/** Thread jobs one cycle resolves per account. */
+export const DEFAULT_THREADS_PER_CYCLE = 100;
+
 export interface SyncRunnerOptions {
   /** Windows one cycle fetches per folder. */
   batchesPerFolder?: number;
   /** Body jobs one cycle resolves. */
   bodiesPerCycle?: number;
+  /** Thread jobs one cycle resolves. */
+  threadsPerCycle?: number;
 }
 
 /** What one cycle changed. */
@@ -51,6 +59,9 @@ export interface AccountCycleSummary {
   expungesMarked: number;
   /** Nightly inventories run. */
   inventories: number;
+  /** Thread jobs resolved and links they changed. */
+  threadsResolved: number;
+  threadLinksChanged: number;
 }
 
 export interface CycleControl {
@@ -61,17 +72,20 @@ export interface CycleControl {
 export class SyncRunner {
   private readonly batchesPerFolder: number;
   private readonly bodiesPerCycle: number;
+  private readonly threadsPerCycle: number;
 
   constructor(
     private readonly db: MailHubDatabase,
     private readonly backfill: BackfillService,
     private readonly bodies: BodyFetchService,
+    private readonly threads: ThreadService,
     private readonly steady: SteadyStateService,
     private readonly reconcile: ReconciliationService,
     options: SyncRunnerOptions = {},
   ) {
     this.batchesPerFolder = positiveInteger(options.batchesPerFolder, DEFAULT_BATCHES_PER_FOLDER, "batches per folder");
     this.bodiesPerCycle = positiveInteger(options.bodiesPerCycle, DEFAULT_BODIES_PER_CYCLE, "bodies per cycle");
+    this.threadsPerCycle = positiveInteger(options.threadsPerCycle, DEFAULT_THREADS_PER_CYCLE, "threads per cycle");
   }
 
   /**
@@ -98,6 +112,8 @@ export class SyncRunner {
       flagsRefreshed: 0,
       expungesMarked: 0,
       inventories: 0,
+      threadsResolved: 0,
+      threadLinksChanged: 0,
     };
 
     const accountFolders = await this.db
@@ -124,6 +140,15 @@ export class SyncRunner {
         summary.bodiesFetched += 1;
       }
       await yieldControl();
+    }
+
+    // Thread jobs run after bodies: fetching a body can rewrite identifiers
+    // and byte-identical copies merge here, so this cycle's merges reconcile
+    // in this cycle (SPEC F2).
+    if (!aborted(control)) {
+      const reconciled = await this.threads.reconcileAccount(accountId, this.threadsPerCycle);
+      summary.threadsResolved = reconciled.examined;
+      summary.threadLinksChanged = reconciled.linksChanged;
     }
 
     await this.recordStatus(accountId, summary);
@@ -249,8 +274,8 @@ export class SyncRunner {
   }
 
   /**
-   * One sync-status event per account per cycle. Pending body counts are
-   * recorded separately from header sync progress (SPEC F2).
+   * One sync-status event per account per cycle. Pending body and thread
+   * counts are recorded separately from header sync progress (SPEC F2).
    */
   private async recordStatus(accountId: string, summary: AccountCycleSummary): Promise<void> {
     const pending = await this.db
@@ -274,10 +299,14 @@ export class SyncRunner {
       flagsRefreshed: summary.flagsRefreshed,
       expungesMarked: summary.expungesMarked,
       inventories: summary.inventories,
+      threadsResolved: summary.threadsResolved,
+      threadLinksChanged: summary.threadLinksChanged,
       // Header sync progress: how many folders still owe historical windows.
       backfillPendingFolders: pending[0]?.count ?? 0,
       // Body sync progress, independent of headers.
       pendingBodies: await this.bodies.pendingBodyCount(accountId),
+      // Thread reconciliation progress, independent of both.
+      pendingThreads: await this.threads.pendingCount(accountId),
     });
   }
 }
