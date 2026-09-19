@@ -51,6 +51,18 @@ export interface Recipients {
   bcc?: EmailAddress[];
 }
 
+/** The scope a saved search pins around its query (SPEC F5). */
+export interface SavedSearchScope {
+  /** Account filter chips; absent means every account. */
+  accountIds?: string[];
+  /** One folder scope; absent means no folder restriction. */
+  folderId?: string | null;
+  /** Domain filter chips. */
+  domains?: string[];
+  /** The local archive filter: records without active occurrences only. */
+  localOnly?: boolean;
+}
+
 /** One recipient-level SMTP result, kept without credentials. */
 export interface RecipientResult {
   address: string;
@@ -273,6 +285,7 @@ export const messages = pgTable(
     index("messages_class_hint_idx").on(t.classHint).where(sql`"class_hint" is not null`),
     index("messages_search_idx").using("gin", t.search),
     index("messages_sender_text_trgm_idx").using("gin", sql`${t.senderText} gin_trgm_ops`),
+    index("messages_recipients_text_trgm_idx").using("gin", sql`${t.recipientsText} gin_trgm_ops`),
     index("messages_subject_text_trgm_idx").using("gin", sql`${t.subjectText} gin_trgm_ops`),
     uniqueIndex("messages_account_id_original_sha256_uidx")
       .on(t.accountId, t.originalSha256)
@@ -613,6 +626,21 @@ export const settings = pgTable("settings", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/** One saved search: its query text and the scope it runs in (SPEC F5). */
+export const savedSearches = pgTable(
+  "saved_searches",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    name: text("name").notNull(),
+    /** Query text with operators, parsed by the search service before storing. */
+    query: text("query").notNull(),
+    scope: jsonb("scope").$type<SavedSearchScope>().notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique("saved_searches_name_key").on(t.name)],
+);
+
 /**
  * The single product owner (SPEC section 9). One row exists after the first
  * passkey is registered. Operator recovery preserves this identifier.
@@ -757,6 +785,7 @@ export type ActionItem = typeof actionItems.$inferSelect;
 export type Decision = typeof decisions.$inferSelect;
 export type Event = typeof events.$inferSelect;
 export type Setting = typeof settings.$inferSelect;
+export type SavedSearch = typeof savedSearches.$inferSelect;
 export type Owner = typeof owner.$inferSelect;
 export type OwnerCredential = typeof ownerCredentials.$inferSelect;
 export type OwnerSession = typeof ownerSessions.$inferSelect;

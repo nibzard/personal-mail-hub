@@ -44,6 +44,7 @@ const EXPECTED_TABLES = [
   "owner",
   "owner_credentials",
   "owner_sessions",
+  "saved_searches",
   "sender_overrides",
   "service_state",
   "settings",

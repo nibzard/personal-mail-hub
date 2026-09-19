@@ -36,6 +36,20 @@
       "when": 1789789850196,
       "tag": "0004_curious_fantastic_four",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1789808429856,
+      "tag": "0005_awesome_shape",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1789809792769,
+      "tag": "0006_wakeful_mephisto",
+      "breakpoints": true
     }
   ]
 }

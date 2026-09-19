@@ -4,11 +4,13 @@ import { PasskeyAuthService, parseAuthConfig } from "@mail-hub/auth";
 import { AccountService, createCredentialCipher, parseCredentialsKey } from "@mail-hub/accounts";
 import { ComposeService } from "@mail-hub/compose";
 import { OutboundService } from "@mail-hub/send";
+import { SearchService } from "@mail-hub/search";
 import { runConnectionTest } from "@mail-hub/transport";
 import { registerAccountRoutes } from "./account-routes.ts";
 import { registerAuthRoutes } from "./auth-routes.ts";
 import { registerComposeRoutes } from "./compose-routes.ts";
 import { registerConnectionTestRoutes } from "./connection-test-routes.ts";
+import { registerSearchRoutes } from "./search-routes.ts";
 import { registerSendRoutes } from "./send-routes.ts";
 import { buildApp } from "./app.ts";
 
@@ -82,6 +84,16 @@ if (authConfig === null) {
     verifySession: (token) => authService.verifySession(token),
   });
   app.log.info("Send ready: queueing outbound snapshots.");
+
+  // Search reads every account from the shared index (SPEC F5); saved
+  // searches pass the recovery gate like every durable client write.
+  const searchService = new SearchService(db, controls);
+  await registerSearchRoutes(app, {
+    service: searchService,
+    origin: authConfig.origin,
+    verifySession: (token) => authService.verifySession(token),
+  });
+  app.log.info("Search ready: cross-account queries and saved searches.");
 
   // Account management seals mailbox passwords with CREDENTIALS_KEY (SPEC
   // section 9). Without a usable key the routes stay closed: storing plaintext

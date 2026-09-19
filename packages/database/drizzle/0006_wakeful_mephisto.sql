@@ -1,0 +1,1 @@
+CREATE INDEX "messages_recipients_text_trgm_idx" ON "messages" USING gin ("recipients_text" gin_trgm_ops);

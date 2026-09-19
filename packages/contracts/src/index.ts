@@ -426,6 +426,101 @@ export type TransportErrorCode =
   | "protocol_error"
   | "internal_error";
 
+/** Search rejection codes: query parsing, filters, and saved searches (SPEC F5). */
+export type SearchErrorCode = "invalid_request" | "invalid_query" | "not_found" | "name_conflict";
+
+/** The body of a search route rejection. */
+export interface SearchErrorBody {
+  error: {
+    code: SearchErrorCode;
+    message: string;
+  };
+}
+
+/** The Jev message classes a `type:` operator selects (SPEC F8). */
+export type JevClassWire =
+  | "correspondence"
+  | "receipt"
+  | "newsletter"
+  | "notification"
+  | "marketing"
+  | "security_alert"
+  | "bounce"
+  | "other";
+
+/** The scope a search or saved search runs in (SPEC F5). */
+export interface SearchScopeWire {
+  /** Account filter chips; absent means every account. */
+  accountIds?: string[];
+  /** One folder scope; absent means no folder restriction. */
+  folderId?: string | null;
+  /** Domain filter chips. */
+  domains?: string[];
+  /** The local archive filter: records without active occurrences only. */
+  localOnly?: boolean;
+}
+
+/** One search result row in its wire form. */
+export interface SearchResultItem {
+  messageId: string;
+  accountId: string;
+  accountLabel: string;
+  accountColor: string;
+  threadId: string | null;
+  subject: string | null;
+  snippet: string | null;
+  sender: MessageAddress | null;
+  /** Effective send time: the header date, or the earliest internal date. */
+  sentAt: string | null;
+  fetchedBody: boolean;
+  hasAttachments: boolean;
+  /** At least one active occurrence in scope holds the flag (SPEC F4). */
+  unread: boolean;
+  flagged: boolean;
+  /** Active occurrences in the current scope; zero marks a retained record. */
+  activeOccurrences: number;
+  /** True when no server copy remains anywhere (SPEC F5). */
+  noServerCopy: boolean;
+  /** Sent-copy state of the outgoing record this message is, when it is one. */
+  sentCopyStatus: SentCopyStatusWire | null;
+  /** Text-search rank; `null` when the query had no free text. */
+  rank: number | null;
+  /** Marked-up match context; `null` when only addresses matched. */
+  highlight: string | null;
+  highlightSource: "subject" | "body" | null;
+}
+
+/** Response of `GET /search`. */
+export interface SearchResultsResponse {
+  results: SearchResultItem[];
+  /** Total rows the query matches, past the returned page. */
+  total: number;
+  /** Body-indexing progress across the account scope (SPEC F5). */
+  indexing: { messages: number; bodies: number };
+}
+
+/** One saved search in its wire form: its query state, not its results. */
+export interface SavedSearchView {
+  id: string;
+  name: string;
+  query: string;
+  scope: SearchScopeWire;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Response of `GET /searches/saved`. */
+export interface SavedSearchesResponse {
+  searches: SavedSearchView[];
+}
+
+/** The body of `POST /searches/saved`. */
+export interface CreateSavedSearchRequestBody {
+  name: string;
+  query: string;
+  scope?: SearchScopeWire | null;
+}
+
 /** MIME ingestion and attachment recovery rejection codes, from `SPEC.md` section 8. */
 export type IngestionErrorCode =
   | "invalid_request"

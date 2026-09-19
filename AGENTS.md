@@ -66,6 +66,13 @@
   unknown send resolves only from a verified Sent copy, in the same
   acceptance transaction. No path resubmits an uncertain attempt. The worker
   sweeps queued rows and Sent copies on cron queues; the API only queues.
+- `packages/search` contains the cross-account search service: the query
+  language with its operators, parsed by the same normalization ingestion
+  applies to index text, weighted ranking and highlights over the generated
+  search vector, account, domain, folder, and local-archive filters, the
+  effective send date that falls back to the earliest server internal date,
+  body-indexing progress, and saved searches that store query state behind
+  the recovery generation gate.
 - `packages/database` contains the Drizzle schema, SQL migrations, object
   storage, and pg-boss integration, plus the retrying scratch-database cleanup
   (`dropTestDatabase`) the PostgreSQL suites share. Run `npm run db:generate`
