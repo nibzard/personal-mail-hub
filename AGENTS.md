@@ -17,6 +17,9 @@
 - `packages/transport` contains the verified IMAP and SMTP connection tests.
   Both protocols require validated TLS; credentials are only sent after the
   encrypted connection is verified.
+- `packages/ingestion` contains durable MIME ingestion: original-byte storage
+  before processing, header and body parsing, HTML sanitizing, index text,
+  and verified attachment locators with hash-checked regeneration.
 - `packages/database` contains the Drizzle schema, SQL migrations, object
   storage, and pg-boss integration. Run `npm run db:generate` there after
   changing `src/schema.ts`; apply migrations with `npm run db:migrate`.

@@ -197,6 +197,17 @@ export type TransportErrorCode =
   | "protocol_error"
   | "internal_error";
 
+/** MIME ingestion and attachment recovery rejection codes, from `SPEC.md` section 8. */
+export type IngestionErrorCode =
+  | "invalid_request"
+  | "not_found"
+  | "unsupported_locator"
+  | "parse_failed"
+  | "original_missing"
+  | "original_mismatch"
+  | "locator_unresolved"
+  | "bytes_mismatch";
+
 /** The stages one connection test walks through, in order. */
 export type ConnectionTestStage = "tls" | "authenticate" | "inspect";
 

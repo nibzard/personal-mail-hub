@@ -189,7 +189,7 @@
       "title": "Implement verified IMAP and SMTP connection tests",
       "priority": 1,
       "status": "done",
-      "details": "Require validated TLS for IMAP and SMTP, test each protocol separately, discover IMAP capabilities, and never send credentials before encryption succeeds.",
+      "details": "Require validated TLS for IMAP and SMTP, test each protocol separately, discover IMAP capabilities, and never send credentials before encryption succeeds. Implemented and committed in 985bf63; this pass re-verified workspace type checks and the full test suite, including the PostgreSQL-backed suites via TEST_DATABASE_URL, and needed no code changes.",
       "depends_on": [
         "T005"
       ],
@@ -197,33 +197,34 @@
         "transport",
         "security"
       ],
-      "updated_at": "2026-09-19T00:17:37Z",
+      "updated_at": "2026-09-19T00:23:26Z",
       "files": [
-        "packages/contracts/src/index.ts",
-        "packages/transport/package.json",
-        "packages/transport/tsconfig.json",
-        "packages/transport/src/tls.ts",
-        "packages/transport/src/classify.ts",
-        "packages/transport/src/imap.ts",
-        "packages/transport/src/smtp.ts",
-        "packages/transport/src/service.ts",
-        "packages/transport/src/index.ts",
-        "packages/transport/test/test-certificates.ts",
-        "packages/transport/test/fake-imap-server.ts",
-        "packages/transport/test/fake-smtp-server.ts",
-        "packages/transport/test/connection.test.ts",
+        "AGENTS.md",
+        "apps/api/package.json",
         "apps/api/src/connection-test-routes.ts",
         "apps/api/src/main.ts",
         "apps/api/test/connection-test-routes.test.ts",
-        "apps/api/package.json",
-        "AGENTS.md"
+        "packages/contracts/src/index.ts",
+        "packages/transport/package.json",
+        "packages/transport/src/classify.ts",
+        "packages/transport/src/imap.ts",
+        "packages/transport/src/index.ts",
+        "packages/transport/src/service.ts",
+        "packages/transport/src/smtp.ts",
+        "packages/transport/src/tls.ts",
+        "packages/transport/test/connection.test.ts",
+        "packages/transport/test/fake-imap-server.ts",
+        "packages/transport/test/fake-smtp-server.ts",
+        "packages/transport/test/test-certificates.ts",
+        "packages/transport/tsconfig.json",
+        "to-do.json"
       ]
     },
     {
       "id": "T007",
       "title": "Build durable MIME ingestion and parsing",
       "priority": 1,
-      "status": "todo",
+      "status": "done",
       "details": "Store original bytes before processing, parse headers and bodies, sanitize HTML, index text, and persist verified attachment locators and hashes.",
       "depends_on": [
         "T002"
@@ -231,6 +232,23 @@
       "tags": [
         "mime",
         "storage"
+      ],
+      "updated_at": "2026-09-19T00:41:31Z",
+      "files": [
+        "packages/ingestion/package.json",
+        "packages/ingestion/tsconfig.json",
+        "packages/ingestion/src/index.ts",
+        "packages/ingestion/src/errors.ts",
+        "packages/ingestion/src/parse.ts",
+        "packages/ingestion/src/sanitize.ts",
+        "packages/ingestion/src/service.ts",
+        "packages/ingestion/src/text.ts",
+        "packages/ingestion/test/fixtures.ts",
+        "packages/ingestion/test/parse.test.ts",
+        "packages/ingestion/test/sanitize.test.ts",
+        "packages/ingestion/test/service.test.ts",
+        "packages/contracts/src/index.ts",
+        "AGENTS.md"
       ]
     },
     {
