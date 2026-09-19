@@ -476,7 +476,7 @@
       "title": "Create shared interface components and design tokens",
       "priority": 2,
       "status": "done",
-      "details": "Set up shadcn and Radix components, semantic Tailwind tokens, light and dark themes, icons, focus states, and reduced-motion behavior.",
+      "details": "Set up shadcn and Radix components, semantic Tailwind tokens, light and dark themes, icons, focus states, and reduced-motion behavior. Done: shadcn CLI configuration and 15 Radix-based components in apps/web/src/components/ui; semantic OKLCH roles in src/styles.css mapped through @theme inline; a system/light/dark theme manager with a pre-paint script in index.html so the first paint never flashes; one Lucide icon set; one shared focus ring (2px with a 2px offset); and the global prefers-reduced-motion rule that removes movement and stops animated skeletons. npm run check:tokens (apps/web/scripts/check-tokens.mjs) enforces WCAG text contrast at 4.5:1 and a 3:1 focus ring in both themes; it runs outside the release gate until T033 adds the interface checks. Verified 2026-09-19: workspace type check, vite build, and the contrast script pass; the release gate reports PASS with the two known deferred checks. Recorded deviation from SPEC F12: dialog entry and exit use tw-animate-css data-state classes (fade plus at most 4px move over the panel duration) instead of Motion for React; add Motion only when a coordinated transition needs more than CSS.",
       "depends_on": [
         "T001"
       ],
@@ -484,7 +484,7 @@
         "ui",
         "accessibility"
       ],
-      "updated_at": "2026-09-19T10:07:28Z",
+      "updated_at": "2026-09-19T10:17:33Z",
       "files": [
         "apps/web/components.json",
         "apps/web/index.html",
@@ -581,7 +581,7 @@
       "title": "Implement draft editing and durable uploads",
       "priority": 1,
       "status": "done",
-      "details": "Create the Markdown editor, revision-aware autosave, attachment upload verification, identity selection, and immutable draft locking for queued sends. Re-verified 2026-09-19 (full suite: 281 tests, 11 workspaces, type checks clean). Shipped: the @mail-hub/compose service and API routes with revision-aware draft edits, identity selection against configured account identities, durable upload writes verified before acknowledgement, attachment verification, and the draft lock a queued send takes and only a definitive failure releases; plus the client autosave state machine (2s debounce, coalescing, stale-revision choice). The CodeMirror editor surface itself lands with the interface milestone (T014+), which this task depends on and which is still open; the editor drives this API unchanged.",
+      "details": "Create the Markdown editor, revision-aware autosave, attachment upload verification, identity selection, and immutable draft locking for queued sends. Re-verified 2026-09-19 (full suite: 281 tests, 11 workspaces, type checks clean). Shipped: the @mail-hub/compose service and API routes with revision-aware draft edits, identity selection against configured account identities, durable upload writes verified before acknowledgement, attachment verification, and the draft lock a queued send takes and only a definitive failure releases; plus the client autosave state machine (2s debounce, coalescing, stale-revision choice). The CodeMirror editor surface itself lands with the reading and command interface tasks (T015 through T018); the editor drives this API unchanged.",
       "depends_on": [
         "T002",
         "T005",
@@ -591,7 +591,7 @@
         "compose",
         "drafts"
       ],
-      "updated_at": "2026-09-19T04:59:55Z",
+      "updated_at": "2026-09-19T10:17:33Z",
       "files": [
         "AGENTS.md",
         "apps/api/src/compose-routes.ts",
