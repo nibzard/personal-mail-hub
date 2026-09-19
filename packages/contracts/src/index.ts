@@ -188,6 +188,104 @@ export interface FolderImportResponse extends FolderImportResult {
   pendingRoleChoices: RequiredFolderRole[];
 }
 
+/** Compose rejection codes: draft editing and durable uploads (SPEC F6, F9). */
+export type ComposeErrorCode =
+  | "invalid_request"
+  | "not_found"
+  | "draft_stale"
+  | "draft_locked"
+  | "identity_invalid"
+  | "upload_unverified";
+
+/** The body of a compose route rejection. */
+export interface ComposeErrorBody {
+  error: {
+    code: ComposeErrorCode;
+    message: string;
+    /** Present on `draft_stale`: the revision the server currently holds. */
+    currentRevision?: number;
+  };
+}
+
+/** One address as a draft or message header carries it. */
+export interface MessageAddress {
+  address: string;
+  name?: string | null;
+}
+
+/** Visible recipient lists of a draft or a sent message. */
+export interface MessageRecipients {
+  to: MessageAddress[];
+  cc?: MessageAddress[];
+  bcc?: MessageAddress[];
+}
+
+/** One identity choice for a draft: the address of a configured identity. */
+export interface IdentitySelection {
+  address: string;
+}
+
+/** One editable draft in its wire form. */
+export interface DraftView {
+  id: string;
+  accountId: string;
+  identity: { address: string; name: string | null };
+  recipients: MessageRecipients;
+  subject: string | null;
+  markdown: string;
+  revision: number;
+  /** The outbound attempt that locked this draft, when one has (SPEC F7). */
+  lockedBySend: string | null;
+  updatedAt: string;
+}
+
+/** Response of `GET /drafts`. */
+export interface DraftsResponse {
+  drafts: DraftView[];
+}
+
+/** Response of `GET /drafts/:id` and the draft mutations. */
+export interface DraftResponse {
+  draft: DraftView;
+}
+
+/** One durable upload in its wire form. */
+export interface UploadView {
+  id: string;
+  accountId: string;
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+  sha256: string;
+  createdAt: string;
+}
+
+/** Response of `POST /uploads`. */
+export interface UploadResponse {
+  upload: UploadView;
+}
+
+/** One upload attached to a draft, with its position. */
+export interface DraftAttachmentView extends UploadView {
+  ordinal: number;
+}
+
+/** Response of `GET /drafts/:id/uploads`. */
+export interface DraftAttachmentsResponse {
+  attachments: DraftAttachmentView[];
+}
+
+/** The result of verifying every upload a draft references (SPEC F6). */
+export interface DraftUploadVerificationResponse {
+  draftId: string;
+  ok: boolean;
+  uploads: {
+    uploadId: string;
+    filename: string;
+    verified: boolean;
+  }[];
+}
+
 /** Connection test rejection codes, from `SPEC.md` F1 and section 9. */
 export type TransportErrorCode =
   | "network_error"

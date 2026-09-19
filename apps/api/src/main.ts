@@ -1,10 +1,12 @@
-import { createDatabase, createPool } from "@mail-hub/database";
+import { createDatabase, createPool, createStorage } from "@mail-hub/database";
 import { RecoveryControls, describeControlStatus } from "@mail-hub/recovery";
 import { PasskeyAuthService, parseAuthConfig } from "@mail-hub/auth";
 import { AccountService, createCredentialCipher, parseCredentialsKey } from "@mail-hub/accounts";
+import { ComposeService } from "@mail-hub/compose";
 import { runConnectionTest } from "@mail-hub/transport";
 import { registerAccountRoutes } from "./account-routes.ts";
 import { registerAuthRoutes } from "./auth-routes.ts";
+import { registerComposeRoutes } from "./compose-routes.ts";
 import { registerConnectionTestRoutes } from "./connection-test-routes.ts";
 import { buildApp } from "./app.ts";
 
@@ -16,6 +18,10 @@ if (connectionString === undefined || connectionString.length === 0) {
 
 const port = Number.parseInt(process.env.PORT ?? "3000", 10);
 const host = process.env.HOST ?? "127.0.0.1";
+
+// Durable uploads live under this root, beside the originals and outbound
+// bytes the worker stores (SPEC section 8).
+const DEFAULT_STORAGE_ROOT = "data/storage";
 
 if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
   throw new Error("PORT must be an integer between 1 and 65535.");
@@ -50,6 +56,22 @@ if (authConfig === null) {
   const authService = new PasskeyAuthService(db, authConfig, controls);
   await registerAuthRoutes(app, { service: authService, origin: authConfig.origin });
   app.log.info(`Passkey authentication ready for origin ${authConfig.origin}.`);
+
+  // Draft editing and uploads share the session and recovery gate; their
+  // files persist in durable storage before the database acknowledges them
+  // (SPEC F6). No mailbox credentials are involved, so they open without
+  // CREDENTIALS_KEY.
+  const composeService = new ComposeService(
+    db,
+    createStorage(process.env.STORAGE_ROOT ?? DEFAULT_STORAGE_ROOT),
+    controls,
+  );
+  await registerComposeRoutes(app, {
+    service: composeService,
+    origin: authConfig.origin,
+    verifySession: (token) => authService.verifySession(token),
+  });
+  app.log.info("Compose ready: draft editing and durable uploads.");
 
   // Account management seals mailbox passwords with CREDENTIALS_KEY (SPEC
   // section 9). Without a usable key the routes stay closed: storing plaintext

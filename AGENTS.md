@@ -17,6 +17,13 @@
 - `packages/transport` contains the verified IMAP and SMTP connection tests.
   Both protocols require validated TLS; credentials are only sent after the
   encrypted connection is verified.
+- `packages/compose` contains draft editing and durable uploads: the
+  revision-aware draft service with identity selection against configured
+  account identities, uploads that persist in durable storage before the
+  database acknowledges them, attachment verification against recorded
+  hashes, the draft lock a queued send takes and only a definitive failure
+  releases, and the client-side autosave state machine that debounces,
+  coalesces edits, and surfaces stale-revision choices.
 - `packages/ingestion` contains durable MIME ingestion: original-byte storage
   before processing, header and body parsing, HTML sanitizing, index text,
   verified attachment locators with hash-checked regeneration, and the

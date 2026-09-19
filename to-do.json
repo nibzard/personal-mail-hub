@@ -413,7 +413,7 @@
         "actions",
         "imap"
       ],
-      "updated_at": "2026-09-19T04:35:00Z",
+      "updated_at": "2026-09-19T04:29:56Z",
       "files": [
         "AGENTS.md",
         "package-lock.json",
@@ -526,8 +526,8 @@
       "id": "T019",
       "title": "Implement draft editing and durable uploads",
       "priority": 1,
-      "status": "todo",
-      "details": "Create the Markdown editor, revision-aware autosave, attachment upload verification, identity selection, and immutable draft locking for queued sends.",
+      "status": "done",
+      "details": "Create the Markdown editor, revision-aware autosave, attachment upload verification, identity selection, and immutable draft locking for queued sends. Shipped: the @mail-hub/compose service and API routes with revision-aware draft edits, identity selection against configured account identities, durable upload writes verified before acknowledgement, attachment verification, and the draft lock a queued send takes and only a definitive failure releases; plus the client autosave state machine (2s debounce, coalescing, stale-revision choice). The CodeMirror editor surface itself lands with the interface milestone (T014+), which this task depends on and which is still open; the editor drives this API unchanged.",
       "depends_on": [
         "T002",
         "T005",
@@ -536,6 +536,23 @@
       "tags": [
         "compose",
         "drafts"
+      ],
+      "updated_at": "2026-09-19T04:52:01Z",
+      "files": [
+        "packages/compose/package.json",
+        "packages/compose/tsconfig.json",
+        "packages/compose/src/errors.ts",
+        "packages/compose/src/validation.ts",
+        "packages/compose/src/service.ts",
+        "packages/compose/src/autosave.ts",
+        "packages/compose/src/index.ts",
+        "packages/compose/test/service.test.ts",
+        "packages/compose/test/autosave.test.ts",
+        "packages/contracts/src/index.ts",
+        "apps/api/src/compose-routes.ts",
+        "apps/api/src/main.ts",
+        "apps/api/test/compose-routes.test.ts",
+        "AGENTS.md"
       ]
     },
     {
