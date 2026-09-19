@@ -21,6 +21,8 @@ import { IngestionService } from "@mail-hub/ingestion";
 import {
   BackfillService,
   BodyFetchService,
+  ReconciliationService,
+  SteadyStateService,
   SyncRunner,
   type BackfillBatchOutcome,
 } from "../src/index.ts";
@@ -475,7 +477,7 @@ suite("BackfillService", () => {
 
     const { backfill, bodies } = services(1);
     // Archive spends four windows at this size: initialize, one UID, two gaps.
-    const runner = new SyncRunner(createDatabase(pool), backfill, bodies, { batchesPerFolder: 4 });
+    const runner = new SyncRunner(createDatabase(pool), backfill, bodies, new SteadyStateService(createDatabase(pool)), new ReconciliationService(createDatabase(pool)), { batchesPerFolder: 4 });
     const first = await runner.runAccountCycle(session, accountId);
     expect(first).toMatchObject({
       folders: 2,

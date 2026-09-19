@@ -55,6 +55,27 @@ export class BodyFetchService {
   ) {}
 
   /**
+   * How many body jobs remain for one account. Sync status reports this count
+   * separately from header progress (SPEC F2 reconciliation).
+   */
+  async pendingBodyCount(accountId: string): Promise<number> {
+    requireUuid("account id", accountId);
+    const rows = await this.db
+      .select({ count: sql<number>`count(distinct ${messages.id})::int` })
+      .from(messages)
+      .innerJoin(
+        messageOccurrences,
+        and(
+          eq(messageOccurrences.messageId, messages.id),
+          eq(messageOccurrences.accountId, messages.accountId),
+        ),
+      )
+      .innerJoin(folders, eq(folders.id, messageOccurrences.folderId))
+      .where(pendingBodyConditions(accountId));
+    return rows[0]?.count ?? 0;
+  }
+
+  /**
    * The pending body jobs of one account, newest first, bounded by `limit`.
    * Only occurrences of the current folder generation qualify: a UID from an
    * older generation is never fetched (SPEC F2 reconciliation).

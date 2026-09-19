@@ -1,5 +1,6 @@
 import { SyncError } from "../src/errors.ts";
 import type {
+  MailboxFlags,
   MailboxHeaders,
   MailboxSession,
   MailboxState,
@@ -31,6 +32,7 @@ export interface FakeFailures {
   select?: Error;
   search?: Error;
   fetchHeaders?: Error;
+  fetchFlags?: Error;
   fetchOriginal?: Error;
   revalidate?: Error;
 }
@@ -89,6 +91,18 @@ export class FakeMailboxSession implements MailboxSession {
         internalDate: message.internalDate ?? new Date("2026-09-01T09:00:00Z"),
         sizeBytes: completeBytes(message).byteLength,
         rawHeaders: new TextEncoder().encode(message.headers),
+      }));
+  }
+
+  async fetchFlags(uids: number[]): Promise<MailboxFlags[]> {
+    this.failOnce("fetchFlags");
+    const wanted = new Set(uids);
+    return this.messagesOfCurrent()
+      .filter((message) => wanted.has(message.uid))
+      .map((message) => ({
+        uid: message.uid,
+        unread: !(message.flags ?? []).includes("\\Seen"),
+        flagged: (message.flags ?? []).includes("\\Flagged"),
       }));
   }
 

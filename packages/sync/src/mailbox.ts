@@ -47,6 +47,13 @@ export interface MailboxHeaders {
   rawHeaders: Uint8Array;
 }
 
+/** One observed flag set of the selected folder. */
+export interface MailboxFlags {
+  uid: number;
+  unread: boolean;
+  flagged: boolean;
+}
+
 /** One open mailbox connection bound to a single selected folder at a time. */
 export interface MailboxSession {
   /**
@@ -61,6 +68,12 @@ export interface MailboxSession {
 
   /** Headers and flags for specific UIDs of the selected folder. */
   fetchHeaders(uids: number[]): Promise<MailboxHeaders[]>;
+
+  /**
+   * Flags only, for specific UIDs of the selected folder. UIDs the server
+   * omits from the answer no longer exist; callers treat them as absent.
+   */
+  fetchFlags(uids: number[]): Promise<MailboxFlags[]>;
 
   /** The complete bytes of one message, or `null` when the UID no longer exists. */
   fetchOriginal(uid: number): Promise<Uint8Array | null>;

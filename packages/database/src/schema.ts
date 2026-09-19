@@ -552,16 +552,24 @@ export const conversationState = pgTable("conversation_state", {
 });
 
 /** Append-only audit trail. Payloads must never contain message bodies or credentials. */
-export const events = pgTable("events", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
-  /** user, system, or api. */
-  actor: text("actor").notNull(),
-  type: text("type").notNull(),
-  entityType: text("entity_type"),
-  entityId: uuid("entity_id"),
-  payload: jsonb("payload").$type<Record<string, unknown>>().notNull().default({}),
-});
+export const events = pgTable(
+  "events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
+    /** user, system, or api. */
+    actor: text("actor").notNull(),
+    type: text("type").notNull(),
+    entityType: text("entity_type"),
+    entityId: uuid("entity_id"),
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull().default({}),
+  },
+  (t) => [
+    // Synchronization reads the newest event of one type for one folder every
+    // cycle to decide what is due (SPEC F2 steady state).
+    index("events_type_entity_id_idx").on(t.type, t.entityId),
+  ],
+);
 
 /** Application settings as key-value pairs (SPEC F10). */
 export const settings = pgTable("settings", {

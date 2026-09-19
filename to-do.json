@@ -266,38 +266,62 @@
         "sync",
         "imap"
       ],
-      "updated_at": "2026-09-19T01:09:38Z",
+      "updated_at": "2026-09-19T01:10:16Z",
       "files": [
+        "AGENTS.md",
+        "apps/worker/package.json",
+        "apps/worker/src/main.ts",
+        "package-lock.json",
         "packages/sync/package.json",
-        "packages/sync/tsconfig.json",
-        "packages/sync/src/errors.ts",
-        "packages/sync/src/mailbox.ts",
-        "packages/sync/src/imap-session.ts",
-        "packages/sync/src/headers.ts",
         "packages/sync/src/backfill.ts",
         "packages/sync/src/bodies.ts",
-        "packages/sync/src/runner.ts",
+        "packages/sync/src/errors.ts",
+        "packages/sync/src/headers.ts",
+        "packages/sync/src/imap-session.ts",
         "packages/sync/src/index.ts",
+        "packages/sync/src/mailbox.ts",
+        "packages/sync/src/runner.ts",
+        "packages/sync/test/backfill.test.ts",
         "packages/sync/test/fake-mailbox.ts",
         "packages/sync/test/headers.test.ts",
-        "packages/sync/test/backfill.test.ts",
-        "apps/worker/src/main.ts",
-        "apps/worker/package.json",
-        "AGENTS.md"
+        "packages/sync/tsconfig.json",
+        "to-do.json"
       ]
     },
     {
       "id": "T009",
       "title": "Build steady-state synchronization and reconciliation",
       "priority": 1,
-      "status": "todo",
-      "details": "Poll folders, capture arrival bounds, refresh flags, detect expunges, handle folder generation changes, and run nightly inventory reconciliation.",
+      "status": "done",
+      "details": "Done: new SteadyStateService polls folders on cadence (Inbox every 60 s, others every 15 min, due-ness from the newest sync.folder_polled event), captures UIDNEXT-1 arrival bounds committed with their rows, refreshes flags in bounded batches with revision bumps only on change, and marks absent occurrences expunged while keeping messages and originals. New ReconciliationService resets a changed UIDVALIDITY (invalidate old occurrences, clear both checkpoints, re-backfill the new generation, keep stored originals) and runs the nightly full-folder inventory with bounded repairs inside the covered range. SyncRunner integrates backfill, polls, inventories, and generation resets per bounded cycle and emits one sync.status event per account per cycle with pending body counts separate from header progress; migration 0002 indexes events (type, entity_id) for the due-ness reads. PostgreSQL-backed acceptance suite included.",
       "depends_on": [
         "T008"
       ],
       "tags": [
         "sync",
         "imap"
+      ],
+      "updated_at": "2026-09-19T01:51:13Z",
+      "files": [
+        "AGENTS.md",
+        "apps/worker/src/main.ts",
+        "packages/database/drizzle/0002_cultivated_pixie.sql",
+        "packages/database/drizzle/meta/0002_snapshot.json",
+        "packages/database/drizzle/meta/_journal.json",
+        "packages/database/src/schema.ts",
+        "packages/sync/src/backfill.ts",
+        "packages/sync/src/bodies.ts",
+        "packages/sync/src/imap-session.ts",
+        "packages/sync/src/index.ts",
+        "packages/sync/src/mailbox.ts",
+        "packages/sync/src/reconcile.ts",
+        "packages/sync/src/runner.ts",
+        "packages/sync/src/steady.ts",
+        "packages/sync/src/store.ts",
+        "packages/sync/test/backfill.test.ts",
+        "packages/sync/test/fake-mailbox.ts",
+        "packages/sync/test/steady.test.ts",
+        "to-do.json"
       ]
     },
     {

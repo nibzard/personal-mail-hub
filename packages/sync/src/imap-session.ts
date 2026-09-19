@@ -4,6 +4,7 @@ import { SyncError } from "./errors.ts";
 import {
   IMPORTED_HEADER_FIELDS,
   type MailboxConnection,
+  type MailboxFlags,
   type MailboxHeaders,
   type MailboxSession,
   type MailboxSessionFactory,
@@ -103,6 +104,25 @@ export class ImapMailboxSession implements MailboxSession {
         internalDate: toDate(message.internalDate),
         sizeBytes: message.size ?? 0,
         rawHeaders: message.headers ?? new Uint8Array(0),
+      });
+    }
+    return records;
+  }
+
+  async fetchFlags(uids: number[]): Promise<MailboxFlags[]> {
+    if (uids.length === 0) {
+      return [];
+    }
+    const records: MailboxFlags[] = [];
+    for await (const message of this.client.fetch(
+      uids,
+      { uid: true, flags: true },
+      { uid: true },
+    )) {
+      records.push({
+        uid: message.uid,
+        unread: !(message.flags ?? new Set()).has("\\Seen"),
+        flagged: (message.flags ?? new Set()).has("\\Flagged"),
       });
     }
     return records;

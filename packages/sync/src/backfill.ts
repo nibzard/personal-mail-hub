@@ -1,16 +1,15 @@
-import { and, eq } from "drizzle-orm";
-import {
-  events,
-  folders,
-  messageOccurrences,
-  messages,
-  type Folder,
-  type MailHubDatabase,
-} from "@mail-hub/database";
+import { eq } from "drizzle-orm";
+import { folders, type Folder, type MailHubDatabase } from "@mail-hub/database";
 import type { MailHubTransaction } from "@mail-hub/recovery";
 import { SyncError } from "./errors.ts";
-import { parseHeaderBlock } from "./headers.ts";
 import type { MailboxSession, MailboxState } from "./mailbox.ts";
+import {
+  importHeaderRecord,
+  loadFolder,
+  lockFolder,
+  recordFolderEvent,
+  requireUuid,
+} from "./store.ts";
 
 /**
  * Resumable IMAP backfill (SPEC F2).
@@ -33,8 +32,6 @@ export const DEFAULT_BACKFILL_WINDOW = 200;
 
 /** Smallest useful window; one UID at a time is still a valid batch. */
 const MIN_BACKFILL_WINDOW = 1;
-
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** A folder with initialized checkpoints. */
 interface InitializedFolder {
@@ -166,7 +163,7 @@ export class BackfillService {
         const locked = await lockFolder(tx, accountId, folderId);
         if (locked.uidvalidity === mailbox.uidValidity && !locked.backfillComplete) {
           await tx.update(folders).set({ backfillComplete: true }).where(eq(folders.id, folderId));
-          await recordSyncEvent(tx, accountId, folderId, "sync.backfill_complete", {
+          await recordFolderEvent(tx, accountId, folderId, "sync.backfill_complete", {
             upperUid: locked.backfillUpperUid,
           });
         }
@@ -197,54 +194,18 @@ export class BackfillService {
       let imported = 0;
       let skipped = 0;
       for (const record of records) {
-        const existing = await tx
-          .select({ id: messageOccurrences.id })
-          .from(messageOccurrences)
-          .where(
-            and(
-              eq(messageOccurrences.folderId, folderId),
-              eq(messageOccurrences.uidvalidity, mailbox.uidValidity),
-              eq(messageOccurrences.uid, record.uid),
-            ),
-          )
-          .limit(1);
-        if (existing.length > 0) {
-          skipped += 1;
-          continue;
-        }
-
-        const header = await parseHeaderBlock(record.rawHeaders);
-        const inserted = await tx
-          .insert(messages)
-          .values({
-            accountId,
-            messageId: header.messageId,
-            inReplyTo: header.inReplyTo,
-            referenceIds: header.referenceIds,
-            // Provisional until thread reconciliation links it (SPEC F2).
-            threadLinkState: "pending",
-            sender: header.sender,
-            replyTo: header.replyTo,
-            recipients: header.recipients,
-            subject: header.subject,
-            sentAt: header.sentAt ?? record.internalDate,
-            sizeBytes: record.sizeBytes,
-            senderText: header.senderText,
-            recipientsText: header.recipientsText,
-            subjectText: header.subjectText,
-          })
-          .returning({ id: messages.id });
-        await tx.insert(messageOccurrences).values({
+        const wasImported = await importHeaderRecord(
+          tx,
           accountId,
-          messageId: inserted[0]!.id,
           folderId,
-          uidvalidity: mailbox.uidValidity,
-          uid: record.uid,
-          internalDate: record.internalDate,
-          unread: record.unread,
-          flagged: record.flagged,
-        });
-        imported += 1;
+          mailbox.uidValidity,
+          record,
+        );
+        if (wasImported) {
+          imported += 1;
+        } else {
+          skipped += 1;
+        }
       }
 
       // The boundary moves below the scanned window, monotonically, in the
@@ -256,7 +217,7 @@ export class BackfillService {
         .set({ backfillBeforeUid: beforeUid, backfillComplete: complete })
         .where(eq(folders.id, folderId));
 
-      await recordSyncEvent(
+      await recordFolderEvent(
         tx,
         accountId,
         folderId,
@@ -323,7 +284,7 @@ async function initializeCheckpoints(
     })
     .where(eq(folders.id, folder.id))
     .returning();
-  await recordSyncEvent(tx, folder.accountId, folder.id, "sync.backfill_initialized", {
+  await recordFolderEvent(tx, folder.accountId, folder.id, "sync.backfill_initialized", {
     uidvalidity: mailbox.uidValidity,
     upperUid,
   });
@@ -348,60 +309,6 @@ function toInitialized(folder: Folder): InitializedFolder {
   };
 }
 
-/** One folder of one account, or `SyncError` when it does not exist. */
-async function loadFolder(
-  db: MailHubDatabase,
-  accountId: string,
-  folderId: string,
-): Promise<Folder> {
-  const rows = await db
-    .select()
-    .from(folders)
-    .where(and(eq(folders.id, folderId), eq(folders.accountId, accountId)))
-    .limit(1);
-  const row = rows[0];
-  if (row === undefined) {
-    throw new SyncError("not_found", "No folder of this account exists with that identifier.");
-  }
-  return row;
-}
-
-/** Lock one folder row for a checkpoint write. */
-async function lockFolder(
-  tx: MailHubTransaction,
-  accountId: string,
-  folderId: string,
-): Promise<Folder> {
-  const rows = await tx
-    .select()
-    .from(folders)
-    .where(and(eq(folders.id, folderId), eq(folders.accountId, accountId)))
-    .for("update")
-    .limit(1);
-  const row = rows[0];
-  if (row === undefined) {
-    throw new SyncError("not_found", "No folder of this account exists with that identifier.");
-  }
-  return row;
-}
-
-/** Record one synchronization milestone. Payloads never contain message content. */
-async function recordSyncEvent(
-  handle: MailHubDatabase | MailHubTransaction,
-  accountId: string,
-  folderId: string,
-  type: string,
-  payload: Record<string, unknown>,
-): Promise<void> {
-  await handle.insert(events).values({
-    actor: "system",
-    type,
-    entityType: "folder",
-    entityId: folderId,
-    payload: { accountId, ...payload },
-  });
-}
-
 /** Record one observed generation change, then report it. Nothing else is applied. */
 async function generationChanged(
   handle: MailHubDatabase | MailHubTransaction,
@@ -410,15 +317,9 @@ async function generationChanged(
   recorded: number,
   observed: number,
 ): Promise<BackfillBatchOutcome> {
-  await recordSyncEvent(handle, accountId, folderId, "sync.folder_generation_changed", {
+  await recordFolderEvent(handle, accountId, folderId, "sync.folder_generation_changed", {
     recorded,
     observed,
   });
   return { state: "generation_changed", folderId, recorded, observed };
-}
-
-function requireUuid(kind: string, id: string): void {
-  if (!UUID_PATTERN.test(id)) {
-    throw new SyncError("invalid_request", `${kind} must be a UUID: ${id}`);
-  }
 }
