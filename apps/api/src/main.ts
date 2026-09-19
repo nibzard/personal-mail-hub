@@ -2,8 +2,10 @@ import { createDatabase, createPool } from "@mail-hub/database";
 import { RecoveryControls, describeControlStatus } from "@mail-hub/recovery";
 import { PasskeyAuthService, parseAuthConfig } from "@mail-hub/auth";
 import { AccountService, createCredentialCipher, parseCredentialsKey } from "@mail-hub/accounts";
+import { runConnectionTest } from "@mail-hub/transport";
 import { registerAccountRoutes } from "./account-routes.ts";
 import { registerAuthRoutes } from "./auth-routes.ts";
+import { registerConnectionTestRoutes } from "./connection-test-routes.ts";
 import { buildApp } from "./app.ts";
 
 const connectionString = process.env.DATABASE_URL;
@@ -61,6 +63,12 @@ if (authConfig === null) {
     const accountService = new AccountService(db, createCredentialCipher(credentialsKey), controls);
     await registerAccountRoutes(app, {
       service: accountService,
+      origin: authConfig.origin,
+      verifySession: (token) => authService.verifySession(token),
+    });
+    await registerConnectionTestRoutes(app, {
+      service: accountService,
+      tester: runConnectionTest,
       origin: authConfig.origin,
       verifySession: (token) => authService.verifySession(token),
     });

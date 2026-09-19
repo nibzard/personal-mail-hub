@@ -14,6 +14,9 @@
   and send identities.
 - `packages/recovery` contains the recovery control state, the mutation
   generation gate, and the operator recovery commands.
+- `packages/transport` contains the verified IMAP and SMTP connection tests.
+  Both protocols require validated TLS; credentials are only sent after the
+  encrypted connection is verified.
 - `packages/database` contains the Drizzle schema, SQL migrations, object
   storage, and pg-boss integration. Run `npm run db:generate` there after
   changing `src/schema.ts`; apply migrations with `npm run db:migrate`.

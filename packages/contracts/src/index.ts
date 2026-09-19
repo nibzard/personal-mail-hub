@@ -187,3 +187,64 @@ export interface FolderImportResponse extends FolderImportResult {
   folders: FolderSummary[];
   pendingRoleChoices: RequiredFolderRole[];
 }
+
+/** Connection test rejection codes, from `SPEC.md` F1 and section 9. */
+export type TransportErrorCode =
+  | "network_error"
+  | "tls_unavailable"
+  | "tls_invalid"
+  | "authentication_failed"
+  | "protocol_error"
+  | "internal_error";
+
+/** The stages one connection test walks through, in order. */
+export type ConnectionTestStage = "tls" | "authenticate" | "inspect";
+
+/** One connection-test rejection. Messages never contain credentials. */
+export interface ConnectionTestError {
+  code: TransportErrorCode;
+  message: string;
+}
+
+/** One folder as an IMAP connection test reports it, with its counts. */
+export interface ImapFolderReport {
+  /** Full IMAP path, ready for the folder-import route. */
+  name: string;
+  /** IMAP special-use attributes, for example `\\Sent`. */
+  specialUse: string[];
+  messages: number | null;
+  unread: number | null;
+}
+
+/** The IMAP half of one connection test (SPEC F1). */
+export interface ImapConnectionReport {
+  protocol: "imap";
+  ok: boolean;
+  /** The furthest stage the test reached. */
+  stage: ConnectionTestStage;
+  /** Capabilities the server advertised after authentication. */
+  capabilities: string[];
+  folders: ImapFolderReport[];
+  error: ConnectionTestError | null;
+}
+
+/** The SMTP half of one connection test (SPEC F1). */
+export interface SmtpConnectionReport {
+  protocol: "smtp";
+  ok: boolean;
+  /** The furthest stage the test reached. */
+  stage: ConnectionTestStage;
+  /** The security mode that was tested. */
+  security: SmtpSecurityMode;
+  error: ConnectionTestError | null;
+}
+
+/**
+ * Response of `POST /accounts/:id/connection-test`. Each protocol is tested
+ * and reported separately; one failing half never hides the other. The test
+ * sends no mail and verifies no send identities.
+ */
+export interface ConnectionTestResponse {
+  imap: ImapConnectionReport;
+  smtp: SmtpConnectionReport;
+}

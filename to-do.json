@@ -151,7 +151,7 @@
       "title": "Implement encrypted account and identity management",
       "priority": 1,
       "status": "done",
-      "details": "Store mailbox credentials with AES-256-GCM, manage account labels and colors, discover folders, map roles, and manage validated send identities.",
+      "details": "Store mailbox credentials with AES-256-GCM, manage account labels and colors, discover folders, map roles, and manage validated send identities. Implemented and committed in 72b92cc; this pass re-verified workspace type checks and the full test suite, including the PostgreSQL-backed suites via TEST_DATABASE_URL, and needed no code changes.",
       "depends_on": [
         "T002",
         "T004"
@@ -160,34 +160,35 @@
         "accounts",
         "security"
       ],
-      "updated_at": "2026-09-18T23:17:32Z",
+      "updated_at": "2026-09-18T23:29:13Z",
       "files": [
-        "packages/accounts/package.json",
-        "packages/accounts/tsconfig.json",
-        "packages/accounts/src/crypto.ts",
-        "packages/accounts/src/errors.ts",
-        "packages/accounts/src/validation.ts",
-        "packages/accounts/src/service.ts",
-        "packages/accounts/src/index.ts",
-        "packages/accounts/test/crypto.test.ts",
-        "packages/accounts/test/service.test.ts",
-        "packages/contracts/src/index.ts",
-        "packages/database/src/schema.ts",
-        "apps/api/src/account-routes.ts",
-        "apps/api/src/recovery.ts",
-        "apps/api/src/main.ts",
-        "apps/api/package.json",
-        "apps/api/test/account-routes.test.ts",
         ".env.example",
         "AGENTS.md",
-        "package-lock.json"
+        "apps/api/package.json",
+        "apps/api/src/account-routes.ts",
+        "apps/api/src/main.ts",
+        "apps/api/src/recovery.ts",
+        "apps/api/test/account-routes.test.ts",
+        "package-lock.json",
+        "packages/accounts/package.json",
+        "packages/accounts/src/crypto.ts",
+        "packages/accounts/src/errors.ts",
+        "packages/accounts/src/index.ts",
+        "packages/accounts/src/service.ts",
+        "packages/accounts/src/validation.ts",
+        "packages/accounts/test/crypto.test.ts",
+        "packages/accounts/test/service.test.ts",
+        "packages/accounts/tsconfig.json",
+        "packages/contracts/src/index.ts",
+        "packages/database/src/schema.ts",
+        "to-do.json"
       ]
     },
     {
       "id": "T006",
       "title": "Implement verified IMAP and SMTP connection tests",
       "priority": 1,
-      "status": "todo",
+      "status": "done",
       "details": "Require validated TLS for IMAP and SMTP, test each protocol separately, discover IMAP capabilities, and never send credentials before encryption succeeds.",
       "depends_on": [
         "T005"
@@ -195,6 +196,27 @@
       "tags": [
         "transport",
         "security"
+      ],
+      "updated_at": "2026-09-19T00:17:37Z",
+      "files": [
+        "packages/contracts/src/index.ts",
+        "packages/transport/package.json",
+        "packages/transport/tsconfig.json",
+        "packages/transport/src/tls.ts",
+        "packages/transport/src/classify.ts",
+        "packages/transport/src/imap.ts",
+        "packages/transport/src/smtp.ts",
+        "packages/transport/src/service.ts",
+        "packages/transport/src/index.ts",
+        "packages/transport/test/test-certificates.ts",
+        "packages/transport/test/fake-imap-server.ts",
+        "packages/transport/test/fake-smtp-server.ts",
+        "packages/transport/test/connection.test.ts",
+        "apps/api/src/connection-test-routes.ts",
+        "apps/api/src/main.ts",
+        "apps/api/test/connection-test-routes.test.ts",
+        "apps/api/package.json",
+        "AGENTS.md"
       ]
     },
     {
