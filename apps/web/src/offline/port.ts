@@ -1,6 +1,8 @@
 import type {
   DraftResponse,
   DraftView,
+  MailActionKindWire,
+  MailActionResponse,
   OutboundResponse,
   UploadResponse,
 } from "@mail-hub/contracts";
@@ -9,6 +11,7 @@ import {
   type DraftEditPatch,
   type OfflinePort,
   type OfflineStore,
+  type QueuedPayload,
   type ReplayOutcome,
 } from "@mail-hub/offline";
 import { apiGet, apiPatch, apiPost, apiPostBytes, toApiError } from "@/lib/api";
@@ -51,6 +54,32 @@ export function classifyReplayFailure(
   }
   // Every other answer is a definitive refusal the interface must surface.
   return { state: "failed", reason: failure.message };
+}
+
+/** The replay body of one queued mail action, back in wire form (SPEC F4). */
+function mailActionBodyOf(
+  payload: Extract<QueuedPayload, { kind: "flag" | "move" }>,
+): { accountId: string; kind: MailActionKindWire; idempotencyKey: string; occurrenceIds: string[]; destinationFolderId?: string } {
+  const accountId = payload.targets[0]?.accountId ?? "";
+  const occurrenceIds = payload.targets.map((target) => target.occurrenceId);
+  if (payload.kind === "move") {
+    return {
+      accountId,
+      kind: "move",
+      idempotencyKey: payload.idempotencyKey,
+      occurrenceIds,
+      destinationFolderId: payload.destinationFolderId,
+    };
+  }
+  const kind: MailActionKindWire =
+    payload.flag === "unread"
+      ? payload.value
+        ? "mark_unread"
+        : "mark_read"
+      : payload.value
+        ? "star"
+        : "unstar";
+  return { accountId, kind, idempotencyKey: payload.idempotencyKey, occurrenceIds };
 }
 
 /** Strip the fields the draft edit route cannot carry. */
@@ -122,8 +151,24 @@ export function webOfflinePort(store: OfflineStore): OfflinePort {
         return classifyReplayFailure(error, { lostResponseIsUncertain: true });
       }
     },
-    // Mail actions replay once the action routes ship; until then the
-    // controller keeps those items pending and counts them as unsupported.
+    // Mail actions replay against the action routes with the targets frozen
+    // at queue time (SPEC F4 and F9): the scope never grows to messages that
+    // arrived later.
+    runMailAction: async (payload) => {
+      if (payload.targets.length === 0) {
+        return { state: "failed", reason: "The queued action held no targets." };
+      }
+      try {
+        await apiPost<MailActionResponse>(
+          "/actions",
+          mailActionBodyOf(payload),
+          { headers: await generationHeaders() },
+        );
+        return { state: "synced" };
+      } catch (error) {
+        return classifyReplayFailure(error);
+      }
+    },
   };
 }
 

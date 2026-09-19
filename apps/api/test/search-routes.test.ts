@@ -26,6 +26,7 @@ const ACCOUNT_ID = "9d0a6d15-2a6e-4bb5-9f5e-0f0a9a1b2c3d";
 const ACCOUNT_B_ID = "8c1f5c04-1b5d-4aa4-8e4d-1e0f8a0a1b2c";
 const FOLDER_ID = "b7e3d2f1-4c5a-4d69-9f30-2d1c3b4a5e6f";
 const MESSAGE_ID = "3f0c8a21-77aa-4d5b-9e64-1c2b3a4d5e6f";
+const OCCURRENCE_ID = "1e7b9c3d-6a42-4f8b-b5c7-8d9e0f1a2b3c";
 const THREAD_ID = "0aa5b6c4-2211-4c8d-8f22-9b6c5d4e3f2a";
 const SAVED_ID = "6d4e7f2a-9b3c-4e58-a067-3f5d2c1b4a98";
 const NOW = new Date("2026-09-18T10:00:00.000Z");
@@ -45,6 +46,14 @@ const HIT: SearchHit = {
   unread: true,
   flagged: false,
   activeOccurrences: 1,
+  occurrences: [
+    {
+      occurrenceId: OCCURRENCE_ID,
+      folderId: FOLDER_ID,
+      revision: 3,
+      modseq: "4295128740",
+    },
+  ],
   noServerCopy: false,
   sentCopyStatus: null,
   rank: 0.5,
@@ -182,6 +191,14 @@ describe("search routes", () => {
       unread: true,
       flagged: false,
       activeOccurrences: 1,
+      occurrences: [
+        {
+          occurrenceId: OCCURRENCE_ID,
+          folderId: FOLDER_ID,
+          revision: 3,
+          modseq: "4295128740",
+        },
+      ],
       noServerCopy: false,
       sentCopyStatus: null,
       rank: 0.5,

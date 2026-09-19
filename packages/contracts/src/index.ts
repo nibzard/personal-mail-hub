@@ -588,6 +588,20 @@ export interface SearchScopeWire {
   localOnly?: boolean;
 }
 
+/**
+ * One active occurrence a result row summarizes, as a mail action targets it
+ * (SPEC F4): the identifier to freeze, the folder that holds it, and the
+ * revision observed when the row was read.
+ */
+export interface OccurrenceRefWire {
+  occurrenceId: string;
+  folderId: string;
+  /** The local revision observed when the row was read. */
+  revision: number;
+  /** The CONDSTORE value observed when the row was read, when one did. */
+  modseq: string | null;
+}
+
 /** One search result row in its wire form. */
 export interface SearchResultItem {
   messageId: string;
@@ -607,6 +621,11 @@ export interface SearchResultItem {
   flagged: boolean;
   /** Active occurrences in the current scope; zero marks a retained record. */
   activeOccurrences: number;
+  /**
+   * The active occurrences in scope, frozen for mail actions (SPEC F4).
+   * Empty for a retained record, which no server action can target.
+   */
+  occurrences: OccurrenceRefWire[];
   /** True when no server copy remains anywhere (SPEC F5). */
   noServerCopy: boolean;
   /** Sent-copy state of the outgoing record this message is, when it is one. */
@@ -647,6 +666,72 @@ export interface CreateSavedSearchRequestBody {
   name: string;
   query: string;
   scope?: SearchScopeWire | null;
+}
+
+/** Mail action rejection codes, from `SPEC.md` F4 and section 7. */
+export type ActionErrorCode = "invalid_request" | "not_found" | "idempotency_conflict";
+
+/** The body of a mail action route rejection. */
+export interface ActionErrorBody {
+  error: {
+    code: ActionErrorCode;
+    message: string;
+  };
+}
+
+/** The management actions one client may submit (SPEC F4). */
+export type MailActionKindWire =
+  | "mark_read"
+  | "mark_unread"
+  | "star"
+  | "unstar"
+  | "archive"
+  | "move";
+
+/** The life cycle states of one submitted action. */
+export type ActionStatusWire = "queued" | "executing" | "complete";
+
+/** The per-target receipt states of one action (SPEC section 7, step 5). */
+export type ActionItemStatusWire =
+  | "queued"
+  | "executing"
+  | "confirmed"
+  | "conflicted"
+  | "failed"
+  | "unknown";
+
+/** One per-target receipt: the occurrence key it answers for (SPEC F4). */
+export interface ActionItemReceiptWire {
+  itemKey: string;
+  status: ActionItemStatusWire;
+  /** The durable outcome detail, as the action service recorded it. */
+  outcome: Record<string, unknown> | null;
+}
+
+/** The durable answer of one action: its state and every target receipt. */
+export interface ActionReceiptWire {
+  actionId: string;
+  kind: MailActionKindWire;
+  status: ActionStatusWire;
+  idempotencyKey: string;
+  items: ActionItemReceiptWire[];
+}
+
+/** The body of `POST /actions` (SPEC section 7, step 1). */
+export interface SubmitMailActionBody {
+  accountId: string;
+  kind: MailActionKindWire;
+  /** The idempotency key of this submission (SPEC section 7, step 2). */
+  idempotencyKey: string;
+  /** The occurrence identifiers frozen in the current view (SPEC F4). */
+  occurrenceIds: string[];
+  /** Destination folder; required for `archive` and `move`. */
+  destinationFolderId?: string;
+}
+
+/** Response of `POST /actions` and `GET /actions/:id`. */
+export interface MailActionResponse {
+  action: ActionReceiptWire;
 }
 
 /** Safe-reader rejection codes, from `SPEC.md` F3 and section 8. */

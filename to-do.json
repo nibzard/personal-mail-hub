@@ -958,7 +958,7 @@
         "classification",
         "evaluation"
       ],
-      "updated_at": "2026-09-19T17:18:11Z",
+      "updated_at": "2026-09-19T17:18:37Z",
       "files": [
         "AGENTS.md",
         "apps/admin/package.json",
@@ -968,6 +968,7 @@
         "apps/api/src/main.ts",
         "apps/api/test/classification-routes.test.ts",
         "deploy/README.md",
+        "package-lock.json",
         "package.json",
         "packages/classification/package.json",
         "packages/classification/src/corrections.ts",
@@ -977,7 +978,8 @@
         "packages/classification/src/service.ts",
         "packages/classification/test/corrections.test.ts",
         "packages/classification/test/evaluation.test.ts",
-        "packages/contracts/src/index.ts"
+        "packages/contracts/src/index.ts",
+        "to-do.json"
       ]
     },
     {
@@ -1224,6 +1226,400 @@
         "packages/sync/test/threads.test.ts",
         "scripts/release-gate.mjs",
         "to-do.json"
+      ]
+    },
+    {
+      "id": "T035",
+      "title": "Expose mail action routes and wire the F4 management actions",
+      "priority": 1,
+      "status": "done",
+      "details": "The @mail-hub/actions service is implemented and tested (T011, T012) but unreachable: apps/api/src/main.ts registers no action routes, and apps/web disables every management command with the reason that the server routes for flags and moves do not exist (apps/web/src/mail/commands.ts:83-85, apps/web/src/offline/port.ts:125). Add session-gated, origin-checked, recovery-gated routes for submit, status, and receipts over the action service; wire mark read and unread, star and unstar, archive, and move into the palette, the row commands, and mark-read-on-open; connect the offline enqueue and replay path; cover with route tests and a browser flow. Delivers SPEC goal 3, F4, and section 7. Done: POST /actions and GET /actions/:id are session-gated, origin-checked, and recovery-gated (the generation header feeds the service's gate before its idempotency lookup); the wire carries per-item receipts, and a move or archive must name its destination in the body. Search rows now carry each message's active occurrences so the client freezes the exact server scope. The worker re-drives incomplete actions inside each account cycle. The web app wires mark read and unread, star and unstar, archive, and move through the command registry with a nested destination chooser, paints confirmed results only after receipts (plus mark-read-on-open once per message), and queues flag and move payloads offline for stamped replay. Browser flows cover star, archive, move, and the offline queue-and-replay path.",
+      "tags": [
+        "actions",
+        "api",
+        "ui"
+      ],
+      "updated_at": "2026-09-19T18:18:22Z",
+      "files": [
+        "apps/api/src/action-routes.ts",
+        "apps/api/src/main.ts",
+        "apps/api/src/search-routes.ts",
+        "apps/api/test/action-routes.test.ts",
+        "apps/api/test/search-routes.test.ts",
+        "apps/worker/src/main.ts",
+        "packages/contracts/src/index.ts",
+        "packages/actions/src/errors.ts",
+        "packages/search/src/service.ts",
+        "packages/search/src/index.ts",
+        "packages/search/test/service.test.ts",
+        "apps/web/src/mail/actions.ts",
+        "apps/web/src/mail/commands.ts",
+        "apps/web/src/components/mail/app-shell.tsx",
+        "apps/web/src/offline/port.ts",
+        "apps/web/test/actions.test.ts",
+        "apps/web/test/commands.test.ts",
+        "apps/web/test/offline.test.ts",
+        "apps/web/e2e/fixture-data.mjs",
+        "apps/web/e2e/fixture-server.mjs",
+        "apps/web/e2e/flows.browser.ts",
+        "packages/offline/test/store.test.ts"
+      ]
+    },
+    {
+      "id": "T036",
+      "title": "Build the compose and send interface",
+      "priority": 1,
+      "status": "todo",
+      "details": "No compose surface exists in the web app: no CodeMirror editor, no Markdown preview, no draft autosave UI, no attachment upload UI, and no send flow (apps/web/src/mail/commands.ts:85 states the compose editor is not part of this build). Nothing in apps/web calls enqueueDraftSave, enqueueUpload, enqueueSend, or enqueueMailAction, so the offline queue and the review dialog in sync-status.tsx are unreachable code. Build the F6 and F7 surface on the existing @mail-hub/compose and @mail-hub/send APIs: the CodeMirror 6 Markdown editor with preview, identity and recipient pickers, attachments with upload state, the 2-second autosave state machine with the stale-revision choice, send with queued, sending, sent, partial, failed, and unknown states kept separate from Sent-copy status, a draft list, and the duplicate-warning path before any deliberate resend.",
+      "tags": [
+        "ui",
+        "compose",
+        "send"
+      ],
+      "updated_at": "2026-09-19T17:39:46Z",
+      "files": [
+        "apps/web/src/components",
+        "apps/web/src/mail",
+        "apps/web/e2e/flows.browser.ts",
+        "packages/contracts/src/index.ts"
+      ]
+    },
+    {
+      "id": "T037",
+      "title": "Add the PWA manifest and service worker",
+      "priority": 1,
+      "status": "todo",
+      "details": "The web app ships no manifest and no service worker: no manifest link in index.html, no serviceWorker registration, no public assets, and no PWA build plugin (index.html, vite.config.ts, package.json). The Dexie offline cache only engages when the already-loaded shell gets a runtime fetch failure, so an offline reload or an installed-app launch shows the browser offline page and the cached mail is unreachable; the app cannot be installed at all, against SPEC section 6, F9, and the F12 installed-iPhone-PWA requirement. Add a manifest with icons and theme colors, a service worker that precaches the shell and serves it offline while never caching authenticated API responses, keep the runtime fallback, and extend the browser flows to cover a cold offline load.",
+      "tags": [
+        "pwa",
+        "offline",
+        "ui"
+      ],
+      "updated_at": "2026-09-19T17:39:46Z",
+      "files": [
+        "apps/web/index.html",
+        "apps/web/vite.config.ts",
+        "apps/web/package.json",
+        "apps/web/src/main.tsx",
+        "apps/web/e2e/flows.browser.ts"
+      ]
+    },
+    {
+      "id": "T038",
+      "title": "Fix the deployment startup defects",
+      "priority": 1,
+      "status": "todo",
+      "details": "Three defects keep a compose deployment from working. First, the worker service in deploy/docker-compose.yml sets APP_ROLE, DATABASE_URL, RECOVERY_GENERATION, and CREDENTIALS_KEY but not BASE_URL, while entrypoint.sh runs deploy/preflight.mjs for every role and preflight fails without BASE_URL, so the worker crash-loops while api and web look healthy: no sync, no sends, no classification. Second, entrypoint.sh never execs the passed arguments although the Dockerfile defines no CMD, so the README backup and restore commands are silently ignored and the container runs preflight, migrations, and the API against the live database during a restore, exactly what restore step 1 forbids; exec the arguments when present or use an explicit entrypoint override in every README command. Third, the .dockerignore patterns .env and .env.* match only at the context root, so deploy/.env created by the README workflow (CREDENTIALS_KEY, RECOVERY_GENERATION, POSTGRES_PASSWORD) is copied into the image; add nested patterns. Also pass TYPE_SAFE_API_KEY and the cycle-cron overrides through to the containers, and make the worker-dies path in entrypoint.sh wait for the API and pass exit codes through instead of exiting 0.",
+      "tags": [
+        "deployment",
+        "security"
+      ],
+      "updated_at": "2026-09-19T17:39:46Z",
+      "files": [
+        "deploy/docker-compose.yml",
+        "deploy/entrypoint.sh",
+        "deploy/preflight.mjs",
+        "deploy/README.md",
+        ".dockerignore"
+      ]
+    },
+    {
+      "id": "T039",
+      "title": "Fix the send and draft-lock lifecycle defects",
+      "priority": 1,
+      "status": "todo",
+      "details": "Three defects in the send path. First, queueSend freezes the attachment list from an unlocked read: loadVerifiedAttachments runs before the freeze transaction (packages/send/src/service.ts:296) and attachUpload and detachUpload never bump drafts.revision (packages/compose/src/service.ts:452-492), so a concurrent attach or detach changes what is sent. Second, local pre-submission failures (mime_missing, mime_mismatch, credentials_unavailable at packages/send/src/service.ts:484-514) are recorded as outcome_unknown although nothing was submitted; recordUnknown never unlocks the draft, only a failed outcome unlocks it (line 1084), and no sweep or edit path can open it again, so a wrong SMTP password wedges the draft permanently. Third, no path releases lockedBySend after a successful send, so sent drafts stay locked forever and deleteDraft rejects them with draft_locked (packages/compose/src/service.ts:722-734) while listDrafts keeps returning them. Freeze the attachment set inside the claim transaction or bump the revision on link changes, classify never-submitted local failures as failed with the draft unlocked and editable, and release or supersede the lock on acceptance while outbound references keep the uploaded files alive.",
+      "tags": [
+        "send",
+        "compose",
+        "safety"
+      ],
+      "updated_at": "2026-09-19T17:39:46Z",
+      "files": [
+        "packages/send/src/service.ts",
+        "packages/compose/src/service.ts",
+        "packages/send/test/service.test.ts",
+        "packages/compose/test/service.test.ts"
+      ]
+    },
+    {
+      "id": "T040",
+      "title": "Close the restore-window session and disposition gaps",
+      "priority": 1,
+      "status": "todo",
+      "details": "verifySession binds a session only to the database generation (packages/auth/src/service.ts:303-306), never to the deployment generation or the control mode, so after a restore the restored service_state and the restored sessions carry the same old generation and a cookie revoked after the backup passes verification with full read access, settings reads, and passkey enrollment when the restored verifiedAt is under five minutes old; apps/api/test/restore-acceptance.test.ts:369-372 asserts this behavior, against SPEC section 10 which requires restored credentials and sessions to grant no access, including before recovery begin runs. completeReverification (service.ts:324-356) also omits the challenge-to-generation check that completeLogin and completeEnrollment enforce, and new challenges bind to the raw database generation rather than the control-status generation (startAssertionCeremony at 596, startCredentialEnrollment at 388). In packages/recovery, countUndispositionedOperations inspects only the top-level status (controls.ts:87-90 and 300-326), so an old-generation outbound row with status sent and a pending or appending sent_copy_status counts as dispositioned and recovery complete succeeds while an unresolved append stays stuck forever because assessJob marks its job stale. Make session verification respect the control status with reconciling limited to inspection sessions, bind reverify ceremonies to the control-status generation with the same check as login, and count unresolved sent-copy states as undispositioned.",
+      "tags": [
+        "security",
+        "recovery",
+        "auth"
+      ],
+      "updated_at": "2026-09-19T17:39:46Z",
+      "files": [
+        "packages/auth/src/service.ts",
+        "packages/auth/test/service.test.ts",
+        "packages/recovery/src/controls.ts",
+        "packages/recovery/test/controls.test.ts",
+        "apps/api/test/restore-acceptance.test.ts"
+      ]
+    },
+    {
+      "id": "T041",
+      "title": "Fix the sync reconciliation races",
+      "priority": 2,
+      "status": "todo",
+      "details": "resetFolderGeneration applies any observed generation whenever the folder holds something else (packages/sync/src/reconcile.ts:118-146, fed by runner.ts:263-274 and backfill.ts:187-192), and the runner forwards only the observed generation, never the recorded one. Two overlapping cycles on one account can therefore reset a folder to a stale generation, and the corrective re-import then inserts nothing because importHeaderRecord counts the invalidated fresh occurrences as existing, leaving every message in that folder invisible until the next real UIDVALIDITY change; reset only while the folder still holds the caller's recorded generation. Also guard the expunge comparison in steady.ts:258-273 so occurrences with a UID above the snapshot bound are never judged (a concurrent arrival between fetch and comparison is currently marked expunged and lost from active views permanently), and contain per-job and per-folder errors in runner.ts:133-156 with bodies.ts:234-237 so one stale body job (not_found after a move) no longer aborts the account cycle, skipping thread reconciliation and the sync.status event.",
+      "tags": [
+        "sync",
+        "safety"
+      ],
+      "updated_at": "2026-09-19T17:39:46Z",
+      "files": [
+        "packages/sync/src/reconcile.ts",
+        "packages/sync/src/runner.ts",
+        "packages/sync/src/steady.ts",
+        "packages/sync/src/bodies.ts",
+        "packages/sync/test"
+      ]
+    },
+    {
+      "id": "T042",
+      "title": "Bound parsing and original-fetch memory",
+      "priority": 2,
+      "status": "todo",
+      "details": "Parsing holds the whole original, every decoded attachment, and the sanitized DOM in memory at once (packages/ingestion/src/parse.ts:81-157 with service.ts:91-110; only hashes are persisted), and sync buffers each complete original in memory via fetchOne with source enabled and no size cap (packages/sync/src/imap-session.ts:164-177). Steady state also loads every active occurrence of a folder on each poll (steady.ts:319-336) and fetches an unbounded arrival range in one transaction after downtime (steady.ts:207-209). One oversized message on the 2 GB shared API and worker process can terminate sync, send, and reading together, against the SPEC section 10 rule to stream originals to disk and bound parsing. Add a maximum message size policy (reject or skip with an event above the bound), stream originals into the durable store instead of buffering them, batch the flag-refresh and arrival ranges, and document the chosen bound.",
+      "tags": [
+        "sync",
+        "ingestion",
+        "reliability"
+      ],
+      "updated_at": "2026-09-19T17:39:46Z",
+      "files": [
+        "packages/ingestion/src/parse.ts",
+        "packages/ingestion/src/service.ts",
+        "packages/sync/src/imap-session.ts",
+        "packages/sync/src/steady.ts"
+      ]
+    },
+    {
+      "id": "T043",
+      "title": "Handle offline replay failures and orphaned uploads",
+      "priority": 2,
+      "status": "todo",
+      "details": "classifyReplayFailure treats a 401 as a definitive failure (apps/web/src/offline/port.ts:48-54 with packages/offline/src/sync.ts:210-214), the sync status never renders failed actions, and the retry entry point has no caller in apps/web, so a session that expires overnight permanently kills a queued draft edit with no screen ever showing it. Treat 401 as retryable after sign-in (pause the replay pass, offer sign-in, resume), surface failed items with a retry and discard path, and give the settings screen the same session-expiry handling the list and reader already have. Also make enqueueUpload atomic or reconcile it: the upload record and its queue action are two separate IndexedDB writes (packages/offline/src/sync.ts:314-320), so a crash between them leaves a pending upload that never drains and makes every later enqueueSend for that draft throw UploadsUnverifiedError, even after re-adding the file.",
+      "tags": [
+        "offline",
+        "pwa",
+        "compose"
+      ],
+      "updated_at": "2026-09-19T17:39:46Z",
+      "files": [
+        "apps/web/src/offline/port.ts",
+        "apps/web/src/components/mail/sync-status.tsx",
+        "apps/web/src/settings/settings-context.tsx",
+        "packages/offline/src/sync.ts",
+        "packages/offline/test"
+      ]
+    },
+    {
+      "id": "T044",
+      "title": "Fix the classification circuit and rule matching",
+      "priority": 2,
+      "status": "todo",
+      "details": "Four defects. The deterministic rules compare sender addresses case-sensitively (packages/classification/src/rules.ts:67-74) although the input contract documents lowercase addresses and every other path lowercases, so senders such as MAILER-DAEMON at a mixed-case host miss the bounce and security rules and spend a Jev call the SPEC says not to spend. The 30-minute circuit cooldown is dead code (packages/classification/src/service.ts:552-571 with the constant at line 60) because counted failures are filtered to a 10-minute window, so the breaker silently closes after about ten minutes and oscillates during a hard outage while healthz still claims a 30-minute pause. classifyMessage never consults the circuit (service.ts:223-255), so the per-message entry point keeps calling the adapter while the breaker is open. And when the circuit read throws, healthz reports not_configured instead of an unknown state (packages/observability/src/health.ts:228-240) because the classification circuit union has no unknown member; add the member and report unreadable state honestly.",
+      "tags": [
+        "classification",
+        "observability"
+      ],
+      "updated_at": "2026-09-19T17:39:46Z",
+      "files": [
+        "packages/classification/src/rules.ts",
+        "packages/classification/src/service.ts",
+        "packages/classification/test/rules.test.ts",
+        "packages/classification/test/service.test.ts",
+        "packages/observability/src/health.ts",
+        "packages/observability/test/health.test.ts"
+      ]
+    },
+    {
+      "id": "T045",
+      "title": "Harden the API routes",
+      "priority": 2,
+      "status": "todo",
+      "details": "Five route-level defects. The app sets no body limit, so Fastify caps JSON at 1 MiB while the draft schemas allow 2,000,000 characters and the service caps at 1,000,000; a large Markdown draft dies with the generic 413 outside the error contract (apps/api/src/app.ts:7, apps/api/src/compose-routes.ts:103 and 199, packages/compose/src/validation.ts:14). Every scoped handler ends by re-sending the caught error, so a database or storage outage returns raw internal messages and topology to the browser (auth-routes.ts:78 and the same pattern in nine more route files); map unknown errors to a generic code and log the detail server-side. The public healthz route returns account labels, colors, and both recovery-generation values to unauthenticated callers (health-routes.ts:141 with 51-61 and 90-102); trim per-account entries to identifiers and counts and drop or gate the generation fields. The login and enrollment start endpoints insert a challenge row per call with no throttling and expired challenges are never deleted (packages/auth/src/state.ts:66-83), so the table grows without bound under a script; add issuance caps and periodic cleanup. And importFolders assigns roles without the for-update lock that assignFolderRole takes (packages/accounts/src/service.ts:331-373), so a concurrent discovery import can hit the partial unique index and surface a raw 500; take the same lock.",
+      "tags": [
+        "api",
+        "security"
+      ],
+      "updated_at": "2026-09-19T17:39:46Z",
+      "files": [
+        "apps/api/src/app.ts",
+        "apps/api/src",
+        "apps/api/test",
+        "packages/accounts/src/service.ts"
+      ]
+    },
+    {
+      "id": "T046",
+      "title": "Make the release gate trust exit codes and keep its logs",
+      "priority": 2,
+      "status": "todo",
+      "details": "The integration-tests and action-permissions checks decide only from the parsed vitest summary and never check the npm exit code (scripts/release-gate.mjs:200-215), so a run that prints a clean summary but exits non-zero (a global-teardown crash, an out-of-memory kill with buffered output, a failing posttest step) records PASS and the gate exits 0. The per-workspace test runner also uses the if-present flag, so a workspace with a missing or mistyped test script contributes no summary and passes silently. The log directory is deleted even when the verdict is FAIL (line 263), defeating the printed paths. Check the exit code of every spawned command, fail a check whose workspaces produced no summary, and keep the log directory on failure.",
+      "tags": [
+        "testing",
+        "release"
+      ],
+      "updated_at": "2026-09-19T17:39:46Z",
+      "files": [
+        "scripts/release-gate.mjs"
+      ]
+    },
+    {
+      "id": "T047",
+      "title": "Enforce derivative version and audit-event integrity",
+      "priority": 3,
+      "status": "todo",
+      "details": "Three version and audit gaps. bodies.sanitizer_version is written but never read (packages/ingestion/src/sanitize.ts:20 with packages/reading/src/service.ts:132), so after a sanitizer change every previously ingested message keeps serving its old sanitized row, including through clean view, with nothing flagging the mismatch; compare the stored version and re-sanitize from the durable original or mark the derivative stale. EXTRACTION_VERSION is pinned only by a literal self-equality test (packages/content/src/extract.ts:22 with test/extract.test.ts:20-24), never against the installed Defuddle version, so a dependency upgrade can ship with a misreported version; assert the installed package version matches the constant. And createSavedSearch and deleteSavedSearch write their audit events as separate statements after the mutation (packages/search/src/service.ts:359-407), so a crash between them loses the event; commit the effect and the event together as settings and corrections already do.",
+      "tags": [
+        "ingestion",
+        "content",
+        "search",
+        "audit"
+      ],
+      "updated_at": "2026-09-19T17:39:46Z",
+      "files": [
+        "packages/ingestion/src/sanitize.ts",
+        "packages/reading/src/service.ts",
+        "packages/content/src/extract.ts",
+        "packages/content/test/extract.test.ts",
+        "packages/search/src/service.ts"
+      ]
+    },
+    {
+      "id": "T048",
+      "title": "Check storage writes and clean repository hygiene",
+      "priority": 3,
+      "status": "todo",
+      "details": "writeObject and writeSidecar ignore the bytes-written return of FileHandle.write (packages/database/src/storage/fs-object-store.ts:128 and 134), so a short write on a nearly full disk publishes a truncated durable object while the sidecar and the database keep the hash and size of the full input, and only a later full verification exposes the corruption; assert each write is complete and loop where needed. The .gitignore lacks data/ and backups/ although both apps default STORAGE_ROOT to a repo-relative data/storage and the .dockerignore already excludes both, so a local run against a real mailbox followed by git add commits every stored mail original into history. And AGENTS.md documents every package except packages/harness; add the module entry so the scripted IMAP and SMTP acceptance harness is discoverable.",
+      "tags": [
+        "storage",
+        "hygiene"
+      ],
+      "updated_at": "2026-09-19T17:39:46Z",
+      "files": [
+        "packages/database/src/storage/fs-object-store.ts",
+        "packages/database/test/storage.test.ts",
+        ".gitignore",
+        "AGENTS.md"
+      ]
+    },
+    {
+      "id": "T049",
+      "title": "Harden the transport clients and test fakes",
+      "priority": 3,
+      "status": "todo",
+      "details": "Five items. submitSmtpMessage omits forceAuth while the connection test sets it (packages/transport/src/submit.ts:46-65), so a server whose EHLO advertises no AUTH makes nodemailer submit silently unauthenticated; set forceAuth and add a harness case. The transport-package fakes keep the buffer, upgrade state, login stage, and authenticated flag on the server instead of per connection (test/fake-imap-server.ts:47-48, test/fake-smtp-server.ts:58-61), so a second connection to an upgraded server mislabels plaintext lines and can turn the no-credentials-in-plaintext assertion into a false negative; adopt the per-connection session pattern the harness package already uses. All four fake servers accumulate lines and client-declared literals without a cap (packages/harness/src/imap-server.ts:957, packages/harness/src/smtp-server.ts:208 and the transport fakes); add a maximum line and literal size that destroys the connection. The plaintext-password assertion is vacuous because AUTH LOGIN and PLAIN send the password base64-encoded (packages/transport/test/connection.test.ts:219); decode the AUTH lines in the fake or assert on the decoded form. And the trusted-CA comment in packages/transport/src/imap.ts:29-31 is wrong: the ca option replaces the system root store rather than adding to it.",
+      "tags": [
+        "transport",
+        "harness",
+        "security"
+      ],
+      "updated_at": "2026-09-19T17:39:46Z",
+      "files": [
+        "packages/transport/src/submit.ts",
+        "packages/transport/src/imap.ts",
+        "packages/transport/test",
+        "packages/harness/src/imap-server.ts",
+        "packages/harness/src/smtp-server.ts"
+      ]
+    },
+    {
+      "id": "T050",
+      "title": "Fix the worker lifecycle and cycle scheduling",
+      "priority": 3,
+      "status": "todo",
+      "details": "Two defects in apps/worker/src/main.ts. The malformed-CREDENTIALS_KEY path returns early after starting pg-boss and opening the pool (lines 97-103), leaving an idle process with no workers or schedules whose shutdown handler only aborts a controller nothing reads, so it ignores SIGTERM and hangs the entrypoint wait until SIGKILL when the worker is started through any path that skips preflight; shut the queue and pool down and exit non-zero. And the sync.cycle schedule enqueues a new job every 30 seconds with no singleton key or depth check (lines 30, 273, 346-361), so a cycle slower than the tick, which the initial backfill over many accounts will be, piles up thousands of redundant jobs per day and then runs them back to back; make the schedule singleton or skip the enqueue while a cycle is in flight.",
+      "tags": [
+        "worker",
+        "reliability"
+      ],
+      "updated_at": "2026-09-19T17:39:46Z",
+      "files": [
+        "apps/worker/src/main.ts"
+      ]
+    },
+    {
+      "id": "T051",
+      "title": "Raise browser-test fidelity and missing coverage",
+      "priority": 3,
+      "status": "todo",
+      "details": "The fixture server accepts settings and account mutations without the recovery-generation header and Origin check the real API enforces, and no route can return 401 (apps/web/e2e/fixture-server.mjs:230-238, 241-326, 348-351), so a client regression that drops the generation header, a path that exists in apps/web/src/settings/settings-context.tsx:121-123 when the generation is unknown, passes the whole browser suite while every production save fails; make the fixture enforce both guards and add a signed-out mode that exercises the sign-in path. The axe exclusion selector matches nothing because the reader iframe has no identifier (apps/web/e2e/helpers.ts:68); give the frame the identifier or fix the selector. The palette-latency check fails on the maximum of five samples against a hard 100 ms with no retries (apps/web/e2e/flows.browser.ts:452-475), stricter than the SPEC p95 target and a known intermittent-failure shape on a loaded runner; use a warm-up and a p95 aggregate. And add the missing SPEC section 12 coverage: failure and pending interaction states (the fixture always succeeds) and visual regression snapshots for the shared components and main flows.",
+      "tags": [
+        "testing",
+        "ui"
+      ],
+      "updated_at": "2026-09-19T17:39:46Z",
+      "files": [
+        "apps/web/e2e/fixture-server.mjs",
+        "apps/web/e2e/helpers.ts",
+        "apps/web/e2e/flows.browser.ts",
+        "apps/web/e2e/interface.browser.ts"
+      ]
+    },
+    {
+      "id": "T052",
+      "title": "Fix the reader and settings interface defects",
+      "priority": 3,
+      "status": "todo",
+      "details": "Five small web defects. The Clean view toggle cannot be switched off when the clean-view default is on: the state falls back to the setting and the handler resets to the default instead of recording a per-message off choice (apps/web/src/components/mail/reader-pane.tsx:59-62 and 196-201), so the sanitized original stays unreachable against the F3 one-click rule. The unified inbox shows skeletons forever when the folder index read fails because the load never leaves the initial phase (apps/web/src/mail/data.ts:392-394); surface an error with a retry in the list pane. The offline fallback returns every cached row regardless of the active account, folder, and search query (apps/web/src/mail/data.ts:500-513); filter by scope and query or state the mismatch. A failed settings save keeps only the last patch and out-of-order responses can revert the display (apps/web/src/settings/settings-context.tsx:74 and 130-147); queue failed patches and reconcile on save. And settings mutations expose raw error text with no session-expiry path, unlike the list and reader; add the sign-in recovery message.",
+      "tags": [
+        "ui",
+        "settings",
+        "reading"
+      ],
+      "updated_at": "2026-09-19T17:39:46Z",
+      "files": [
+        "apps/web/src/components/mail/reader-pane.tsx",
+        "apps/web/src/mail/data.ts",
+        "apps/web/src/components/mail/message-list.tsx",
+        "apps/web/src/settings/settings-context.tsx",
+        "apps/web/src/components/settings"
+      ]
+    },
+    {
+      "id": "T053",
+      "title": "Harden backup, restore, and the web gateway",
+      "priority": 3,
+      "status": "todo",
+      "details": "Four deploy items. The backup copies the durable tree with no garbage-collection pause hook although SPEC section 10 step 6 requires copying referenced objects while collection is paused (deploy/backup.sh:49-55); nothing implements collection yet, so define the coordination, for example a lock the sweep honors, before any collection lands. The database restore runs pg_restore without exit-on-error or single-transaction while the clean mode cannot drop objects added after the backup (deploy/restore.sh:66-71), so restoring an older bundle onto a newer schema rewinds the migration journal and the entrypoint crash-loops on re-applied migrations; fail atomically instead. The backup manifest and README claim the bundle never contains RECOVERY_GENERATION (deploy/backup.sh:69, deploy/README.md:166) but the dump includes service_state.recovery_generation; reword to say the generation in the snapshot must never be reused. And the nginx gateway sends no X-Content-Type-Options, Referrer-Policy, or document CSP for the PWA shell (deploy/nginx-web.conf.template:12-47); add baseline headers.",
+      "tags": [
+        "deployment",
+        "backup",
+        "security"
+      ],
+      "updated_at": "2026-09-19T17:39:46Z",
+      "files": [
+        "deploy/backup.sh",
+        "deploy/restore.sh",
+        "deploy/nginx-web.conf.template",
+        "deploy/README.md"
+      ]
+    },
+    {
+      "id": "T054",
+      "title": "Harden action execution claims and readback classification",
+      "priority": 3,
+      "status": "todo",
+      "details": "Two defects in packages/actions. execute takes no per-action claim (src/service.ts:236-245), so a concurrent reconcileIncomplete marks an in-flight item unknown-interrupted and the still-pending guard in commitDisposition (line 455) then drops the real confirmed receipt; a move that succeeded remotely is recorded unknown and the source occurrence is never marked expunged locally. Claim executing items or version the disposition so the live worker receipt wins. And the post-write readback fetch is unguarded inside applyFlags (src/two-way-executor.ts:69), so a connection drop after an accepted conditional STORE propagates as a definitive executor error although the write almost certainly applied; classify a lost readback as unknown with the last observed state, per the F2 lost-response rule.",
+      "tags": [
+        "actions",
+        "safety"
+      ],
+      "updated_at": "2026-09-19T17:39:46Z",
+      "files": [
+        "packages/actions/src/service.ts",
+        "packages/actions/src/two-way-executor.ts",
+        "packages/actions/test/service.test.ts",
+        "packages/actions/test/two-way-executor.test.ts"
       ]
     }
   ]

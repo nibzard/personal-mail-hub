@@ -17,6 +17,8 @@
  * - `GET /api/messages/:id/attachments/:attachmentId`,
  * - `GET/PUT /api/settings`   the settings record (SPEC F10),
  * - `GET /api/sync/status`    per-account sync and queue status,
+ * - `POST /api/actions`       mail management actions with receipts (SPEC F4),
+ * - `GET /api/actions/:id`    one action's receipts,
  * - `PATCH /api/accounts/:id` the classification toggle,
  * - `PUT /api/accounts/:id/identities`,
  * - `PUT/DELETE /api/accounts/:id/folders/:folderId/role`.
@@ -38,12 +40,15 @@ import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   accounts,
+  ACTION_KINDS,
   attachmentBytes,
   authStatus,
   cleanViews,
+  FLAG_KINDS,
   foldersByAccount,
   messageDetails,
   messageRows,
+  RECOVERY_GENERATION,
   settings,
   settingsSchema,
   syncStatus,
@@ -71,6 +76,54 @@ function freshSession() {
     settings: structuredClone(settings),
     accounts: structuredClone(accounts),
     foldersByAccount: structuredClone(foldersByAccount),
+    // Row patches applied mail actions made, keyed by message id, plus the
+    // receipts those actions returned, keyed by id and idempotency key.
+    rowPatches: new Map(),
+    actions: new Map(),
+    actionsByKey: new Map(),
+  };
+}
+
+/** The occurrence ids one row exposes, keyed by message id. */
+const OCCURRENCES_BY_MESSAGE = new Map(
+  messageRows.map((item) => [item.messageId, item.occurrences]),
+);
+
+/** The message row an occurrence id belongs to, keyed by occurrence id. */
+const MESSAGE_BY_OCCURRENCE = new Map(
+  messageRows.flatMap((item) =>
+    item.occurrences.map((occurrence) => [occurrence.occurrenceId, item]),
+  ),
+);
+
+/** Applies one mail action in memory and returns its receipts (SPEC F4). */
+function applyMailAction(session, body) {
+  const flagged = FLAG_KINDS[body.kind];
+  for (const occurrenceId of body.occurrenceIds) {
+    const row = MESSAGE_BY_OCCURRENCE.get(occurrenceId);
+    if (row === undefined) {
+      continue;
+    }
+    const patch = session.rowPatches.get(row.messageId) ?? {};
+    if (flagged === undefined) {
+      // A move or archive re-files the row; the source folder is left as
+      // the row's own occurrence history records it.
+      patch.folderId = body.destinationFolderId;
+    } else {
+      patch[flagged.flag] = flagged.value;
+    }
+    session.rowPatches.set(row.messageId, patch);
+  }
+  return {
+    actionId: randomUUID(),
+    kind: body.kind,
+    status: "complete",
+    idempotencyKey: body.idempotencyKey,
+    items: body.occurrenceIds.map((occurrenceId) => ({
+      itemKey: occurrenceId,
+      status: "confirmed",
+      outcome: null,
+    })),
   };
 }
 
@@ -95,32 +148,38 @@ function sessionFor(request, response) {
   return fresh;
 }
 
-/** Rows of one scope: account and folder filters plus a free-text query. */
-function rowsFor({ accountIds, folderId, query }) {
+/** Rows of one scope with the session's action patches applied. */
+function rowsFor(session, { accountIds, folderId, query }) {
   const terms = query
     .toLowerCase()
     .split(/\s+/)
     .filter((term) => term.length > 0);
-  return messageRows.filter((item) => {
+  const rows = [];
+  for (const base of messageRows) {
+    const patch = session.rowPatches.get(base.messageId);
+    const item = patch === undefined ? base : { ...base, ...patch };
     if (accountIds.length > 0 && !accountIds.includes(item.accountId)) {
-      return false;
+      continue;
     }
     if (folderId !== null && item.folderId !== folderId) {
-      return false;
+      continue;
     }
-    if (terms.length === 0) {
-      return true;
+    if (terms.length > 0) {
+      const haystack = [
+        item.subject ?? "",
+        item.snippet ?? "",
+        item.sender?.name ?? "",
+        item.sender?.address ?? "",
+      ]
+        .join(" ")
+        .toLowerCase();
+      if (!terms.every((term) => haystack.includes(term))) {
+        continue;
+      }
     }
-    const haystack = [
-      item.subject ?? "",
-      item.snippet ?? "",
-      item.sender?.name ?? "",
-      item.sender?.address ?? "",
-    ]
-      .join(" ")
-      .toLowerCase();
-    return terms.every((term) => haystack.includes(term));
-  });
+    rows.push(item);
+  }
+  return rows;
 }
 
 /** The wire row: the fixture's folder field never leaves the server. */
@@ -325,6 +384,59 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    // Mail management actions (SPEC F4): the fixture freezes nothing, but it
+    // validates the submission's shape and reads its own writes back.
+    if (pathname === "/api/actions" && request.method === "POST") {
+      const body = await readJsonBody(request);
+      const account = session.accounts.find((entry) => entry.id === body?.accountId);
+      const kind = ACTION_KINDS.find((candidate) => candidate === body?.kind);
+      const needsDestination = kind === "move" || kind === "archive";
+      const destinationKnown =
+        !needsDestination ||
+        session.foldersByAccount[body.accountId]?.folders.some(
+          (folder) => folder.id === body.destinationFolderId,
+        );
+      if (
+        body === null ||
+        account === undefined ||
+        kind === undefined ||
+        typeof body.idempotencyKey !== "string" ||
+        body.idempotencyKey.length === 0 ||
+        !Array.isArray(body.occurrenceIds) ||
+        body.occurrenceIds.length === 0 ||
+        (needsDestination && destinationKnown === false)
+      ) {
+        sendError(
+          response,
+          400,
+          "invalid_request",
+          "The action body names no account, kind, key, occurrences, or a known destination.",
+        );
+        return;
+      }
+      const replayed = session.actionsByKey.get(body.idempotencyKey);
+      if (replayed !== undefined) {
+        sendJson(response, 200, { action: replayed });
+        return;
+      }
+      const receipt = applyMailAction(session, body);
+      session.actions.set(receipt.actionId, receipt);
+      session.actionsByKey.set(receipt.idempotencyKey, receipt);
+      sendJson(response, 201, { action: receipt });
+      return;
+    }
+
+    match = /^\/api\/actions\/([^/]+)$/.exec(pathname);
+    if (match !== null && request.method === "GET") {
+      const receipt = session.actions.get(match[1]);
+      if (receipt === undefined) {
+        sendError(response, 404, "not_found", "No action exists with that identifier.");
+        return;
+      }
+      sendJson(response, 200, { action: receipt });
+      return;
+    }
+
     if (request.method !== "GET") {
       sendError(response, 405, "method_not_allowed", "The fixture holds no such write.");
       return;
@@ -346,7 +458,10 @@ const server = createServer(async (request, response) => {
     }
 
     if (pathname === "/api/accounts") {
-      sendJson(response, 200, { accounts: session.accounts, recoveryGeneration: "gen-fixture-1" });
+      sendJson(response, 200, {
+        accounts: session.accounts,
+        recoveryGeneration: RECOVERY_GENERATION,
+      });
       return;
     }
 
@@ -365,7 +480,7 @@ const server = createServer(async (request, response) => {
       const params = url.searchParams;
       const accountIds = params.getAll("account");
       const folderId = params.get("folder");
-      const rows = rowsFor({
+      const rows = rowsFor(session, {
         accountIds,
         folderId: folderId === null || folderId === "" ? null : folderId,
         query: params.get("q") ?? "",

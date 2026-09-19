@@ -195,6 +195,90 @@ test.describe("single-key guards", () => {
   });
 });
 
+test.describe("message actions", () => {
+  test("opening reads, s stars, and e archives through the server", async ({ page }) => {
+    await openInbox(page);
+
+    await page.keyboard.press("j");
+    const row = page.locator("[data-message-row='m-001']");
+    await expect(row).toContainText("Unread");
+
+    // Opening the reader marks the message seen once (SPEC F4).
+    await page.keyboard.press("o");
+    await expect(
+      page.getByRole("region", { name: "Message reader" }).getByRole("heading", { level: 2 }),
+    ).toHaveText("Dinner on Saturday");
+    await expect(row).not.toContainText("Unread");
+
+    // The star paints only after the receipts confirm (SPEC F2).
+    await page.keyboard.press("s");
+    await expect(page.getByText("Starred.", { exact: true })).toBeVisible();
+    await expect(row).toContainText("Starred");
+
+    // Archive files the row out of the inbox, on the server and locally.
+    await page.keyboard.press("e");
+    await expect(page.getByText("Archived.", { exact: true })).toBeVisible();
+    await expect(row).toBeHidden();
+
+    await page.getByRole("button", { name: "Refresh this view" }).click();
+    await expect(row).toBeHidden();
+  });
+
+  test("move opens a destination chooser and files the row", async ({ page }) => {
+    await openInbox(page);
+    await page.locator("[data-message-row='m-007']").click();
+
+    await page.keyboard.press("Control+k");
+    const dialog = page.getByRole("dialog");
+    await page.keyboard.type("move");
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() => page.evaluate(() => document.activeElement?.getAttribute("placeholder")))
+      .toBe("Search move to folder…");
+
+    // The chooser names every folder but the source (SPEC F4).
+    await expect(dialog.getByRole("option", { name: "Sent" })).toBeVisible();
+    const drafts = dialog.getByRole("option", { name: "Drafts", exact: true });
+    await expect(drafts).toBeVisible();
+    await expect(dialog.getByRole("option", { name: "INBOX" })).toBeHidden();
+
+    await drafts.click();
+    await expect(page.getByText("Moved.", { exact: true })).toBeVisible();
+    await expect(page.locator("[data-message-row='m-007']")).toBeHidden();
+
+    await page.getByRole("button", { name: "Refresh this view" }).click();
+    await expect(page.locator("[data-message-row='m-007']")).toBeHidden();
+  });
+
+  test("an action taken offline queues here and replays on return", async ({
+    page,
+    context,
+  }) => {
+    await openInbox(page);
+    // Read the message once, so its star is the marker the row can show.
+    await page.locator("[data-message-row='m-001']").click();
+    await expect(page.locator("[data-message-row='m-001']")).not.toContainText("Unread");
+
+    await context.setOffline(true);
+    await page.keyboard.press("s");
+    await expect(
+      page.getByText("Offline. The action is queued on this device and replays on return."),
+    ).toBeVisible();
+    // Nothing flips before the server confirms (SPEC F2, F9).
+    await expect(page.locator("[data-message-row='m-001']")).not.toContainText("Starred");
+
+    // Register the wait before connectivity returns, so the replay cannot
+    // slip past it, and let it settle before the view refetches.
+    const replay = page.waitForRequest(
+      (request) => request.url().includes("/api/actions") && request.method() === "POST",
+    );
+    await context.setOffline(false);
+    await (await replay).response();
+    await page.getByRole("button", { name: "Refresh this view" }).click();
+    await expect(page.locator("[data-message-row='m-001']")).toContainText("Starred");
+  });
+});
+
 test.describe("offline", () => {
   test("offline reads fall back to downloaded mail and come back", async ({
     page,

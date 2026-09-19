@@ -1,4 +1,9 @@
-import type { AccountSummary, FolderSummary, SearchResultItem } from "@mail-hub/contracts";
+import type {
+  AccountSummary,
+  FolderSummary,
+  MailActionKindWire,
+  SearchResultItem,
+} from "@mail-hub/contracts";
 import type { Theme } from "@/theme";
 import { orderFolders, type MailScope } from "./view";
 
@@ -57,6 +62,10 @@ export interface MailCommandHandlers {
   focusSearch(): void;
   moveSelection(step: 1 | -1): void;
   openSelection(): void;
+  /** Submits one management action over the selected message (SPEC F4). */
+  mailAction(kind: MailActionKindWire): void;
+  /** Submits one move of the selected message to one folder (SPEC F4). */
+  moveSelectionTo(destinationFolderId: string): void;
   setTheme(theme: Theme): void;
   setSingleKeyShortcuts(on: boolean): void;
   openSettings(): void;
@@ -74,14 +83,17 @@ export interface MailCommandsInput {
 }
 
 /*
- * Capabilities this build has not shipped. The commands stay listed and
+ * Reasons one listed command cannot run. The commands stay listed and
  * discoverable, disabled with their reason (SPEC F11).
  */
 const NO_SELECTION = "Select a message first.";
 const EMPTY_LIST = "The message list is empty.";
 const NO_ACCOUNTS = "No accounts are configured yet.";
-const ACTION_ROUTES =
-  "Mail actions need the server routes for flags and moves, which this build does not include.";
+const NO_SERVER_COPY =
+  "This message has no server copy, so no server action can run on it.";
+const NO_ARCHIVE_FOLDER =
+  "This account has no archive folder mapped. Choose one in settings first.";
+const NO_MOVE_DESTINATION = "This account has no other folder to move to.";
 const COMPOSING = "The compose editor is not part of this build yet.";
 
 /** Builds the full command set for the current shell state. */
@@ -92,7 +104,18 @@ export function buildMailCommands(input: MailCommandsInput): MailCommand[] {
     selected === null
       ? null
       : `${selected.accountLabel} · ${selected.subject ?? "(no subject)"}`;
-  const noMail = selected === null ? NO_SELECTION : ACTION_ROUTES;
+  // A retained record has no occurrence to act on, so its server actions
+  // stay listed with their reason instead of failing on submit (SPEC F5).
+  const noMail =
+    selected === null ? NO_SELECTION : selected.occurrences.length === 0 ? NO_SERVER_COPY : null;
+  const actionScopeNote =
+    selected === null ? null : `${selectionNote} · ${occurrenceScopeNote(selected, input.folders)}`;
+  const archiveFolder =
+    selected === null
+      ? null
+      : (input.folders?.get(selected.accountId) ?? []).find((folder) => folder.role === "archive") ??
+        null;
+  const moveTargets = selected === null ? [] : moveChoices(input);
   const noCompose = selected === null ? NO_SELECTION : COMPOSING;
 
   return [
@@ -165,9 +188,9 @@ export function buildMailCommands(input: MailCommandsInput): MailCommand[] {
       run: () => handlers.openSelection(),
     },
 
-    // Message actions. The action service exists server-side; its HTTP
-    // routes ship with the management milestone, so every command in this
-    // group stays disabled with its reason until then (SPEC F11).
+    // Message actions (SPEC F4). Each one submits through the action service
+    // with the occurrences the selected row froze, so the scope it names is
+    // the scope the server writes.
     {
       id: selected?.unread === true ? "mark-unread" : "mark-read",
       group: "message-actions",
@@ -175,8 +198,8 @@ export function buildMailCommands(input: MailCommandsInput): MailCommand[] {
       keywords: ["unread", "read", "seen"],
       shortcut: { key: "u", mutation: true },
       unavailableReason: noMail,
-      scopeNote: selectionNote,
-      run: undefined,
+      scopeNote: actionScopeNote,
+      run: () => handlers.mailAction(selected?.unread === true ? "mark_unread" : "mark_read"),
     },
     {
       id: selected?.flagged === true ? "unstar" : "star",
@@ -185,8 +208,8 @@ export function buildMailCommands(input: MailCommandsInput): MailCommand[] {
       keywords: ["star", "flag", "pin"],
       shortcut: { key: "s", mutation: true },
       unavailableReason: noMail,
-      scopeNote: selectionNote,
-      run: undefined,
+      scopeNote: actionScopeNote,
+      run: () => handlers.mailAction(selected?.flagged === true ? "unstar" : "star"),
     },
     {
       id: "archive",
@@ -194,20 +217,20 @@ export function buildMailCommands(input: MailCommandsInput): MailCommand[] {
       label: "Archive",
       keywords: ["done", "file away"],
       shortcut: { key: "e", mutation: true },
-      unavailableReason: noMail,
-      scopeNote: selectionNote,
-      run: undefined,
+      // Archive needs the account's mapped destination before it queues
+      // (SPEC F4); the Work fixture account maps none, by design.
+      unavailableReason: noMail ?? (archiveFolder === null ? NO_ARCHIVE_FOLDER : null),
+      scopeNote: actionScopeNote,
+      run: () => handlers.mailAction("archive"),
     },
     {
       id: "move",
       group: "message-actions",
       label: "Move to folder…",
       keywords: ["move", "destination"],
-      unavailableReason: noMail,
-      scopeNote: selectionNote,
-      // When the action routes ship, activating this command opens the
-      // destination chooser, mirroring the folder choices above.
-      run: undefined,
+      unavailableReason: noMail ?? (moveTargets.length === 0 ? NO_MOVE_DESTINATION : null),
+      scopeNote: actionScopeNote,
+      choices: () => moveTargets,
     },
 
     // Compose.
@@ -338,6 +361,53 @@ function folderChoices(input: MailCommandsInput): CommandChoice[] {
     }
   }
   return choices;
+}
+
+/**
+ * The frozen scope one message action names (SPEC F11): the occurrences the
+ * selected row shows and the folders that hold them, so a bulk mutation is
+ * confirmed before it runs.
+ */
+function occurrenceScopeNote(
+  selected: SearchResultItem,
+  folders: Map<string, FolderSummary[]> | null,
+): string {
+  const count = selected.occurrences.length;
+  const noun = count === 1 ? "occurrence" : "occurrences";
+  const namesById = new Map(
+    (folders?.get(selected.accountId) ?? []).map((folder) => [folder.id, folder.name]),
+  );
+  const folderNames = [
+    ...new Set(
+      selected.occurrences
+        .map((occurrence) => namesById.get(occurrence.folderId))
+        .filter((name): name is string => name !== undefined),
+    ),
+  ];
+  return folderNames.length === 0 ? `${count} ${noun}` : `${count} ${noun} in ${folderNames.join(", ")}`;
+}
+
+/**
+ * The destinations the move chooser offers: every folder of the selected
+ * message's account except one that already holds one of its occurrences,
+ * because a move to its own source cannot freeze a new placement (SPEC F4).
+ */
+function moveChoices(input: MailCommandsInput): CommandChoice[] {
+  const { handlers, selected } = input;
+  if (selected === null) {
+    return [];
+  }
+  const account = input.accounts.find((entry) => entry.id === selected.accountId);
+  const sourceFolderIds = new Set(selected.occurrences.map((occurrence) => occurrence.folderId));
+  return orderFolders(input.folders?.get(selected.accountId) ?? [])
+    .filter((folder) => !sourceFolderIds.has(folder.id))
+    .map((folder) => ({
+      id: `move:${folder.id}`,
+      label: folder.name,
+      group: account?.label,
+      keywords: folder.role === null ? [] : [folder.role],
+      run: () => handlers.moveSelectionTo(folder.id),
+    }));
 }
 
 /**

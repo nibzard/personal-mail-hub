@@ -82,6 +82,11 @@ export interface SearchHit {
   flagged: boolean;
   /** Active occurrences in the current scope; zero marks a retained record. */
   activeOccurrences: number;
+  /**
+   * The active occurrences in scope, frozen for mail actions (SPEC F4).
+   * Empty for a retained record, which no server action can target.
+   */
+  occurrences: SearchOccurrenceRef[];
   /** True when no server copy remains anywhere (SPEC F5). */
   noServerCopy: boolean;
   /** Sent-copy state of the outgoing record this message is, when it is one. */
@@ -91,6 +96,19 @@ export interface SearchHit {
   /** Marked-up match context; `null` when only addresses matched. */
   highlight: string | null;
   highlightSource: "subject" | "body" | null;
+}
+
+/**
+ * One active occurrence a hit summarizes, as a mail action targets it (SPEC
+ * F4): the identifier to freeze, its folder, and the revision observed when
+ * the row was read. `modseq` stays text because PostgreSQL numerics exceed
+ * the safe integer range long before identifiers do.
+ */
+export interface SearchOccurrenceRef {
+  occurrenceId: string;
+  folderId: string;
+  revision: number;
+  modseq: string | null;
 }
 
 /** One complete search answer. */
@@ -140,6 +158,7 @@ type SearchRow = {
   fetched_body: boolean;
   has_attachments: boolean;
   occurrence_count: number;
+  occurrences: SearchOccurrenceRef[];
   unread: boolean;
   flagged: boolean;
   sent_copy_status: SentCopyStatus | null;
@@ -295,6 +314,16 @@ export class SearchService {
           where o.message_id = m.id
             and o.expunged_at is null
             and o.invalidated_at is null${scopeClause}) as occurrence_count,
+        (select coalesce(jsonb_agg(jsonb_build_object(
+            'occurrenceId', o.id,
+            'folderId', o.folder_id,
+            'revision', o.revision,
+            'modseq', o.modseq::text
+          ) order by o.uid), '[]'::jsonb)
+          from message_occurrences o
+          where o.message_id = m.id
+            and o.expunged_at is null
+            and o.invalidated_at is null${scopeClause}) as occurrences,
         ${flagCondition("unread", scopeClause)} as unread,
         ${flagCondition("flagged", scopeClause)} as flagged,
         ob.sent_copy_status,
@@ -456,6 +485,12 @@ function toHit(row: SearchRow): SearchHit {
     unread: row.unread,
     flagged: row.flagged,
     activeOccurrences: row.occurrence_count,
+    occurrences: row.occurrences.map((occurrence) => ({
+      occurrenceId: occurrence.occurrenceId,
+      folderId: occurrence.folderId,
+      revision: Number(occurrence.revision),
+      modseq: occurrence.modseq,
+    })),
     noServerCopy: row.occurrence_count === 0,
     sentCopyStatus: row.sent_copy_status,
     rank: row.search_rank,

@@ -62,6 +62,9 @@ function row(overrides: Partial<SearchResultItem> = {}): SearchResultItem {
     unread: true,
     flagged: false,
     activeOccurrences: 1,
+    occurrences: [
+      { occurrenceId: "occ-1", folderId: "f-inbox", revision: 4, modseq: "21" },
+    ],
     noServerCopy: false,
     sentCopyStatus: null,
     rank: null,
@@ -78,6 +81,8 @@ function build(overrides: Partial<MailCommandsInput> = {}) {
     focusSearch: vi.fn(),
     moveSelection: vi.fn(),
     openSelection: vi.fn(),
+    mailAction: vi.fn(),
+    moveSelectionTo: vi.fn(),
     setTheme: vi.fn(),
     setSingleKeyShortcuts: vi.fn(),
     openSettings: vi.fn(),
@@ -142,17 +147,57 @@ describe("buildMailCommands", () => {
     expect(handlers.openSelection).toHaveBeenCalledOnce();
   });
 
+  it("runs message actions through the action handlers with their frozen scope", () => {
+    const { commands, handlers } = build();
+    // The selected message is unread and unflagged, with one occurrence.
+    commands.find((command) => command.id === "mark-unread")!.run?.();
+    expect(handlers.mailAction).toHaveBeenCalledWith("mark_unread");
+    commands.find((command) => command.id === "star")!.run?.();
+    expect(handlers.mailAction).toHaveBeenCalledWith("star");
+    commands.find((command) => command.id === "archive")!.run?.();
+    expect(handlers.mailAction).toHaveBeenCalledWith("archive");
+
+    // The frozen scope stays visible beside every action (SPEC F11).
+    for (const id of ["mark-unread", "star", "archive", "move"]) {
+      const command = commands.find((entry) => entry.id === id)!;
+      expect(command.unavailableReason).toBeNull();
+      expect(command.scopeNote).toBe("Personal · Quarterly report · 1 occurrence in INBOX");
+    }
+  });
+
+  it("disables every server action on a message without a server copy", () => {
+    const retained = row({ activeOccurrences: 0, occurrences: [], noServerCopy: true });
+    const { commands } = build({ selected: retained });
+    // The retained row is unread, so its mark command reads "mark-unread".
+    for (const id of ["mark-unread", "star", "archive", "move"]) {
+      expect(commands.find((command) => command.id === id)?.unavailableReason).toBe(
+        "This message has no server copy, so no server action can run on it.",
+      );
+    }
+  });
+
+  it("keeps archive disabled until the account maps an archive folder", () => {
+    const unmapped = build({
+      folders: new Map([["a1", FOLDERS_A.filter((folder) => folder.role !== "archive")]]),
+    });
+    expect(
+      unmapped.commands.find((command) => command.id === "archive")!.unavailableReason,
+    ).toBe("This account has no archive folder mapped. Choose one in settings first.");
+  });
+
+  it("opens the move destination chooser without the source folder (SPEC F4)", () => {
+    const { commands, handlers } = build();
+    const move = commands.find((command) => command.id === "move")!;
+    expect(move.unavailableReason).toBeNull();
+    const choices = move.choices?.() ?? [];
+    expect(choices.map((choice) => choice.label)).toEqual(["Old", "Zebra"]);
+    expect(choices.map((choice) => choice.group)).toEqual(["Personal", "Personal"]);
+    choices[0]!.run();
+    expect(handlers.moveSelectionTo).toHaveBeenCalledWith("f-archive");
+  });
+
   it("keeps unavailable commands listed with their reason", () => {
     const { commands: withSelection, handlers } = build();
-    const messageActions = withSelection.filter(
-      (command) => command.group === "message-actions",
-    );
-    expect(messageActions.length).toBeGreaterThanOrEqual(4);
-    for (const command of messageActions) {
-      expect(command.unavailableReason).toMatch(/routes for flags and moves/);
-      // The frozen target stays visible next to the reason (SPEC F11).
-      expect(command.scopeNote).toBe("Personal · Quarterly report");
-    }
     expect(
       withSelection.find((command) => command.id === "new-message")!.unavailableReason,
     ).toMatch(/compose editor/);

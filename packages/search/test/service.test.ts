@@ -349,6 +349,13 @@ suite("SearchService", () => {
     expect([...flaggedInArchive.keys()]).toEqual([]);
     const unreadInInboxA = await searchMap({ query: "is:unread", folderId: inboxA });
     expect([...unreadInInboxA.keys()].sort()).toEqual([m1, m4].sort());
+
+    // The row freezes its occurrences for mail actions (SPEC F4): a folder
+    // scope carries only its own, and a retained record carries none.
+    expect(unreadInInboxA.get(m1)!.occurrences).toHaveLength(1);
+    expect(unreadInInboxA.get(m1)!.occurrences[0]!.folderId).toBe(inboxA);
+    const local = await searchMap({ query: "", localOnly: true });
+    expect(local.get(m5)!.occurrences).toEqual([]);
   });
 
   it("narrows by account chips and folder scope", async () => {

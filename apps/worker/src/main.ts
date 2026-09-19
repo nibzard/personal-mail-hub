@@ -1,4 +1,5 @@
 import { parseCredentialsKey, createCredentialCipher, AccountService } from "@mail-hub/accounts";
+import { ActionService, TwoWayActionExecutor } from "@mail-hub/actions";
 import { ClassificationService, jevAdapterFromEnv } from "@mail-hub/classification";
 import { createDatabase, createJobQueue, createPool, createStorage } from "@mail-hub/database";
 import { IngestionService } from "@mail-hub/ingestion";
@@ -121,6 +122,10 @@ async function main(databaseUrl: string): Promise<void> {
   const reconcile = new ReconciliationService(db);
   const runner = new SyncRunner(db, backfill, bodies, threads, steady, reconcile);
   const sessions = new ImapMailboxSessionFactory();
+  // Two-way writes ride the same verified connection the sync cycle opens
+  // (SPEC F4 and section 7, step 6): pending actions re-drive per account,
+  // every target refreshed before any replay.
+  const actions = new ActionService(db, controls, new TwoWayActionExecutor());
   // Outbound submissions use the same stored credentials the sync cycles open
   // (SPEC F7 step 3). The atomic claim inside the service is what enforces
   // one submission per snapshot; this schedule only sweeps.
@@ -183,7 +188,7 @@ async function main(databaseUrl: string): Promise<void> {
       if (shutdown.signal.aborted) {
         break;
       }
-      await runAccountCycle(accounts, runner, sessions, account.id, shutdown.signal);
+      await runAccountCycle(accounts, runner, actions, sessions, account.id, shutdown.signal);
     }
   });
 
@@ -311,6 +316,7 @@ async function main(databaseUrl: string): Promise<void> {
 async function runAccountCycle(
   accounts: AccountService,
   runner: SyncRunner,
+  actions: ActionService,
   sessions: ImapMailboxSessionFactory,
   accountId: string,
   signal: AbortSignal,
@@ -330,6 +336,17 @@ async function runAccountCycle(
         `${summary.imported} imported, ${summary.bodiesFetched} bodies fetched, ` +
         `${summary.generationChanges} generation changes.`,
     );
+    // Queued mail actions re-drive on the connection the sync just used,
+    // after it refreshed every occurrence the sync saw (SPEC section 7,
+    // step 6). Receipts land per item; a held or stale action keeps its row
+    // for the restore disposition instead of replaying blindly.
+    const actionSummary = await actions.reconcileIncomplete(accountId, session);
+    if (actionSummary.executed > 0 || actionSummary.held > 0 || actionSummary.generationMismatch > 0) {
+      console.log(
+        `Action cycle for account ${accountId}: ${actionSummary.executed} executed, ` +
+          `${actionSummary.held} held for recovery, ${actionSummary.generationMismatch} stale.`,
+      );
+    }
   } catch (cause) {
     const detail = cause instanceof SyncError ? cause.message : "unexpected failure";
     console.error(`Sync cycle for account ${accountId} failed: ${detail}`);

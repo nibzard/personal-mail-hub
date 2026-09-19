@@ -22,6 +22,7 @@ export {
   type CreateSavedSearchInput,
   type MutationContext,
   type SearchHit,
+  type SearchOccurrenceRef,
   type SearchInput,
   type SearchResult,
   type SavedSearchRecord,

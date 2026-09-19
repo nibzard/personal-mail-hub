@@ -119,6 +119,9 @@ function row({
     unread,
     flagged,
     activeOccurrences: 1,
+    // The occurrence a mail action freezes (SPEC F4): its identifier, its
+    // folder, and the revision the row was read at.
+    occurrences: [{ occurrenceId: `occ-${id}`, folderId, revision: 1, modseq: null }],
     noServerCopy: false,
     sentCopyStatus: null,
     rank: null,
@@ -502,6 +505,23 @@ export const attachmentBytes = new Map([
 
 /** The session-independent availability probe. */
 export const authStatus = { ownerRegistered: true, login: "available", control: "ready" };
+
+/**
+ * The recovery generation the fixture issues (SPEC section 10). It is a
+ * fixed UUID so the offline queue accepts it as a server-issued generation.
+ */
+export const RECOVERY_GENERATION = "11111111-1111-4111-8111-111111111111";
+
+/** The mail action kinds the fixture applies (SPEC F4). */
+export const ACTION_KINDS = ["mark_read", "mark_unread", "star", "unstar", "archive", "move"];
+
+/** The flag value each flag kind sets (SPEC F4). */
+export const FLAG_KINDS = {
+  mark_read: { flag: "unread", value: false },
+  mark_unread: { flag: "unread", value: true },
+  star: { flag: "flagged", value: true },
+  unstar: { flag: "flagged", value: false },
+};
 
 /**
  * The settings record the fixture starts from (SPEC F10 defaults). The

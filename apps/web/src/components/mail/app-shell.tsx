@@ -1,6 +1,6 @@
 import { Command as CommandIcon, PanelLeft } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AccountSummary, SearchResultItem } from "@mail-hub/contracts";
+import type { AccountSummary, MailActionKindWire, SearchResultItem } from "@mail-hub/contracts";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { SettingsScreen } from "@/components/settings/settings-screen";
@@ -17,7 +17,7 @@ import { cn } from "@/lib/utils";
 import { setSingleKeyShortcuts, useSingleKeyShortcuts } from "@/shortcuts";
 import { useTheme } from "@/theme";
 import { useAppSettings } from "@/settings/settings-context";
-import { useFolderIndex, useMessageList } from "@/mail/data";
+import { useFolderIndex, useMessageList, type MessageListState } from "@/mail/data";
 import {
   buildMailCommands,
   nextSelectedIndex,
@@ -25,6 +25,7 @@ import {
   type MailCommand,
 } from "@/mail/commands";
 import { scopeKey, scopeTitle, type MailScope } from "@/mail/view";
+import { runMailAction, type MailActionOutcome } from "@/mail/actions";
 import { CommandPalette } from "./command-palette";
 import { MessageListPane } from "./message-list";
 import { NavPane } from "./nav-pane";
@@ -50,6 +51,34 @@ const PANE_ORDER: Record<Pane, number> = { nav: 0, list: 1, reader: 2 };
 
 /** The width at which navigation, list, and reader show side by side. */
 const THREE_PANE_QUERY = "(min-width: 1024px)";
+
+/** How the interface names each action in feedback (SPEC F4). */
+const ACTION_LABELS: Record<MailActionKindWire, string> = {
+  mark_read: "Marked as read",
+  mark_unread: "Marked as unread",
+  star: "Starred",
+  unstar: "Star removed",
+  archive: "Archived",
+  move: "Moved",
+};
+
+/** The flag a flag kind patches locally once every target confirms. */
+function confirmedFlagPatch(
+  kind: MailActionKindWire,
+): { unread?: boolean; flagged?: boolean } | null {
+  switch (kind) {
+    case "mark_read":
+      return { unread: false };
+    case "mark_unread":
+      return { unread: true };
+    case "star":
+      return { flagged: true };
+    case "unstar":
+      return { flagged: false };
+    default:
+      return null;
+  }
+}
 
 export function AppShell({
   accounts,
@@ -79,7 +108,33 @@ export function AppShell({
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
-  const rows = list.state.phase === "ready" ? list.state.rows : [];
+  // Confirmed actions paint locally until the next server read replaces
+  // them: no optimistic flip happens before the receipts confirm (SPEC F2).
+  const [flagPatches, setFlagPatches] = useState<Map<string, { unread?: boolean; flagged?: boolean }>>(
+    new Map(),
+  );
+  const [movedAside, setMovedAside] = useState<Set<string>>(new Set());
+  const [actionNote, setActionNote] = useState<string | null>(null);
+  const noteTimer = useRef<number | null>(null);
+  const markedOnOpen = useRef<Set<string>>(new Set());
+
+  const rows = useMemo(() => {
+    const raw = list.state.phase === "ready" ? list.state.rows : [];
+    if (flagPatches.size === 0 && movedAside.size === 0) {
+      return raw;
+    }
+    return raw.flatMap((row) =>
+      movedAside.has(row.messageId)
+        ? []
+        : [{ ...row, ...(flagPatches.get(row.messageId) ?? {}) }],
+    );
+  }, [list.state, flagPatches, movedAside]);
+  // The pane draws the overlaid rows too, so confirmed actions paint in the
+  // list without a scroll-resetting reload (SPEC F2).
+  const listState = useMemo<MessageListState>(
+    () => (list.state.phase === "ready" ? { ...list.state, rows } : list.state),
+    [list.state, rows],
+  );
   const selected = rows.find((row) => row.messageId === selectedId) ?? null;
   const title = scopeTitle(scope, accounts, folders.data);
 
@@ -98,16 +153,115 @@ export function AppShell({
   const singleKeyRef = useRef(singleKeyShortcuts);
   singleKeyRef.current = singleKeyShortcuts;
 
+  /** Shows one action result for a while, replacing any earlier note. */
+  const showActionNote = useCallback((text: string | null) => {
+    if (noteTimer.current !== null) {
+      window.clearTimeout(noteTimer.current);
+      noteTimer.current = null;
+    }
+    setActionNote(text);
+    if (text !== null) {
+      noteTimer.current = window.setTimeout(() => setActionNote(null), 8000);
+    }
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (noteTimer.current !== null) {
+        window.clearTimeout(noteTimer.current);
+      }
+    },
+    [],
+  );
+
+  /** Applies a fully confirmed action to the local view (SPEC F4). */
+  const applyConfirmed = useCallback((kind: MailActionKindWire, row: SearchResultItem) => {
+    const patch = confirmedFlagPatch(kind);
+    if (patch !== null) {
+      // Merge, because one row can confirm a read and a star before the
+      // next server read replaces the overlay.
+      setFlagPatches(
+        (previous) => new Map(previous).set(row.messageId, { ...previous.get(row.messageId), ...patch }),
+      );
+      return;
+    }
+    setMovedAside((previous) => new Set(previous).add(row.messageId));
+  }, []);
+
+  /** Reports one outcome and paints what the receipts confirmed. */
+  const reportOutcome = useCallback(
+    (outcome: MailActionOutcome, row: SearchResultItem, options: { silent: boolean }) => {
+      if (outcome.state === "submitted") {
+        const total = outcome.confirmed + outcome.pending + outcome.needsAttention;
+        if (outcome.confirmed === total) {
+          applyConfirmed(outcome.kind, row);
+          if (!options.silent) {
+            showActionNote(`${ACTION_LABELS[outcome.kind]}.`);
+          }
+          return;
+        }
+        if (!options.silent) {
+          showActionNote(
+            outcome.needsAttention > 0
+              ? `${ACTION_LABELS[outcome.kind]}: ${outcome.needsAttention} target${
+                  outcome.needsAttention === 1 ? "" : "s"
+                } need attention. The server state changed; refresh and reapply.`
+              : `${ACTION_LABELS[outcome.kind]}: ${outcome.pending} target${
+                  outcome.pending === 1 ? "" : "s"
+                } still executing on the server.`,
+          );
+        }
+        return;
+      }
+      if (outcome.state === "queued-offline") {
+        if (!options.silent) {
+          showActionNote("Offline. The action is queued on this device and replays on return.");
+        }
+        return;
+      }
+      showActionNote(outcome.message);
+    },
+    [applyConfirmed, showActionNote],
+  );
+
+  /** Submits one management action over one row (SPEC F4). */
+  const submitMailAction = useCallback(
+    (kind: MailActionKindWire, row: SearchResultItem, destinationFolderId?: string) => {
+      void runMailAction({ kind, row, destinationFolderId, recoveryGeneration }).then((outcome) =>
+        reportOutcome(outcome, row, { silent: false }),
+      );
+    },
+    [recoveryGeneration, reportOutcome],
+  );
+
+  /** Reading a message marks it seen, once per session per message. */
+  const markReadOnOpen = useCallback(
+    (row: SearchResultItem) => {
+      if (!row.unread || row.occurrences.length === 0 || markedOnOpen.current.has(row.messageId)) {
+        return;
+      }
+      markedOnOpen.current.add(row.messageId);
+      void runMailAction({ kind: "mark_read", row, recoveryGeneration }).then((outcome) =>
+        reportOutcome(outcome, row, { silent: outcome.state !== "rejected" }),
+      );
+    },
+    [recoveryGeneration, reportOutcome],
+  );
+
   const handleScopeChange = useCallback((next: MailScope) => {
     setScope(next);
     setSelectedId(null);
     setPane("list");
   }, []);
 
-  const handleSelect = useCallback((item: SearchResultItem) => {
-    setSelectedId(item.messageId);
-    setPane("reader");
-  }, []);
+  const handleSelect = useCallback(
+    (item: SearchResultItem) => {
+      setSelectedId(item.messageId);
+      setPane("reader");
+      markReadOnOpen(item);
+    },
+    [markReadOnOpen],
+  );
 
   const openPalette = useCallback(() => {
     // Remember what held focus before the dialog traps it, so closing can
@@ -167,6 +321,41 @@ export function AppShell({
     setSettingsOpen(true);
   }, []);
 
+  // The command registry drives every management action (SPEC F11). Archive
+  // resolves the account's mapped destination before it queues, because the
+  // request must freeze one (SPEC F4).
+  const mailAction = useCallback(
+    (kind: MailActionKindWire) => {
+      const row = selectedRef.current;
+      if (row === null) {
+        return;
+      }
+      if (kind === "archive") {
+        const destination = (folders.data?.get(row.accountId) ?? []).find(
+          (folder) => folder.role === "archive",
+        );
+        if (destination === undefined) {
+          return;
+        }
+        submitMailAction("archive", row, destination.id);
+        return;
+      }
+      submitMailAction(kind, row);
+    },
+    [folders.data, submitMailAction],
+  );
+
+  const moveSelectionTo = useCallback(
+    (destinationFolderId: string) => {
+      const row = selectedRef.current;
+      if (row === null) {
+        return;
+      }
+      submitMailAction("move", row, destinationFolderId);
+    },
+    [submitMailAction],
+  );
+
   const commands = useMemo<MailCommand[]>(
     () =>
       buildMailCommands({
@@ -182,6 +371,8 @@ export function AppShell({
           focusSearch,
           moveSelection,
           openSelection,
+          mailAction,
+          moveSelectionTo,
           setTheme: persistTheme,
           setSingleKeyShortcuts: persistSingleKeyShortcuts,
           openSettings,
@@ -199,6 +390,8 @@ export function AppShell({
       focusSearch,
       moveSelection,
       openSelection,
+      mailAction,
+      moveSelectionTo,
       persistTheme,
       persistSingleKeyShortcuts,
       openSettings,
@@ -348,11 +541,19 @@ export function AppShell({
           className={paneWrapperClass("list", "lg:w-[26rem] lg:shrink-0 lg:border-e xl:w-[28rem]")}
           inert={!threePane && pane !== "list"}
         >
+          {actionNote !== null && (
+            <p
+              role="status"
+              className="shrink-0 border-b bg-surface px-3 py-1.5 text-muted-foreground"
+            >
+              {actionNote}
+            </p>
+          )}
           <MessageListPane
             className="min-h-0 flex-1"
             title={title}
             scopeResetKey={scopeKey(scope)}
-            state={list.state}
+            state={listState}
             onLoadMore={list.loadMore}
             onReload={list.reload}
             query={query}

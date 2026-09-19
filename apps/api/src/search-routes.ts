@@ -265,6 +265,12 @@ function toResultItem(hit: SearchHit): SearchResultItem {
     unread: hit.unread,
     flagged: hit.flagged,
     activeOccurrences: hit.activeOccurrences,
+    occurrences: hit.occurrences.map((occurrence) => ({
+      occurrenceId: occurrence.occurrenceId,
+      folderId: occurrence.folderId,
+      revision: occurrence.revision,
+      modseq: occurrence.modseq,
+    })),
     noServerCopy: hit.noServerCopy,
     sentCopyStatus: hit.sentCopyStatus,
     rank: hit.rank,

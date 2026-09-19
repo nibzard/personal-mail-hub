@@ -1,5 +1,6 @@
 import { createDatabase, createPool, createStorage } from "@mail-hub/database";
 import { RecoveryControls, describeControlStatus } from "@mail-hub/recovery";
+import { ActionService, TwoWayActionExecutor } from "@mail-hub/actions";
 import { PasskeyAuthService, parseAuthConfig } from "@mail-hub/auth";
 import { AccountService, createCredentialCipher, parseCredentialsKey } from "@mail-hub/accounts";
 import { ClassificationService, CorrectionService, jevAdapterFromEnv } from "@mail-hub/classification";
@@ -12,6 +13,7 @@ import { runConnectionTest } from "@mail-hub/transport";
 import { HealthService } from "@mail-hub/observability";
 import { SettingsService } from "@mail-hub/settings";
 import { registerAccountRoutes } from "./account-routes.ts";
+import { registerActionRoutes } from "./action-routes.ts";
 import { registerAuthRoutes } from "./auth-routes.ts";
 import { registerClassificationRoutes } from "./classification-routes.ts";
 import { registerComposeRoutes } from "./compose-routes.ts";
@@ -118,6 +120,18 @@ if (authConfig === null) {
     verifySession: (token) => authService.verifySession(token),
   });
   app.log.info("Send ready: queueing outbound snapshots.");
+
+  // Mail management actions freeze their occurrence targets here and answer
+  // with per-item receipts (SPEC F4 and section 7). The recovery gate runs
+  // before the idempotency lookup, like every durable client mutation. The
+  // API only queues; the worker drives the writes over its mailbox session.
+  const actionService = new ActionService(db, controls, new TwoWayActionExecutor());
+  await registerActionRoutes(app, {
+    service: actionService,
+    origin: authConfig.origin,
+    verifySession: (token) => authService.verifySession(token),
+  });
+  app.log.info("Actions ready: mail management with per-item receipts.");
 
   // Search reads every account from the shared index (SPEC F5); saved
   // searches pass the recovery gate like every durable client write.

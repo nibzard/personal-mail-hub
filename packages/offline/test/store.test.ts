@@ -59,6 +59,7 @@ function row(messageId: string, sentAt: string): SearchResultItem {
     unread: true,
     flagged: false,
     activeOccurrences: 1,
+    occurrences: [{ occurrenceId: "occ-1", folderId: "f-1", revision: 1, modseq: null }],
     noServerCopy: false,
     sentCopyStatus: null,
     rank: null,
