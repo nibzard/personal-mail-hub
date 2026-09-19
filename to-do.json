@@ -446,35 +446,36 @@
       "tags": [
         "search"
       ],
-      "updated_at": "2026-09-19T09:42:55Z",
+      "updated_at": "2026-09-19T09:43:17Z",
       "files": [
-        "packages/database/src/schema.ts",
+        "AGENTS.md",
+        "apps/api/package.json",
+        "apps/api/src/main.ts",
+        "apps/api/src/search-routes.ts",
+        "apps/api/test/search-routes.test.ts",
+        "packages/contracts/src/index.ts",
         "packages/database/drizzle/0005_awesome_shape.sql",
         "packages/database/drizzle/0006_wakeful_mephisto.sql",
+        "packages/database/src/schema.ts",
         "packages/database/test/migrations.test.ts",
         "packages/ingestion/package.json",
-        "packages/contracts/src/index.ts",
         "packages/search/package.json",
-        "packages/search/tsconfig.json",
-        "packages/search/src/index.ts",
         "packages/search/src/errors.ts",
+        "packages/search/src/index.ts",
         "packages/search/src/query.ts",
         "packages/search/src/service.ts",
+        "packages/search/test/benchmark.test.ts",
         "packages/search/test/query.test.ts",
         "packages/search/test/service.test.ts",
-        "packages/search/test/benchmark.test.ts",
-        "apps/api/src/search-routes.ts",
-        "apps/api/src/main.ts",
-        "apps/api/package.json",
-        "apps/api/test/search-routes.test.ts",
-        "AGENTS.md"
+        "packages/search/tsconfig.json",
+        "to-do.json"
       ]
     },
     {
       "id": "T014",
       "title": "Create shared interface components and design tokens",
       "priority": 2,
-      "status": "todo",
+      "status": "doing",
       "details": "Set up shadcn and Radix components, semantic Tailwind tokens, light and dark themes, icons, focus states, and reduced-motion behavior.",
       "depends_on": [
         "T001"
@@ -482,7 +483,8 @@
       "tags": [
         "ui",
         "accessibility"
-      ]
+      ],
+      "updated_at": "2026-09-19T09:44:51Z"
     },
     {
       "id": "T015",
