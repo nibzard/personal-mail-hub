@@ -20,9 +20,7 @@ const READY_REPORT: HealthzResponse = {
   recovery: {
     state: "ready",
     mode: "ready",
-    generation: "33333333-3333-4333-8333-333333333333",
-    deploymentGeneration: "33333333-3333-4333-8333-333333333333",
-    description: "ready (generation 33333333-3333-4333-8333-333333333333)",
+    description: "Deployment and database recovery state agree; mail mutations are allowed.",
   },
   queue: {
     state: "ok",
@@ -48,9 +46,7 @@ const DEGRADED_REPORT: HealthzResponse = {
   recovery: {
     state: "reconciling",
     mode: "reconciling",
-    generation: "33333333-3333-4333-8333-333333333333",
-    deploymentGeneration: "33333333-3333-4333-8333-333333333333",
-    description: "reconciling (generation 33333333-3333-4333-8333-333333333333)",
+    description: "A restore is being reconciled.",
   },
 };
 

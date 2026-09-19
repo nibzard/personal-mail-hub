@@ -1486,7 +1486,7 @@
         "classification",
         "observability"
       ],
-      "updated_at": "2026-09-19T21:42:52Z",
+      "updated_at": "2026-09-19T21:43:51Z",
       "files": [
         "apps/api/src/health-routes.ts",
         "packages/classification/src/rules.ts",
@@ -1502,18 +1502,25 @@
       "id": "T045",
       "title": "Harden the API routes",
       "priority": 2,
-      "status": "todo",
+      "status": "done",
       "details": "Five route-level defects. The app sets no body limit, so Fastify caps JSON at 1 MiB while the draft schemas allow 2,000,000 characters and the service caps at 1,000,000; a large Markdown draft dies with the generic 413 outside the error contract (apps/api/src/app.ts:7, apps/api/src/compose-routes.ts:103 and 199, packages/compose/src/validation.ts:14). Every scoped handler ends by re-sending the caught error, so a database or storage outage returns raw internal messages and topology to the browser (auth-routes.ts:78 and the same pattern in nine more route files); map unknown errors to a generic code and log the detail server-side. The public healthz route returns account labels, colors, and both recovery-generation values to unauthenticated callers (health-routes.ts:141 with 51-61 and 90-102); trim per-account entries to identifiers and counts and drop or gate the generation fields. The login and enrollment start endpoints insert a challenge row per call with no throttling and expired challenges are never deleted (packages/auth/src/state.ts:66-83), so the table grows without bound under a script; add issuance caps and periodic cleanup. And importFolders assigns roles without the for-update lock that assignFolderRole takes (packages/accounts/src/service.ts:331-373), so a concurrent discovery import can hit the partial unique index and surface a raw 500; take the same lock.",
       "tags": [
         "api",
         "security"
       ],
-      "updated_at": "2026-09-19T17:39:46Z",
+      "updated_at": "2026-09-19T22:04:06Z",
       "files": [
         "apps/api/src/app.ts",
-        "apps/api/src",
+        "apps/api/src/http-errors.ts",
+        "apps/api/src/auth-routes.ts",
+        "apps/api/src/compose-routes.ts",
+        "apps/api/src/health-routes.ts",
         "apps/api/test",
-        "packages/accounts/src/service.ts"
+        "packages/accounts/src/service.ts",
+        "packages/auth/src/state.ts",
+        "packages/compose/src/validation.ts",
+        "packages/contracts/src/index.ts",
+        "packages/observability/src/health.ts"
       ]
     },
     {

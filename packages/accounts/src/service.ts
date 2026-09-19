@@ -329,6 +329,12 @@ export class AccountService {
     const normalized = normalizeDiscoveredFolders(discovered);
 
     return this.db.transaction(async (tx) => {
+      // Role assignments serialize on the account row, taken before any
+      // folder row is read or inserted. Two concurrent imports — or an
+      // import racing a manual assignment — cannot both fill one
+      // still-empty role and hit the partial unique index with a raw 500.
+      await lockAccountRow(tx, accountId);
+
       const created = await tx
         .insert(folders)
         .values(normalized.map((folder) => ({ accountId, name: folder.name })))
@@ -393,7 +399,8 @@ export class AccountService {
   /**
    * Assign one role manually. The explicit choice replaces the folder that
    * held the role, in the same transaction, so the one-role-per-account rule
-   * always holds.
+   * always holds. The account row locks first, like every role write, so a
+   * concurrent discovery import cannot interleave.
    */
   async assignFolderRole(
     context: MutationContext,
@@ -404,6 +411,7 @@ export class AccountService {
     await this.gate.gateMutation(context.requestGeneration);
     await this.requireAccount(accountId);
     return this.db.transaction(async (tx) => {
+      await lockAccountRow(tx, accountId);
       const folder = await lockFolder(tx, accountId, folderId);
       if (folder.role === role) {
         return toFolderSummary(folder);
@@ -436,6 +444,7 @@ export class AccountService {
     await this.gate.gateMutation(context.requestGeneration);
     await this.requireAccount(accountId);
     return this.db.transaction(async (tx) => {
+      await lockAccountRow(tx, accountId);
       const folder = await lockFolder(tx, accountId, folderId);
       if (folder.role === null) {
         return toFolderSummary(folder);
@@ -495,6 +504,22 @@ function toFolderSummary(row: Folder): FolderSummary {
 function pendingRoleChoices(rows: Folder[]): RequiredFolderRole[] {
   const assigned = new Set(rows.filter((row) => row.role !== null).map((row) => row.role));
   return REQUIRED_ROLES.filter((role) => !assigned.has(role));
+}
+
+/**
+ * Lock the account row for update. Every folder-role write takes this lock
+ * first, so discovery imports and manual assignments serialize on the
+ * account instead of racing the partial unique index on (account, role).
+ */
+async function lockAccountRow(tx: MailHubTransaction, accountId: string): Promise<void> {
+  const rows = await tx
+    .select({ id: accounts.id })
+    .from(accounts)
+    .where(eq(accounts.id, accountId))
+    .for("update");
+  if (rows.length === 0) {
+    throw new AccountError("not_found", "No account exists with this identifier.");
+  }
 }
 
 async function lockFolder(

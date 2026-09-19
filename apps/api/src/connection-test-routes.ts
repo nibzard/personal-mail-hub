@@ -5,6 +5,7 @@ import type { ConnectionTestRequest, ConnectionTestOutcome } from "@mail-hub/tra
 import { AccountError } from "@mail-hub/accounts";
 import { AuthError } from "@mail-hub/auth";
 import { SESSION_COOKIE } from "./auth-routes.ts";
+import { sendUnclassifiedError } from "./http-errors.ts";
 
 /**
  * The connection-test route (SPEC F1). It runs the stored settings of one
@@ -45,7 +46,7 @@ export async function registerConnectionTestRoutes(
   const { tester, origin } = options;
 
   await app.register(async function connectionTestRoutes(scope) {
-    scope.setErrorHandler((error, _request, reply) => {
+    scope.setErrorHandler((error, request, reply) => {
       if (error instanceof AccountError) {
         return reply
           .code(error.httpStatus)
@@ -56,7 +57,7 @@ export async function registerConnectionTestRoutes(
           .code(error.httpStatus)
           .send({ error: { code: error.code, message: error.message } });
       }
-      return reply.send(error);
+      return sendUnclassifiedError(error, request, reply);
     });
 
     scope.post<{ Params: { id: string }; Reply: ConnectionTestResponse }>(

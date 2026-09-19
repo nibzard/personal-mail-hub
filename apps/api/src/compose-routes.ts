@@ -12,11 +12,12 @@ import type {
   UploadResponse,
   UploadView,
 } from "@mail-hub/contracts";
-import { ComposeError, UPLOAD_MAX_BYTES, type ComposeService, type DraftAttachmentRecord, type DraftRecord, type MutationContext, type UploadRecord } from "@mail-hub/compose";
+import { ComposeError, DRAFT_BODY_MAX_BYTES, MARKDOWN_MAX, UPLOAD_MAX_BYTES, type ComposeService, type DraftAttachmentRecord, type DraftRecord, type MutationContext, type UploadRecord } from "@mail-hub/compose";
 import { RecoveryBlockedError } from "@mail-hub/recovery";
 import { AuthError } from "@mail-hub/auth";
 import { readRequestGeneration } from "./recovery.ts";
 import { SESSION_COOKIE } from "./auth-routes.ts";
+import { sendUnclassifiedError } from "./http-errors.ts";
 
 /**
  * Draft and upload routes (SPEC F6 and F9). Reads need a session; every
@@ -100,7 +101,7 @@ const draftEditProperties = {
   identity: identitySchema,
   recipients: recipientsSchema,
   subject: { type: ["string", "null"], maxLength: 4096 },
-  markdown: { type: ["string", "null"], maxLength: 2_000_000 },
+  markdown: { type: ["string", "null"], maxLength: MARKDOWN_MAX },
 } as const;
 
 /** Register all compose routes under a scoped error handler. */
@@ -111,7 +112,7 @@ export async function registerComposeRoutes(
   const { service, origin } = options;
 
   await app.register(async function composeRoutes(scope) {
-    scope.setErrorHandler((error, _request, reply) => {
+    scope.setErrorHandler((error, request, reply) => {
       if (error instanceof ComposeError) {
         return reply
           .code(error.httpStatus)
@@ -139,7 +140,7 @@ export async function registerComposeRoutes(
           },
         });
       }
-      return reply.send(error);
+      return sendUnclassifiedError(error, request, reply);
     });
 
     scope.get<{ Reply: DraftsResponse }>(
@@ -162,6 +163,7 @@ export async function registerComposeRoutes(
             additionalProperties: false,
           },
         },
+        bodyLimit: DRAFT_BODY_MAX_BYTES,
         preHandler: [requireOrigin, requireSession],
       },
       async (request, reply) => {
@@ -196,11 +198,12 @@ export async function registerComposeRoutes(
               mode: { type: "string", enum: ["reply", "reply_all"] },
               identity: identitySchema,
               recipients: recipientsSchema,
-              markdown: { type: ["string", "null"], maxLength: 2_000_000 },
+              markdown: { type: ["string", "null"], maxLength: MARKDOWN_MAX },
             },
             additionalProperties: false,
           },
         },
+        bodyLimit: DRAFT_BODY_MAX_BYTES,
         preHandler: [requireOrigin, requireSession],
       },
       async (request, reply) => {
@@ -232,6 +235,7 @@ export async function registerComposeRoutes(
             additionalProperties: false,
           },
         },
+        bodyLimit: DRAFT_BODY_MAX_BYTES,
         preHandler: [requireOrigin, requireSession],
       },
       async (request) => ({

@@ -50,14 +50,15 @@ const METRICS_SCHEMA = {
 
 const ACCOUNT_SCHEMA = {
   type: "object",
-  required: ["accountId", "label", "color", "sync", "metrics"],
+  required: ["accountId", "sync", "metrics"],
   properties: {
     accountId: { type: "string", format: "uuid" },
-    label: { type: "string" },
-    color: { type: "string" },
     sync: SYNC_SCHEMA,
     metrics: METRICS_SCHEMA,
   },
+  // The check is public: anything the report carries beyond these fields
+  // must not reach an unauthenticated caller.
+  additionalProperties: false,
 } as const;
 
 const HEALTHZ_SCHEMA = {
@@ -89,16 +90,15 @@ const HEALTHZ_SCHEMA = {
     },
     recovery: {
       type: "object",
-      required: ["state", "mode", "generation", "deploymentGeneration", "description"],
+      required: ["state", "mode", "description"],
       properties: {
         state: {
           enum: ["ready", "reconciling", "generation_mismatch", "uninitialized", "config_missing", "unknown"],
         },
         mode: { enum: ["ready", "reconciling", null] },
-        generation: { type: ["string", "null"] },
-        deploymentGeneration: { type: ["string", "null"] },
         description: { type: "string" },
       },
+      additionalProperties: false,
     },
     queue: {
       type: "object",

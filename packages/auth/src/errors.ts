@@ -11,6 +11,7 @@ const HTTP_STATUS_BY_CODE: Record<AuthErrorCode, number> = {
   origin_forbidden: 403,
   grant_invalid: 403,
   challenge_invalid: 400,
+  challenge_rate_limited: 429,
   webauthn_invalid: 400,
   verification_required: 403,
   last_credential: 409,

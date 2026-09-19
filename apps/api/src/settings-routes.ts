@@ -11,6 +11,7 @@ import { SettingsError, type MutationContext, type SettingsService } from "@mail
 import { AuthError } from "@mail-hub/auth";
 import { readRequestGeneration } from "./recovery.ts";
 import { SESSION_COOKIE } from "./auth-routes.ts";
+import { sendUnclassifiedError } from "./http-errors.ts";
 
 /**
  * Settings routes (SPEC F10) and the per-account synchronization status the
@@ -42,7 +43,7 @@ export async function registerSettingsRoutes(
   const { service, health, origin, verifySession } = options;
 
   await app.register(async function settingsRoutes(scope) {
-    scope.setErrorHandler((error, _request, reply) => {
+    scope.setErrorHandler((error, request, reply) => {
       if (error instanceof SettingsError) {
         return reply
           .code(error.httpStatus)
@@ -62,7 +63,7 @@ export async function registerSettingsRoutes(
           },
         });
       }
-      return reply.send(error);
+      return sendUnclassifiedError(error, request, reply);
     });
 
     scope.get<{ Reply: SettingsResponse }>("/settings", { preHandler: [requireSession] }, async () => ({

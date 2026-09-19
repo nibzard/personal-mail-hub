@@ -13,6 +13,7 @@ import { RecoveryBlockedError } from "@mail-hub/recovery";
 import { AuthError } from "@mail-hub/auth";
 import { readRequestGeneration } from "./recovery.ts";
 import { SESSION_COOKIE } from "./auth-routes.ts";
+import { sendUnclassifiedError } from "./http-errors.ts";
 
 /**
  * Mail action routes (SPEC F4 and section 7). Submitting is a state change:
@@ -50,7 +51,7 @@ export async function registerActionRoutes(
   const { service, origin } = options;
 
   await app.register(async function actionRoutes(scope) {
-    scope.setErrorHandler((error, _request, reply) => {
+    scope.setErrorHandler((error, request, reply) => {
       if (error instanceof ActionError) {
         return reply
           .code(error.httpStatus)
@@ -70,7 +71,7 @@ export async function registerActionRoutes(
           },
         });
       }
-      return reply.send(error);
+      return sendUnclassifiedError(error, request, reply);
     });
 
     scope.post<{ Body: SubmitMailActionBody; Reply: MailActionResponse }>(

@@ -1,4 +1,4 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, gt, isNull, lt, sql } from "drizzle-orm";
 import {
   enrollmentGrants,
   events,
@@ -56,11 +56,47 @@ export async function activeCredentials(db: DbHandle, ownerId: string): Promise<
     .orderBy(ownerCredentials.createdAt);
 }
 
-/** Issue one WebAuthn challenge bound to its purpose, owner, and generation. */
+/**
+ * Live challenges one purpose and owner may hold at once. A script that
+ * hammers a start endpoint stops here instead of growing the table; a
+ * person starting ceremonies one at a time never approaches the cap.
+ */
+export const CHALLENGE_LIVE_CAP = 32;
+
+/**
+ * Issue one WebAuthn challenge bound to its purpose, owner, and generation.
+ * Expired rows are deleted first, so cleanup runs as often as issuance and
+ * the table stays bounded; a purpose at its live cap refuses to grow.
+ */
 export async function issueChallenge(
   db: DbHandle,
   input: { purpose: ChallengePurpose; ownerId: string | null; challenge: string; recoveryGeneration: string; ttlMs: number; now: Date },
 ): Promise<WebauthnChallenge> {
+  await db.delete(webauthnChallenges).where(lt(webauthnChallenges.expiresAt, input.now));
+
+  const ownerFilter =
+    input.ownerId === null
+      ? isNull(webauthnChallenges.ownerId)
+      : eq(webauthnChallenges.ownerId, input.ownerId);
+  const live = await db
+    .select({ value: sql<number>`count(*)::int` })
+    .from(webauthnChallenges)
+    .where(
+      and(
+        eq(webauthnChallenges.purpose, input.purpose),
+        ownerFilter,
+        isNull(webauthnChallenges.consumedAt),
+        isNull(webauthnChallenges.revokedAt),
+        gt(webauthnChallenges.expiresAt, input.now),
+      ),
+    );
+  if ((live[0]?.value ?? 0) >= CHALLENGE_LIVE_CAP) {
+    throw new AuthError(
+      "challenge_rate_limited",
+      "Too many sign-in requests are waiting. Wait a moment, then start again.",
+    );
+  }
+
   const rows = await db
     .insert(webauthnChallenges)
     .values({

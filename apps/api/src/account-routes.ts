@@ -16,6 +16,7 @@ import { AccountError, type AccountService, type AccountSummary as StoredAccount
 import { AuthError } from "@mail-hub/auth";
 import { readRequestGeneration } from "./recovery.ts";
 import { SESSION_COOKIE } from "./auth-routes.ts";
+import { sendUnclassifiedError } from "./http-errors.ts";
 
 /**
  * Account and identity management routes (SPEC F1). Reads need a session;
@@ -85,7 +86,7 @@ export async function registerAccountRoutes(
   const { service, origin, controls } = options;
 
   await app.register(async function accountRoutes(scope) {
-    scope.setErrorHandler((error, _request, reply) => {
+    scope.setErrorHandler((error, request, reply) => {
       if (error instanceof AccountError) {
         return reply
           .code(error.httpStatus)
@@ -105,7 +106,7 @@ export async function registerAccountRoutes(
           },
         });
       }
-      return reply.send(error);
+      return sendUnclassifiedError(error, request, reply);
     });
 
     scope.get<{ Reply: AccountsResponse }>("/accounts", { preHandler: [requireSession] }, async () => {

@@ -9,7 +9,7 @@ import {
   type HealthzResponse,
 } from "@mail-hub/contracts";
 import type { MailHubDatabase } from "@mail-hub/database";
-import { describeControlStatus, type ControlStatus } from "@mail-hub/recovery";
+import { type ControlStatus } from "@mail-hub/recovery";
 
 /**
  * The health report service (SPEC sections 10 and 11).
@@ -85,7 +85,7 @@ export class HealthService {
       await Promise.all([
         this.controls.readStatus().catch(() => null),
         this.db.execute(sql`
-          select id, label, color from accounts order by label
+          select id from accounts order by id
         `),
         this.db.execute(sql`
           select account_id,
@@ -163,8 +163,6 @@ export class HealthService {
       return [
         {
           accountId,
-          label: textColumn(row, "label") ?? "",
-          color: textColumn(row, "color") ?? "",
           sync: {
             lastCycleAt: isoOrNull(lastCycleAt),
             cycleAgeSeconds: ageSeconds(lastCycleAt, checkedAt),
@@ -299,14 +297,16 @@ function sumAccounts(stats: Map<string, Record<string, unknown>>, column: string
   return total;
 }
 
-/** Recovery mode and generations, straight from the control comparison. */
+/**
+ * Recovery state for the public report. The check answers without a
+ * session, so it names states and modes but never the generation values
+ * the control comparison holds; authenticated routes expose those.
+ */
 function recoverySection(status: ControlStatus | null): HealthzRecovery {
   if (status === null) {
     return {
       state: "unknown",
       mode: null,
-      generation: null,
-      deploymentGeneration: null,
       description: "The recovery control state could not be read.",
     };
   }
@@ -315,41 +315,34 @@ function recoverySection(status: ControlStatus | null): HealthzRecovery {
       return {
         state: "ready",
         mode: "ready",
-        generation: status.generation,
-        deploymentGeneration: status.generation,
-        description: describeControlStatus(status),
+        description: "Deployment and database recovery state agree; mail mutations are allowed.",
       };
     case "reconciling":
       return {
         state: "reconciling",
         mode: "reconciling",
-        generation: status.generation,
-        deploymentGeneration: status.generation,
-        description: describeControlStatus(status),
+        description:
+          "A restore is being reconciled. The API stays available for enrollment and operator recovery.",
       };
     case "generation_mismatch":
       return {
         state: "generation_mismatch",
         mode: status.mode,
-        generation: status.databaseGeneration,
-        deploymentGeneration: status.deploymentGeneration,
-        description: describeControlStatus(status),
+        description:
+          "Deployment and database recovery state disagree. Run 'npm run admin -- recovery begin' after a restore.",
       };
     case "uninitialized":
       return {
         state: "uninitialized",
         mode: null,
-        generation: null,
-        deploymentGeneration: status.deploymentGeneration,
-        description: describeControlStatus(status),
+        description:
+          "The recovery control state is not initialized. Run 'npm run admin -- recovery init' on a fresh installation.",
       };
     case "config_missing":
       return {
         state: "config_missing",
         mode: null,
-        generation: null,
-        deploymentGeneration: null,
-        description: describeControlStatus(status),
+        description: "The RECOVERY_GENERATION configuration is missing.",
       };
   }
 }

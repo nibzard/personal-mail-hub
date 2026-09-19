@@ -81,12 +81,12 @@ suite("health service", () => {
     expect(health.report.status).toBe("ok");
     expect(health.report.database.state).toBe("ok");
     expect(health.report.database.roundTripMs).toBeGreaterThanOrEqual(0);
-    expect(health.report.recovery).toMatchObject({
-      state: "ready",
-      mode: "ready",
-      generation: GENERATION,
-      deploymentGeneration: GENERATION,
-    });
+    expect(health.report.recovery.state).toBe("ready");
+    expect(health.report.recovery.mode).toBe("ready");
+    // The report is public: it names states, never generation values.
+    expect(health.report.recovery).not.toHaveProperty("generation");
+    expect(health.report.recovery).not.toHaveProperty("deploymentGeneration");
+    expect(health.report.recovery.description).not.toContain(GENERATION);
     expect(health.report.queue).toEqual({
       state: "unknown",
       depth: null,
@@ -115,7 +115,10 @@ suite("health service", () => {
     expect(report.status).toBe("ok");
     expect(report.accounts).toHaveLength(1);
     const account = report.accounts[0]!;
-    expect(account).toMatchObject({ accountId: ACCOUNT_ID, label: "Main", color: "#0a7ffa" });
+    expect(account.accountId).toBe(ACCOUNT_ID);
+    // Labels and colors stay behind the session-gated account routes.
+    expect(account).not.toHaveProperty("label");
+    expect(account).not.toHaveProperty("color");
     expect(account.sync.lastCycleAt).toBe(fixtures.cycleAt.toISOString());
     expect(account.sync.cycleAgeSeconds).toBeGreaterThanOrEqual(0);
     expect(account.sync.backfillPendingFolders).toBe(2);

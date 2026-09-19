@@ -23,6 +23,7 @@ import { RecoveryBlockedError } from "@mail-hub/recovery";
 import { AuthError } from "@mail-hub/auth";
 import { readRequestGeneration } from "./recovery.ts";
 import { SESSION_COOKIE } from "./auth-routes.ts";
+import { sendUnclassifiedError } from "./http-errors.ts";
 
 /**
  * Search and saved-search routes (SPEC F5). Reads need a session; saved
@@ -77,7 +78,7 @@ export async function registerSearchRoutes(
   const { service, origin } = options;
 
   await app.register(async function searchRoutes(scope) {
-    scope.setErrorHandler((error, _request, reply) => {
+    scope.setErrorHandler((error, request, reply) => {
       if (error instanceof SearchError) {
         return reply
           .code(error.httpStatus)
@@ -99,7 +100,7 @@ export async function registerSearchRoutes(
           },
         });
       }
-      return reply.send(error);
+      return sendUnclassifiedError(error, request, reply);
     });
 
     scope.get<{ Querystring: SearchQuery; Reply: SearchResultsResponse }>(

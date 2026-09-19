@@ -53,8 +53,6 @@ const SYNC_REPORT: SyncStatusResponse = {
   accounts: [
     {
       accountId: "9d0a6d15-2a6e-4bb5-9f5e-0f0a9a1b2c3d",
-      label: "Main mailbox",
-      color: "#2563eb",
       sync: {
         lastCycleAt: "2026-09-19T09:58:00.000Z",
         cycleAgeSeconds: 120,
@@ -116,8 +114,6 @@ function syncReportWithExtras() {
     recovery: {
       state: "ready" as const,
       mode: "ready" as const,
-      generation: GENERATION,
-      deploymentGeneration: GENERATION,
       description: "ready",
     },
     queue: SYNC_REPORT.queue,

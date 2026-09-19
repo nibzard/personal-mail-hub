@@ -7,6 +7,7 @@ import type {
 } from "@mail-hub/contracts";
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from "@simplewebauthn/server";
 import { AuthError, type PasskeyAuthService, type SessionInfo } from "@mail-hub/auth";
+import { sendUnclassifiedError } from "./http-errors.ts";
 
 /**
  * Owner authentication routes (SPEC sections 7 and 9). These routes sit
@@ -69,13 +70,13 @@ export async function registerAuthRoutes(app: FastifyInstance, options: AuthRout
   const { service, origin } = options;
 
   await app.register(async function authRoutes(scope) {
-    scope.setErrorHandler((error, _request, reply) => {
+    scope.setErrorHandler((error, request, reply) => {
       if (error instanceof AuthError) {
         return reply
           .code(error.httpStatus)
           .send({ error: { code: error.code, message: error.message } });
       }
-      return reply.send(error);
+      return sendUnclassifiedError(error, request, reply);
     });
 
     scope.get<{ Reply: AuthStatusResponse }>(

@@ -24,6 +24,7 @@ import {
   AuthError,
 } from "../src/index.ts";
 import type { AuthConfig } from "../src/config.ts";
+import { CHALLENGE_LIVE_CAP } from "../src/state.ts";
 import {
   createFakePasskey,
   fakeAuthenticationResponse,
@@ -230,6 +231,48 @@ suite("passkey owner authentication", () => {
       .set({ expiresAt: new Date(Date.now() - 1000) })
       .where(eq(webauthnChallenges.challenge, attempt.options.challenge));
     await expect(authCode(attempt.complete())).resolves.toBe("challenge_invalid");
+  });
+
+  it("caps scripted challenge issuance and deletes expired challenges", async () => {
+    // A known slate: earlier ceremonies leave live rows behind.
+    await db.delete(webauthnChallenges);
+
+    // One expired row: the next issuance must delete it, not keep it.
+    const ownerId = (await db.select().from(owner).limit(1))[0]!.id;
+    await db.insert(webauthnChallenges).values({
+      purpose: "login",
+      ownerId,
+      challenge: "expired-challenge",
+      recoveryGeneration: GENERATION_A,
+      createdAt: new Date(Date.now() - 10 * 60 * 1000),
+      expiresAt: new Date(Date.now() - 1000),
+    });
+
+    let issued = 0;
+    let rateLimited = false;
+    for (let attempt = 0; attempt < CHALLENGE_LIVE_CAP + 1 && rateLimited === false; attempt += 1) {
+      try {
+        await service.startLogin();
+        issued += 1;
+      } catch (error) {
+        // A script hammering the start endpoint stops at the cap instead
+        // of growing the table without bound.
+        expect(error).toBeInstanceOf(AuthError);
+        expect((error as AuthError).code).toBe("challenge_rate_limited");
+        expect((error as AuthError).httpStatus).toBe(429);
+        rateLimited = true;
+      }
+    }
+    expect(rateLimited).toBe(true);
+    expect(issued).toBe(CHALLENGE_LIVE_CAP);
+
+    // The table holds the live rows only; the expired one is gone.
+    const rows = await db.select().from(webauthnChallenges);
+    expect(rows).toHaveLength(CHALLENGE_LIVE_CAP);
+    expect(rows.filter((row) => row.challenge === "expired-challenge")).toHaveLength(0);
+
+    // Later ceremonies issue again.
+    await db.delete(webauthnChallenges);
   });
 
   it("lists credentials and protects the last active passkey", async () => {

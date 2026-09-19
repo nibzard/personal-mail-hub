@@ -306,6 +306,29 @@ suite("account and identity management", () => {
     expect(hinted.folders.find((folder) => folder.name === "Trash")!.role).toBe("trash");
   });
 
+  it("serializes concurrent discovery imports over the role map", async () => {
+    const account = await service.createAccount(readyContext, {
+      label: "Race",
+      color: "#111111",
+      username: "race@example.com",
+      password: "race-secret",
+    });
+
+    // Two imports discover different folders that both hint the sent role.
+    // Both must finish: the role map is read under the same row lock a
+    // manual assignment takes, so the partial unique index on
+    // (account, role) never surfaces a raw 500.
+    const outcomes = await Promise.allSettled([
+      service.importFolders(readyContext, account.id, [{ name: "Sent-One", specialUse: ["\\Sent"] }]),
+      service.importFolders(readyContext, account.id, [{ name: "Sent-Two", specialUse: ["\\Sent"] }]),
+    ]);
+    expect(outcomes.map((outcome) => outcome.status)).toEqual(["fulfilled", "fulfilled"]);
+
+    const folders = (await service.listFolders(account.id)).folders;
+    expect(folders.map((folder) => folder.name).sort()).toEqual(["Sent-One", "Sent-Two"]);
+    expect(folders.filter((folder) => folder.role === "sent")).toHaveLength(1);
+  });
+
   it("replaces a role holder when you assign the role manually", async () => {
     const account = (await service.listAccounts()).find((row) => row.label === "Primary")!;
     const folders = (await service.listFolders(account.id)).folders;

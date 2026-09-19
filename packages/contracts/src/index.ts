@@ -18,7 +18,11 @@ export interface HealthzDatabase {
   roundTripMs: number | null;
 }
 
-/** Recovery control state as the health check reports it. */
+/**
+ * Recovery control state as the health check reports it. The check is
+ * public, so it names states only: the generation values stay behind the
+ * session-gated routes (SPEC sections 9 and 11).
+ */
 export interface HealthzRecovery {
   state:
     | "ready"
@@ -29,11 +33,7 @@ export interface HealthzRecovery {
     | "unknown";
   /** Mode of the `service_state` row, when one exists. */
   mode: "ready" | "reconciling" | null;
-  /** Generation the database holds, when one exists. */
-  generation: string | null;
-  /** Generation deployment configuration holds, when configured. */
-  deploymentGeneration: string | null;
-  /** Operator-readable summary. Never includes secrets. */
+  /** Operator-readable summary. Names states, never generation values. */
   description: string;
 }
 
@@ -102,11 +102,13 @@ export interface HealthzAccountMetrics {
   jevErrors: number;
 }
 
-/** Lag and metrics of one account. */
+/**
+ * Lag and metrics of one account, as the public health check reports them.
+ * The check names accounts by identifier only; labels and colors stay
+ * behind the session-gated account routes.
+ */
 export interface HealthzAccount {
   accountId: string;
-  label: string;
-  color: string;
   sync: HealthzSyncLag;
   metrics: HealthzAccountMetrics;
 }
@@ -153,6 +155,7 @@ export type AuthErrorCode =
   | "origin_forbidden"
   | "grant_invalid"
   | "challenge_invalid"
+  | "challenge_rate_limited"
   | "webauthn_invalid"
   | "verification_required"
   | "last_credential"

@@ -19,6 +19,15 @@ const LIST_MAX = 100;
 /** One upload may not exceed this size. The route body limit matches it. */
 export const UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
 
+/**
+ * The byte ceiling the draft routes put on their JSON bodies. It covers the
+ * worst case of a schema-valid draft — Markdown and subject at their
+ * character ceilings with every character escaped, plus full recipient
+ * lists — so an oversized draft is refused by the schema or the service cap
+ * inside the error contract instead of the parser's generic 413.
+ */
+export const DRAFT_BODY_MAX_BYTES = 7 * 1024 * 1024;
+
 const EMAIL_PATTERN =
   /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
 const CONTROL_PATTERN = /[\x00-\x1f\x7f-\x9f]/;

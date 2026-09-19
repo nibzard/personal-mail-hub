@@ -10,6 +10,7 @@ import { ClassificationError, type CorrectionContext, type CorrectionService } f
 import { RecoveryBlockedError } from "@mail-hub/recovery";
 import { readRequestGeneration } from "./recovery.ts";
 import { SESSION_COOKIE } from "./auth-routes.ts";
+import { sendUnclassifiedError } from "./http-errors.ts";
 
 /**
  * Classification corrections (SPEC F8): the route the reader's suggestion
@@ -43,7 +44,7 @@ export async function registerClassificationRoutes(
   const { service, origin, verifySession } = options;
 
   await app.register(async function classificationRoutes(scope) {
-    scope.setErrorHandler((error, _request, reply) => {
+    scope.setErrorHandler((error, request, reply) => {
       if (error instanceof ClassificationError) {
         return reply
           .code(error.httpStatus)
@@ -63,7 +64,7 @@ export async function registerClassificationRoutes(
           },
         });
       }
-      return reply.send(error);
+      return sendUnclassifiedError(error, request, reply);
     });
 
     scope.post<{

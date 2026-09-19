@@ -5,6 +5,7 @@ import { RecoveryBlockedError } from "@mail-hub/recovery";
 import { AuthError } from "@mail-hub/auth";
 import { readRequestGeneration } from "./recovery.ts";
 import { SESSION_COOKIE } from "./auth-routes.ts";
+import { sendUnclassifiedError } from "./http-errors.ts";
 
 /**
  * Send routes (SPEC F7 and F9). Queueing a send is a state change: it needs
@@ -47,7 +48,7 @@ export async function registerSendRoutes(
   const { service, origin } = options;
 
   await app.register(async function sendRoutes(scope) {
-    scope.setErrorHandler((error, _request, reply) => {
+    scope.setErrorHandler((error, request, reply) => {
       if (error instanceof SendError) {
         return reply
           .code(error.httpStatus)
@@ -75,7 +76,7 @@ export async function registerSendRoutes(
           },
         });
       }
-      return reply.send(error);
+      return sendUnclassifiedError(error, request, reply);
     });
 
     scope.post<{ Params: { id: string }; Body: SendDraftRequestBody; Reply: OutboundResponse }>(

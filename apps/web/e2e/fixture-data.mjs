@@ -573,8 +573,6 @@ export const syncStatus = {
   accounts: [
     {
       accountId: "acc-personal",
-      label: "Personal",
-      color: "#2563eb",
       sync: {
         lastCycleAt: "2026-09-17T09:29:00Z",
         cycleAgeSeconds: 120,
@@ -591,8 +589,6 @@ export const syncStatus = {
     },
     {
       accountId: "acc-work",
-      label: "Work",
-      color: "#ea580c",
       sync: {
         lastCycleAt: "2026-09-17T09:30:00Z",
         cycleAgeSeconds: 60,

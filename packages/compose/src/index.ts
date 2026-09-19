@@ -5,6 +5,8 @@
 
 export { ComposeError } from "./errors.ts";
 export {
+  DRAFT_BODY_MAX_BYTES,
+  MARKDOWN_MAX,
   normalizeContentType,
   normalizeFilename,
   normalizeMarkdown,

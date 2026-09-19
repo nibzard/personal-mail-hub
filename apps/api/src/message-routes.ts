@@ -8,6 +8,7 @@ import type {
 import { AuthError } from "@mail-hub/auth";
 import { ReadingError, type MessageDetail, type MessageAttachment, type ReadingService } from "@mail-hub/reading";
 import { SESSION_COOKIE } from "./auth-routes.ts";
+import { sendUnclassifiedError } from "./http-errors.ts";
 
 /**
  * Message detail and attachment download routes (SPEC F3 and section 9).
@@ -44,7 +45,7 @@ export async function registerMessageRoutes(
   const { service } = options;
 
   await app.register(async function messageRoutes(scope) {
-    scope.setErrorHandler((error, _request, reply) => {
+    scope.setErrorHandler((error, request, reply) => {
       if (error instanceof ReadingError) {
         return reply
           .code(error.httpStatus)
@@ -55,7 +56,7 @@ export async function registerMessageRoutes(
           .code(error.httpStatus)
           .send({ error: { code: error.code, message: error.message } });
       }
-      return reply.send(error);
+      return sendUnclassifiedError(error, request, reply);
     });
 
     scope.get<{ Params: { id: string }; Reply: MessageDetailResponse }>(

@@ -12,6 +12,8 @@ import { AuthError } from "@mail-hub/auth";
 import { RecoveryBlockedError } from "@mail-hub/recovery";
 import {
   ComposeError,
+  DRAFT_BODY_MAX_BYTES,
+  MARKDOWN_MAX,
   type DraftAttachmentRecord,
   type DraftRecord,
   type MutationContext,
@@ -503,5 +505,65 @@ describe("compose routes", () => {
     });
     expect(patched.statusCode).toBe(200);
     expect(spy).toHaveBeenCalled();
+  });
+
+  it("accepts a large Markdown draft past the ordinary JSON limit", async () => {
+    const lengths: (number | undefined)[] = [];
+    const service = fakeService({
+      createDraft: async (_context, input: { accountId: string; markdown?: string }) => {
+        lengths.push(input.markdown?.length);
+        return { ...DRAFT, markdown: input.markdown ?? "" };
+      },
+    });
+    const app = await makeApp(service);
+
+    // Markdown at its character ceiling, padded past the one MiB every
+    // other JSON route accepts: the draft must reach the service, not die
+    // in the parser with a generic 413.
+    const padded =
+      " ".repeat(64 * 1024) +
+      JSON.stringify({ accountId: ACCOUNT_ID, markdown: "a".repeat(MARKDOWN_MAX) });
+    expect(padded.length).toBeGreaterThan(1024 * 1024);
+    const large = await app.inject({
+      method: "POST",
+      url: "/drafts",
+      headers: { ...originHeaders, "content-type": "application/json" },
+      payload: padded,
+    });
+    expect(large.statusCode).toBe(201);
+    expect(lengths).toEqual([MARKDOWN_MAX]);
+
+    // Over the ceiling the refusal stays inside the error contract.
+    const oversized = await app.inject({
+      method: "POST",
+      url: "/drafts",
+      headers: { ...originHeaders, "content-type": "application/json" },
+      payload: { accountId: ACCOUNT_ID, markdown: "a".repeat(DRAFT_BODY_MAX_BYTES) },
+    });
+    expect(oversized.statusCode).toBe(413);
+    const body = oversized.json<ComposeErrorBody>();
+    expect(body.error.code).toBe("invalid_request");
+    expect(typeof body.error.message).toBe("string");
+  });
+
+  it("answers an unclassified failure with a generic internal error", async () => {
+    const service = fakeService({
+      createDraft: async () => {
+        throw new Error("ECONNREFUSED 127.0.0.1:5432 topology secret");
+      },
+    });
+    const app = await makeApp(service);
+
+    const failed = await app.inject({
+      method: "POST",
+      url: "/drafts",
+      headers: { ...originHeaders, "content-type": "application/json" },
+      payload: { accountId: ACCOUNT_ID },
+    });
+    expect(failed.statusCode).toBe(500);
+    const body = failed.json<ComposeErrorBody>();
+    expect(body.error.code).toBe("internal_error");
+    expect(body.error.message).not.toContain("ECONNREFUSED");
+    expect(failed.rawPayload).not.toContain("ECONNREFUSED");
   });
 });
