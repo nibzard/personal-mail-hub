@@ -10,6 +10,7 @@ import {
   ownerCredentials,
   ownerSessions,
   runMigrations,
+  serviceState,
   webauthnChallenges,
   type MailHubDatabase,
   dropTestDatabase,
@@ -283,6 +284,26 @@ suite("passkey owner authentication", () => {
     await expect(service.startCredentialEnrollment(opened.token)).resolves.toBeDefined();
   });
 
+  it("rejects a reverification challenge from another recovery history", async () => {
+    const opened = await (await login()).complete();
+    const options = await service.startReverification(opened.token);
+    // The challenge left the current generation behind, exactly as a restore
+    // would leave one behind.
+    await db
+      .update(webauthnChallenges)
+      .set({ recoveryGeneration: GENERATION_C })
+      .where(eq(webauthnChallenges.challenge, options.challenge));
+    const stale = fakeAuthenticationResponse({
+      passkey: heldPasskey,
+      options,
+      rpId: RP_ID,
+      origin: ORIGIN,
+    });
+    await expect(authCode(service.completeReverification(opened.token, stale))).resolves.toBe(
+      "challenge_invalid",
+    );
+  });
+
   it("holds the last-credential rule under concurrent removals", async () => {
     const opened = await (await login()).complete();
     const credentials = await service.listCredentials(opened.token);
@@ -321,6 +342,7 @@ suite("passkey owner authentication", () => {
   });
 
   it("blocks login while the recovery state differs from deployment", async () => {
+    const opened = await (await login()).complete();
     const mismatched = new PasskeyAuthService(
       db,
       config,
@@ -328,6 +350,15 @@ suite("passkey owner authentication", () => {
     );
     expect((await mismatched.readStatus()).login).toBe("blocked");
     await expect(authCode(mismatched.startLogin())).resolves.toBe("login_blocked");
+    // A restored session grants nothing while deployment and database
+    // disagree, even before `recovery begin` revokes it (SPEC section 10).
+    await expect(authCode(mismatched.verifySession(opened.token))).resolves.toBe("unauthorized");
+
+    // While the service reconciles, only inspection sessions stay open: the
+    // standard session fails even though its generation matches.
+    await db.update(serviceState).set({ recoveryMode: "reconciling" });
+    await expect(authCode(service.verifySession(opened.token))).resolves.toBe("unauthorized");
+    await db.update(serviceState).set({ recoveryMode: "ready" });
   });
 
   it("recovers access after all passkeys are lost", async () => {

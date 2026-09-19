@@ -27,7 +27,6 @@ import {
   isUuid,
   issueChallenge,
   lockOwner,
-  readDatabaseGeneration,
   readOwner,
   readSessionByToken,
   recordAuthEvent,
@@ -231,7 +230,7 @@ export class PasskeyAuthService {
 
   /** Begin a login ceremony. Blocked while control state differs from deployment. */
   async startLogin(): Promise<PublicKeyCredentialRequestOptionsJSON> {
-    const { ownerId } = await this.loginContext();
+    const { ownerId, generation } = await this.loginContext();
     const existing = await activeCredentials(this.db, ownerId);
     if (existing.length === 0) {
       throw new AuthError(
@@ -239,7 +238,7 @@ export class PasskeyAuthService {
         "No passkey is registered. Ask the operator to run 'auth recover'.",
       );
     }
-    return this.startAssertionCeremony("login", ownerId, new Date());
+    return this.startAssertionCeremony("login", ownerId, generation, new Date());
   }
 
   /**
@@ -293,16 +292,32 @@ export class PasskeyAuthService {
 
   /**
    * Resolve a session token. A session is valid only while it is unrevoked,
-   * unexpired, and bound to the current database recovery generation.
+   * unexpired, bound to the control-status generation, and allowed by the
+   * control mode: a service that is not reconciling or ready grants nothing,
+   * and while it reconciles only inspection sessions stay open (SPEC section
+   * 10). A restored database therefore fails every restored cookie, even
+   * before `recovery begin` revokes it.
    */
   async verifySession(token: string): Promise<SessionInfo> {
     const row = await readSessionByToken(this.db, hashToken(token));
     if (row === null || row.revokedAt !== null || row.expiresAt.getTime() <= Date.now()) {
       throw new AuthError("unauthorized", "Sign in to continue.");
     }
-    const generation = await readDatabaseGeneration(this.db);
-    if (generation === null || row.recoveryGeneration.toLowerCase() !== generation) {
+    const status = await this.controls.readStatus();
+    if (status.state !== "ready" && status.state !== "reconciling") {
+      throw new AuthError(
+        "unauthorized",
+        "This service is recovering from a restore. Sign in again after recovery completes.",
+      );
+    }
+    if (row.recoveryGeneration.toLowerCase() !== status.generation) {
       throw new AuthError("unauthorized", "This session belongs to an earlier recovery history.");
+    }
+    if (status.state === "reconciling" && row.kind !== "inspection") {
+      throw new AuthError(
+        "unauthorized",
+        "This session predates the current recovery. Sign in again after recovery completes.",
+      );
     }
     return {
       id: row.id,
@@ -317,20 +332,29 @@ export class PasskeyAuthService {
     const session = await this.verifySession(token);
     const now = new Date();
     const ownerId = await requireOwnerId(this.db, session);
-    return this.startAssertionCeremony("reverify", ownerId, now);
+    const generation = await this.controlGeneration();
+    return this.startAssertionCeremony("reverify", ownerId, generation, now);
   }
 
-  /** Complete a verification refresh. Updates the session's verification time. */
+  /**
+   * Complete a verification refresh: the challenge must still belong to the
+   * control-status generation, exactly like login. Updates the session's
+   * verification time.
+   */
   async completeReverification(token: string, response: AuthenticationResponseJSON): Promise<SessionInfo> {
     const session = await this.verifySession(token);
     const now = new Date();
     const ownerId = await requireOwnerId(this.db, session);
+    const generation = await this.controlGeneration();
     const { credential, challengeRow, authenticationInfo } = await this.verifyAssertion(
       response,
       "reverify",
       ownerId,
       now,
     );
+    if (challengeRow.recoveryGeneration.toLowerCase() !== generation) {
+      throw new AuthError("challenge_invalid", "This verification request is no longer valid. Start again.");
+    }
     return this.db.transaction(async (tx) => {
       if (!(await consumeChallenge(tx, challengeRow.id))) {
         throw new AuthError(
@@ -385,7 +409,7 @@ export class PasskeyAuthService {
       })),
       authenticatorSelection: { residentKey: "preferred", userVerification: "required" },
     });
-    const generation = await requireGeneration(this.db);
+    const generation = await this.controlGeneration();
     await issueChallenge(this.db, {
       purpose: "add_credential",
       ownerId,
@@ -411,9 +435,13 @@ export class PasskeyAuthService {
     const ownerId = await requireOwnerId(this.db, session);
     await this.requireRecentVerification(session);
     const now = new Date();
+    const generation = await this.controlGeneration();
     const challengeRow = await this.challengeForResponse(response, "add_credential", now);
     if (challengeRow.ownerId !== ownerId) {
       throw new AuthError("challenge_invalid", "This request belongs to another owner.");
+    }
+    if (challengeRow.recoveryGeneration.toLowerCase() !== generation) {
+      throw new AuthError("challenge_invalid", "This request is no longer valid. Start again.");
     }
     const verification = await verifyWebauthn(() =>
       verifyRegistrationResponse({
@@ -579,9 +607,26 @@ export class PasskeyAuthService {
     return { ownerId: ownerRow.id, generation: status.generation, kind: sessionKindFor(status.state) };
   }
 
+  /**
+   * The generation ceremonies bind their challenges to: the control-status
+   * generation, which follows deployment configuration rather than the raw
+   * database row (SPEC sections 9 and 10).
+   */
+  private async controlGeneration(): Promise<string> {
+    const status = await this.controls.readStatus();
+    if (status.state !== "ready" && status.state !== "reconciling") {
+      throw new AuthError(
+        "auth_unavailable",
+        `This operation is unavailable while the recovery state is ${status.state}. Run 'recovery begin' after a restore.`,
+      );
+    }
+    return status.generation;
+  }
+
   private async startAssertionCeremony(
     purpose: "login" | "reverify",
     ownerId: string,
+    generation: string,
     now: Date,
   ): Promise<PublicKeyCredentialRequestOptionsJSON> {
     const existing = await activeCredentials(this.db, ownerId);
@@ -593,7 +638,6 @@ export class PasskeyAuthService {
       })),
       userVerification: "required",
     });
-    const generation = await requireGeneration(this.db);
     await issueChallenge(this.db, {
       purpose,
       ownerId,
@@ -689,17 +733,6 @@ async function requireOwnerId(db: MailHubDatabase, session: SessionInfo): Promis
     throw new AuthError("unauthorized", "Sign in to continue.");
   }
   return ownerId;
-}
-
-async function requireGeneration(db: MailHubDatabase): Promise<string> {
-  const generation = await readDatabaseGeneration(db);
-  if (generation === null) {
-    throw new AuthError(
-      "auth_unavailable",
-      "Control state is missing. Set RECOVERY_GENERATION and run the recovery commands.",
-    );
-  }
-  return generation;
 }
 
 async function insertSession(

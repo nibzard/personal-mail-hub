@@ -5,7 +5,6 @@ import {
   owner,
   ownerCredentials,
   ownerSessions,
-  serviceState,
   webauthnChallenges,
   type ChallengePurpose,
   type EnrollmentGrant,
@@ -55,12 +54,6 @@ export async function activeCredentials(db: DbHandle, ownerId: string): Promise<
     .from(ownerCredentials)
     .where(and(eq(ownerCredentials.ownerId, ownerId), isNull(ownerCredentials.revokedAt)))
     .orderBy(ownerCredentials.createdAt);
-}
-
-/** The current database recovery generation from `service_state`. */
-export async function readDatabaseGeneration(db: DbHandle): Promise<string | null> {
-  const rows = await db.select().from(serviceState).limit(1);
-  return rows[0]?.recoveryGeneration.toLowerCase() ?? null;
 }
 
 /** Issue one WebAuthn challenge bound to its purpose, owner, and generation. */

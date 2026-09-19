@@ -7,6 +7,7 @@ import {
   actions,
   createDatabase,
   events,
+  messages,
   outboundMessages,
   runMigrations,
   type MailHubDatabase,
@@ -25,6 +26,7 @@ const suite = testDatabaseUrl === undefined ? describe.skip : describe;
 
 const GENERATION_A = "11111111-1111-4111-8111-111111111111";
 const GENERATION_B = "22222222-2222-4222-8222-222222222222";
+const GENERATION_C = "33333333-3333-4333-8333-333333333333";
 
 suite("recovery controls", () => {
   const databaseName = `mail_hub_test_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
@@ -249,5 +251,65 @@ suite("recovery controls", () => {
     expect(beginPayloads[1]).toMatchObject({ recoveryGeneration: GENERATION_B, resumed: true });
 
     expect(JSON.stringify(rows)).not.toContain("password");
+  });
+
+  it("counts unresolved Sent appends of restored sends as undispositioned", async () => {
+    // A new restore cycle: the deployment moves to generation C.
+    const service = controls(GENERATION_C);
+    await expect(service.beginRecovery()).resolves.toEqual({ result: "started", generation: GENERATION_C });
+
+    const accountRows = await db.select().from(accounts).limit(1);
+    const accountId = accountRows[0]!.id;
+    const [message] = await db
+      .insert(messages)
+      .values({ accountId, subject: "Sent before the restore", snippet: "The copy never finished." })
+      .returning();
+    const [outbound] = await db
+      .insert(outboundMessages)
+      .values({
+        accountId,
+        recoveryGeneration: GENERATION_A,
+        idempotencyKey: "send-restore-2",
+        requestHash: "hash",
+        draftRevision: 1,
+        identity: { address: "user@example.com", name: null },
+        envelopeSender: "user@example.com",
+        envelopeRecipients: ["peer@example.com"],
+        status: "sent",
+        logicalMessageId: message!.id,
+        recipients: { to: [{ address: "peer@example.com", name: null }] },
+        markdownSource: "",
+        rfcMessageId: "restore-2@example.com",
+        mimeStorageKey: "durable/outbound/restore-2",
+        mimeSha256: "hash",
+        sentCopyStatus: "pending",
+      })
+      .returning();
+
+    // The send itself finished, but its Sent copy never concluded and the
+    // append sweep skips old-generation rows forever, so completion refuses.
+    await expect(service.completeRecovery()).resolves.toEqual({
+      result: "rejected",
+      reason: "pending_operations",
+      pendingOperations: { actions: 0, outboundMessages: 1 },
+    });
+    await db
+      .update(outboundMessages)
+      .set({ sentCopyStatus: "appending" })
+      .where(eq(outboundMessages.id, outbound!.id));
+    await expect(service.completeRecovery()).resolves.toEqual({
+      result: "rejected",
+      reason: "pending_operations",
+      pendingOperations: { actions: 0, outboundMessages: 1 },
+    });
+
+    // Reconciliation ends the append as an explicit unknown hold.
+    await db
+      .update(outboundMessages)
+      .set({ sentCopyStatus: "unknown" })
+      .where(eq(outboundMessages.id, outbound!.id));
+    await expect(
+      controls(GENERATION_C, { hasRegisteredOwner: async () => true }).completeRecovery(),
+    ).resolves.toEqual({ result: "completed", generation: GENERATION_C, ownerCheck: "verified" });
   });
 });

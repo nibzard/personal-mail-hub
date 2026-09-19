@@ -1364,29 +1364,30 @@
         "compose",
         "safety"
       ],
-      "updated_at": "2026-09-19T19:58:04Z",
+      "updated_at": "2026-09-19T19:58:43Z",
       "files": [
-        "packages/send/src/service.ts",
-        "packages/compose/src/service.ts",
         "packages/compose/src/index.ts",
-        "packages/send/test/service.test.ts",
-        "packages/compose/test/service.test.ts"
+        "packages/compose/src/service.ts",
+        "packages/compose/test/service.test.ts",
+        "packages/send/src/service.ts",
+        "packages/send/test/service.test.ts"
       ]
     },
     {
       "id": "T040",
       "title": "Close the restore-window session and disposition gaps",
       "priority": 1,
-      "status": "todo",
+      "status": "done",
       "details": "verifySession binds a session only to the database generation (packages/auth/src/service.ts:303-306), never to the deployment generation or the control mode, so after a restore the restored service_state and the restored sessions carry the same old generation and a cookie revoked after the backup passes verification with full read access, settings reads, and passkey enrollment when the restored verifiedAt is under five minutes old; apps/api/test/restore-acceptance.test.ts:369-372 asserts this behavior, against SPEC section 10 which requires restored credentials and sessions to grant no access, including before recovery begin runs. completeReverification (service.ts:324-356) also omits the challenge-to-generation check that completeLogin and completeEnrollment enforce, and new challenges bind to the raw database generation rather than the control-status generation (startAssertionCeremony at 596, startCredentialEnrollment at 388). In packages/recovery, countUndispositionedOperations inspects only the top-level status (controls.ts:87-90 and 300-326), so an old-generation outbound row with status sent and a pending or appending sent_copy_status counts as dispositioned and recovery complete succeeds while an unresolved append stays stuck forever because assessJob marks its job stale. Make session verification respect the control status with reconciling limited to inspection sessions, bind reverify ceremonies to the control-status generation with the same check as login, and count unresolved sent-copy states as undispositioned.",
       "tags": [
         "security",
         "recovery",
         "auth"
       ],
-      "updated_at": "2026-09-19T17:39:46Z",
+      "updated_at": "2026-09-19T20:12:18Z",
       "files": [
         "packages/auth/src/service.ts",
+        "packages/auth/src/state.ts",
         "packages/auth/test/service.test.ts",
         "packages/recovery/src/controls.ts",
         "packages/recovery/test/controls.test.ts",

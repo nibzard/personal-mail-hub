@@ -1,4 +1,4 @@
-import { and, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
 import {
   accounts,
   actions,
@@ -88,6 +88,13 @@ const PENDING_ACTION_STATUSES = ["queued", "executing"] as const;
 
 /** An `outcome_unknown` send is an explicit hold, so it counts as dispositioned. */
 const PENDING_OUTBOUND_STATUSES = ["queued", "sending"] as const;
+
+/**
+ * A `sent` message whose Sent-copy append never concluded. The append sweep
+ * skips old-generation rows forever, so only reconciliation can resolve
+ * these states (SPEC section 10, step 4).
+ */
+const PENDING_SENT_COPY_STATUSES = ["pending", "appending"] as const;
 
 /**
  * The recovery-generation controls for startup and mutations (SPEC sections
@@ -296,7 +303,11 @@ async function databaseIsEmpty(tx: MailHubTransaction): Promise<boolean> {
   return true;
 }
 
-/** Count restored operations that still hold a pending status. */
+/**
+ * Count restored operations that still hold a pending status. A `sent` send
+ * with an unresolved Sent-copy append counts too: the sweep never takes an
+ * old-generation job, so completion must not strand it.
+ */
 async function countUndispositionedOperations(
   tx: MailHubTransaction,
   deployment: string,
@@ -316,7 +327,13 @@ async function countUndispositionedOperations(
     .where(
       and(
         ne(outboundMessages.recoveryGeneration, deployment),
-        inArray(outboundMessages.status, [...PENDING_OUTBOUND_STATUSES]),
+        or(
+          inArray(outboundMessages.status, [...PENDING_OUTBOUND_STATUSES]),
+          and(
+            eq(outboundMessages.status, "sent"),
+            inArray(outboundMessages.sentCopyStatus, [...PENDING_SENT_COPY_STATUSES]),
+          ),
+        ),
       ),
     );
   return {

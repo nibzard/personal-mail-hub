@@ -366,10 +366,11 @@ suite("restore, held operations, and client replay", () => {
     expect(replay.currentGeneration).toBe(GENERATION_B);
     expect(submissions()).toBe(1);
 
-    // The restored session still matches the restored rows, but it can drive
-    // no mail mutation, and no new login opens before recovery begins.
+    // The restored session still matches the restored rows, but it grants no
+    // access at all before recovery begins: reads, settings, passkey
+    // enrollment, and mail mutations all refuse it (SPEC section 10).
     const auth = new PasskeyAuthService(db, config, controls);
-    await expect(auth.verifySession(ownerSessionToken)).resolves.toMatchObject({ kind: "standard" });
+    await expect(authCode(auth.verifySession(ownerSessionToken))).resolves.toBe("unauthorized");
     const compose = new ComposeService(db, storage, controls);
     const gated = await blockedBy(
       compose.updateDraft({ requestGeneration: GENERATION_A }, draftId, { baseRevision: 1, subject: "Edited after restore" }),
