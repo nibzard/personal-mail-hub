@@ -6,6 +6,12 @@
 - `apps/api` contains HTTP routes and application services.
 - `apps/worker` contains background job entry points.
 - `apps/admin` contains the operator command line (`npm run admin -- ...`).
+- `deploy` contains the deployment and backup procedures: the multi-stage
+  Dockerfile targets (`app`, `web`), the container entrypoint with its
+  environment preflight, the nginx gateway that serves the client and
+  forwards `/api` to the API, the compose stack, and the backup, verify, and
+  restore scripts. `deploy/README.md` documents the Coolify setup, the
+  environment reference, the backup schedule, and the restore runbook.
 - `packages/contracts` contains shared API contracts.
 - `packages/auth` contains passkey authentication: enrollment grants,
   WebAuthn ceremonies, owner sessions, and the `auth` admin commands.
@@ -125,6 +131,12 @@
    first-passkey enrollment token, and `npm run admin -- auth recover` after
    all passkeys are lost. Set `BASE_URL` to the deployed origin first; the
    token prints once and only its hash is stored.
+8. Run `npm run preflight` to check the deployment environment. The
+   container entrypoint runs the same checks before it applies migrations.
+9. Run `npm run backup` inside the app container for the nightly off-box
+   backup, and `npm run restore -- <backup-dir> --yes` to restore one.
+   `deploy/README.md` documents the schedule and the recovery runbook a
+   restore must continue with.
 
 ## Rules
 

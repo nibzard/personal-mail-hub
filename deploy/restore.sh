@@ -1,0 +1,111 @@
+#!/bin/sh
+# Restore procedure (SPEC.md section 10). This script performs the mechanical
+# half of steps 1 and 2: it verifies the backup's hashes, restores the
+# database snapshot, and puts the durable objects back. The recovery steps
+# that follow are operator commands, printed at the end and documented in
+# deploy/README.md; they are what make the restored deployment safe.
+#
+#   sh /app/deploy/restore.sh /backups/20260919T030000Z --yes
+#
+# Stop the API and the worker before restoring, and restore into the same
+# database the deployment uses. The script refuses to run without --yes.
+set -eu
+
+app_root="${APP_ROOT:-/app}"
+storage_root="${STORAGE_ROOT:-$app_root/data/storage}"
+
+usage() {
+  echo "Usage: sh $0 <backup-dir> --yes" >&2
+  echo "       sh $0 <backup-dir>   (prints the plan only)" >&2
+}
+
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+  usage
+  exit 64
+fi
+
+source_dir="$1"
+confirmed="${2:-}"
+
+for required in database.pgdump database.catalog storage-durable manifest.sha256; do
+  if [ ! -e "$source_dir/$required" ]; then
+    echo "restore: $source_dir/$required is missing; this is not a backup directory." >&2
+    exit 1
+  fi
+done
+
+: "${DATABASE_URL:?DATABASE_URL must name the database to restore into.}"
+
+for tool in pg_restore node; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "restore: $tool is required but was not found in PATH." >&2
+    exit 1
+  fi
+done
+
+echo "restore: verifying hashes in $source_dir before touching anything."
+node "$app_root/deploy/verify-backup.mjs" --check "$source_dir"
+
+if [ "$confirmed" != "--yes" ]; then
+  cat <<EOF
+
+Plan (not executed; repeat with --yes to apply):
+  1. Stop the API and the worker. They must not run against a half-restored
+     database, and an old process must not continue a remote operation.
+  2. Restore the snapshot with pg_restore --clean --if-exists into:
+     $DATABASE_URL
+  3. Copy $source_dir/storage-durable back under $storage_root/durable.
+  4. Delete $storage_root/cache: the disposable cache regenerates from the
+     restored originals.
+  5. Set a NEW RECOVERY_GENERATION in deployment configuration, then follow
+     the recovery runbook this script prints after a restore.
+EOF
+  exit 2
+fi
+
+echo "restore: applying the database snapshot."
+pg_restore \
+  --clean --if-exists \
+  --no-owner --no-privileges \
+  --dbname "$DATABASE_URL" \
+  "$source_dir/database.pgdump"
+
+echo "restore: copying durable objects back."
+mkdir -p "$storage_root/durable"
+cp -a "$source_dir/storage-durable/." "$storage_root/durable/"
+
+echo "restore: clearing the disposable cache."
+rm -rf -- "${storage_root:?}/cache"
+mkdir -p "$storage_root/cache"
+
+cat <<'EOF'
+
+Database and durable objects are restored. The deployment is NOT usable yet:
+workers and mail mutations stay blocked until recovery completes. Continue
+with the recovery runbook (SPEC.md section 10):
+
+  1. Set a NEW RECOVERY_GENERATION in the deployment environment now, before
+     starting the app. Never reuse the previous value and never take one from
+     the database or the backup bundle.
+  2. Start the API (and worker). They come up blocked, by design.
+  3. npm run admin -- recovery begin
+     Records the new generation, enters reconciling, and revokes restored
+     sessions, grants, challenges, and credentials. Repeating the command
+     resumes without repeating the revocation.
+  4. npm run admin -- recovery hold-actions
+     Dispositions the management actions the restore left behind: old queued
+     items become conflicted, old executing items unknown.
+  5. Reconcile restored pending sends against durable responses and server
+     evidence. Keep unresolved sends at outcome unknown; never auto-resend.
+  6. npm run admin -- auth recover
+     Prints a one-time replacement enrollment token; register the new
+     passkey with it and verify you can sign in and inspect held operations.
+  7. npm run admin -- recovery complete
+     Requires the owner, the matching deployment generation, and disposition
+     of all restored pending operations, then reopens normal work.
+
+Run every command inside the app container with DATABASE_URL,
+RECOVERY_GENERATION, and BASE_URL set to the deployment's values.
+EOF
+
+echo "restore: complete."

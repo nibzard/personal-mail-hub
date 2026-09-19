@@ -882,7 +882,7 @@
       "tags": [
         "observability"
       ],
-      "updated_at": "2026-09-19T13:19:39Z",
+      "updated_at": "2026-09-19T13:19:52Z",
       "files": [
         "AGENTS.md",
         "apps/api/package.json",
@@ -903,8 +903,8 @@
       "id": "T028",
       "title": "Create Coolify deployment and backup procedures",
       "priority": 2,
-      "status": "todo",
-      "details": "Package the API, worker, database, volumes, environment checks, proxy settings, off-box backup, hash verification, and documented restore commands.",
+      "status": "done",
+      "details": "Done: deployment and backup procedures per SPEC section 10. New multi-stage Dockerfile with two targets: app (node:24-alpine, postgresql-client bundled, preflight then drizzle migrations then API and worker through tsx, APP_ROLE all|api|worker, Docker HEALTHCHECK on /healthz, unprivileged node user, durable storage under /app/data/storage) and web (nginx gateway that serves the built PWA, proxies same-origin /api to the API with the prefix stripped, immutable caching for hashed assets, SPA fallback; MAIL_HUB_API_HOST selects the upstream). deploy/entrypoint.sh runs deploy/preflight.mjs (DATABASE_URL, UUID RECOVERY_GENERATION, 32-byte CREDENTIALS_KEY, https BASE_URL, writable STORAGE_ROOT) before migrating and starts processes directly so SIGTERM reaches them. deploy/backup.sh takes a consistent pg_dump custom dump plus the durable object tree, writes a sha256 manifest, and verify-backup.mjs re-hashes the bundle and cross-checks every durable sidecar (key, storage class, hash, size); restore.sh verifies the bundle, restores database and durable objects, wipes the lossy cache, and prints the seven-step recovery runbook (new RECOVERY_GENERATION, recovery begin, hold-actions, reconcile sends, auth recover, recovery complete; CREDENTIALS_KEY and RECOVERY_GENERATION stay out of the bundle). deploy/docker-compose.yml runs db, api, worker, web with pgdata/storage/backups volumes for plain compose or one Coolify Compose resource; deploy/env.example and deploy/README.md document environment, volumes, Coolify setup, schedule, sizing, and restore. npm run preflight/backup/restore wrap the scripts; AGENTS.md records the deploy module. Verified: npm run release:gate with TEST_DATABASE_URL passes (typecheck, 560 workspace tests, 103 permission tests, migrations on scratch database). Backup and restore proven on a scratch PostgreSQL server: settings and seeded durable trees survive byte-identical, both corruption paths (tampered object, sidecar hash drift) fail verification, retention prunes, and npm run backup plus verify ran inside the built app image against its bundled pg_dump. Container smoke test on the built image: Docker health turns healthy, recovery init works in the container, the worker unblocks without restart once control state is ready, and the web gateway answers the PWA, proxied /api/healthz (200 JSON with prefix stripped), hashed-asset immutable caching, and SPA fallback. Built with docker build --network=host (throttled default bridge on this host).",
       "depends_on": [
         "T003",
         "T027"
@@ -912,6 +912,23 @@
       "tags": [
         "deployment",
         "recovery"
+      ],
+      "updated_at": "2026-09-19T14:12:04Z",
+      "files": [
+        "AGENTS.md",
+        "Dockerfile",
+        ".dockerignore",
+        "deploy/backup.sh",
+        "deploy/docker-compose.yml",
+        "deploy/entrypoint.sh",
+        "deploy/env.example",
+        "deploy/nginx-web.conf.template",
+        "deploy/preflight.mjs",
+        "deploy/README.md",
+        "deploy/restore.sh",
+        "deploy/verify-backup.mjs",
+        "package.json",
+        "to-do.json"
       ]
     },
     {

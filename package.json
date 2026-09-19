@@ -14,6 +14,7 @@
   ],
   "scripts": {
     "admin": "npm run admin --workspace=@mail-hub/admin",
+    "backup": "sh deploy/backup.sh",
     "build": "npm run build --workspaces --if-present",
     "check": "npm run check --workspaces --if-present",
     "db:generate": "npm run db:generate --workspace=@mail-hub/database",
@@ -21,7 +22,9 @@
     "dev": "npm run dev --workspace=@mail-hub/web",
     "dev:api": "npm run dev --workspace=@mail-hub/api",
     "dev:worker": "npm run dev --workspace=@mail-hub/worker",
+    "preflight": "node deploy/preflight.mjs",
     "release:gate": "node scripts/release-gate.mjs",
+    "restore": "sh deploy/restore.sh",
     "start": "npm run start --workspace=@mail-hub/api",
     "start:worker": "npm run start --workspace=@mail-hub/worker",
     "test": "npm run test --workspaces --if-present"
