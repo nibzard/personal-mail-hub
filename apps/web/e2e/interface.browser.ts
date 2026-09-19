@@ -9,6 +9,15 @@ import { axeViolations, describeViolations, openInbox } from "./helpers";
  * build over the fixture API.
  */
 
+/**
+ * Tolerance for sub-pixel noise in size checks. Chromium reports rects that
+ * pass through a compositor transform (the translated mobile panes) with
+ * float32 precision, so a 44 px target can measure 44 minus two units in the
+ * last place. One hundredth of a pixel absorbs that noise and still fails
+ * any real shortfall.
+ */
+const SUBPIXEL = 0.01;
+
 /** Fails the test when axe reports a WCAG-relevant violation. */
 async function expectNoAxeViolations(page: Page): Promise<void> {
   const violations = await axeViolations(page);
@@ -236,7 +245,9 @@ test.describe("responsive layout", () => {
       }));
     let boxes = await offscreen();
     expect(boxes.nav).toBeLessThan(0);
-    expect(boxes.reader).toBeGreaterThanOrEqual(boxes.viewport);
+    // The inactive reader sits at translate-x-full, a compositor transform:
+    // its rect can lose sub-pixel precision on the way back (see SUBPIXEL).
+    expect(boxes.reader).toBeGreaterThanOrEqual(boxes.viewport - SUBPIXEL);
 
     await page.setViewportSize({ width: 1440, height: 900 });
     await expect
@@ -253,12 +264,12 @@ test.describe("touch targets", () => {
     await page.setViewportSize({ width: 375, height: 667 });
     await openInbox(page);
 
-    const below44 = await page.evaluate(() => {
+    const below44 = await page.evaluate((epsilon: number) => {
       const failures: string[] = [];
       const check = (element: Element) => {
         const box = element.getBoundingClientRect();
         const name = element.getAttribute("aria-label") ?? element.textContent?.trim() ?? element.tagName;
-        if (box.height < 44 || box.width < 44) {
+        if (box.height < 44 - epsilon || box.width < 44 - epsilon) {
           failures.push(`${name}: ${Math.round(box.width)}x${Math.round(box.height)}`);
         }
       };
@@ -275,7 +286,7 @@ test.describe("touch targets", () => {
         }
       }
       return failures;
-    });
+    }, SUBPIXEL);
     expect(below44, `controls under 44 px: ${below44.join("; ")}`).toEqual([]);
 
     // The reader's back control meets the same floor.
@@ -283,15 +294,15 @@ test.describe("touch targets", () => {
     const back = page.getByRole("button", { name: "Back to the message list" });
     await expect(back).toBeVisible();
     const box = (await back.boundingBox()) ?? { width: 0, height: 0 };
-    expect(box.height).toBeGreaterThanOrEqual(44);
-    expect(box.width).toBeGreaterThanOrEqual(44);
+    expect(box.height).toBeGreaterThanOrEqual(44 - SUBPIXEL);
+    expect(box.width).toBeGreaterThanOrEqual(44 - SUBPIXEL);
   });
 
   test("every visible control clears the 24 px WCAG minimum", async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 667 });
     await openInbox(page);
 
-    const below24 = await page.evaluate(() => {
+    const below24 = await page.evaluate((epsilon: number) => {
       const failures: string[] = [];
       for (const element of Array.from(document.querySelectorAll("button, a, input"))) {
         const box = element.getBoundingClientRect();
@@ -299,12 +310,12 @@ test.describe("touch targets", () => {
           continue;
         }
         const name = element.getAttribute("aria-label") ?? element.textContent?.trim() ?? element.tagName;
-        if (box.height < 24 || box.width < 24) {
+        if (box.height < 24 - epsilon || box.width < 24 - epsilon) {
           failures.push(`${name}: ${Math.round(box.width)}x${Math.round(box.height)}`);
         }
       }
       return failures;
-    });
+    }, SUBPIXEL);
     expect(below24, `controls under 24 px: ${below24.join("; ")}`).toEqual([]);
   });
 });
