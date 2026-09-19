@@ -475,7 +475,7 @@
       "id": "T014",
       "title": "Create shared interface components and design tokens",
       "priority": 2,
-      "status": "doing",
+      "status": "done",
       "details": "Set up shadcn and Radix components, semantic Tailwind tokens, light and dark themes, icons, focus states, and reduced-motion behavior.",
       "depends_on": [
         "T001"
@@ -484,7 +484,36 @@
         "ui",
         "accessibility"
       ],
-      "updated_at": "2026-09-19T09:44:51Z"
+      "updated_at": "2026-09-19T10:07:28Z",
+      "files": [
+        "apps/web/components.json",
+        "apps/web/index.html",
+        "apps/web/package.json",
+        "apps/web/scripts/check-tokens.mjs",
+        "apps/web/src/components/theme-toggle.tsx",
+        "apps/web/src/components/ui/badge.tsx",
+        "apps/web/src/components/ui/button.tsx",
+        "apps/web/src/components/ui/checkbox.tsx",
+        "apps/web/src/components/ui/dialog.tsx",
+        "apps/web/src/components/ui/dropdown-menu.tsx",
+        "apps/web/src/components/ui/input.tsx",
+        "apps/web/src/components/ui/kbd.tsx",
+        "apps/web/src/components/ui/label.tsx",
+        "apps/web/src/components/ui/select.tsx",
+        "apps/web/src/components/ui/separator.tsx",
+        "apps/web/src/components/ui/skeleton.tsx",
+        "apps/web/src/components/ui/spinner.tsx",
+        "apps/web/src/components/ui/switch.tsx",
+        "apps/web/src/components/ui/textarea.tsx",
+        "apps/web/src/components/ui/tooltip.tsx",
+        "apps/web/src/lib/utils.ts",
+        "apps/web/src/main.tsx",
+        "apps/web/src/styles.css",
+        "apps/web/src/theme.ts",
+        "apps/web/tsconfig.json",
+        "apps/web/vite.config.ts",
+        "package-lock.json"
+      ]
     },
     {
       "id": "T015",
