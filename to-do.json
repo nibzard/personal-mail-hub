@@ -851,7 +851,7 @@
       "title": "Implement settings and synchronization status",
       "priority": 3,
       "status": "done",
-      "details": "Provide settings for density, shortcuts, account folders, identities, classification, and a visible per-account synchronization and queue status. Done: @mail-hub/settings stores the SPEC F10 keys as key-value rows in the settings table behind the recovery gate (7 tests); apps/api serves GET/PUT /settings and GET /sync/status (8 tests, reads the same records as /healthz); the web settings screen covers appearance, keyboard, reading, classification guardrails, per-account folder roles, identities, the classify toggle, and the per-account sync plus queue status, with one stable save-state footer and an explicit retry; the reader honors the clean-view default; the palette and theme toggle persist through the record; browser flows cover open, density persistence, role, identity, and classify writes, and the fixture server scopes mutable state per session cookie.",
+      "details": "Provide settings for density, shortcuts, account folders, identities, classification, and a visible per-account synchronization and queue status. Done: @mail-hub/settings stores the SPEC F10 keys as key-value rows in the settings table behind the recovery gate (7 tests); apps/api serves GET/PUT /settings and GET /sync/status (8 tests, reads the same records as /healthz); the web settings screen covers appearance, keyboard, reading, classification guardrails, per-account folder roles, identities, the classify toggle, and the per-account sync plus queue status, with one stable save-state footer and an explicit retry; the reader honors the clean-view default; the palette and theme toggle persist through the record; browser flows cover open, density persistence, role, identity, and classify writes, and the fixture server scopes mutable state per session cookie. Re-verified 2026-09-19 after the loop reset the status to doing: every workspace type-checks, the full suite with TEST_DATABASE_URL passes 596 tests across 55 files with nothing failed or skipped, and the browser suites pass (17 flows including the three settings cases, 12 interface checks), so the implementation in 68d5740 needed no changes.",
       "depends_on": [
         "T005",
         "T009",
@@ -861,7 +861,7 @@
         "settings",
         "ui"
       ],
-      "updated_at": "2026-09-19T16:13:01Z",
+      "updated_at": "2026-09-19T16:18:36Z",
       "files": [
         "packages/contracts/src/index.ts",
         "packages/settings/package.json",
