@@ -94,12 +94,18 @@ async function main(databaseUrl: string): Promise<void> {
   console.log(`Recovery control state is ready (generation ${ready.generation}). Job queue started.`);
 
   // Sync opens stored mailbox credentials, which only CREDENTIALS_KEY seals
-  // (SPEC section 9). Without it the worker stays up but runs no cycles.
+  // (SPEC section 9). Without it no cycle can run, and an idle process with
+  // no workers or schedules ignores SIGTERM: its handlers only abort a
+  // controller nothing reads, so the entrypoint wait hangs until SIGKILL.
+  // Tear the queue and pool down and exit non-zero instead.
   const credentialsKey = parseCredentialsKey(process.env.CREDENTIALS_KEY);
   if (credentialsKey === null) {
     console.warn(
-      "CREDENTIALS_KEY must hold 32 bytes as base64 or hex. Synchronization stays closed until it is set.",
+      "CREDENTIALS_KEY must hold 32 bytes as base64 or hex. The worker exits instead of running no cycles.",
     );
+    await queue.stop();
+    await pool.end();
+    process.exitCode = 1;
     return;
   }
 
@@ -166,7 +172,7 @@ async function main(databaseUrl: string): Promise<void> {
     );
   }
 
-  await queue.createQueue(SYNC_CYCLE_QUEUE);
+  await ensureExclusiveQueue(queue, SYNC_CYCLE_QUEUE);
   await queue.work<{ generation: string }>(SYNC_CYCLE_QUEUE, { batchSize: 1 }, async (jobs) => {
     const job = jobs[0];
     if (job === undefined) {
@@ -354,6 +360,32 @@ async function runAccountCycle(
 function cycleCron(name: string, fallback: string): string {
   const override = process.env[name]?.trim();
   return override ? override : fallback;
+}
+
+/**
+ * Create the sync cycle queue under the `exclusive` policy, which admits at
+ * most one queued or active job. While a cycle is in flight, the schedule's
+ * next tick is dropped instead of queued, so a cycle slower than the tick
+ * (the initial backfill over many accounts) cannot pile up thousands of
+ * redundant jobs and run them back to back once it finishes.
+ *
+ * createQueue leaves an existing queue row alone, and the policy column
+ * cannot be updated through the queue API, so a queue from an earlier
+ * deployment is deleted and recreated. The queued jobs that deletion drops
+ * are exactly the backlog this policy exists to prevent.
+ */
+async function ensureExclusiveQueue(
+  queue: ReturnType<typeof createJobQueue>,
+  name: string,
+): Promise<void> {
+  const existing = await queue.getQueue(name);
+  if (existing !== null && existing.policy === "exclusive") {
+    return;
+  }
+  if (existing !== null) {
+    await queue.deleteQueue(name);
+  }
+  await queue.createQueue(name, { policy: "exclusive" });
 }
 
 /**

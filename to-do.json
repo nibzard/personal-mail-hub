@@ -1605,32 +1605,32 @@
         "harness",
         "security"
       ],
-      "updated_at": "2026-09-19T22:59:41Z",
+      "updated_at": "2026-09-19T23:00:06Z",
       "files": [
-        "packages/transport/src/submit.ts",
-        "packages/transport/src/imap.ts",
-        "packages/transport/test/fake-imap-server.ts",
-        "packages/transport/test/fake-smtp-server.ts",
-        "packages/transport/test/connection.test.ts",
-        "packages/transport/test/submit.test.ts",
         "packages/harness/src/imap-server.ts",
         "packages/harness/src/smtp-server.ts",
         "packages/harness/test/imap-server.test.ts",
         "packages/harness/test/smtp-server.test.ts",
-        "packages/harness/test/transport-acceptance.test.ts"
+        "packages/harness/test/transport-acceptance.test.ts",
+        "packages/transport/src/imap.ts",
+        "packages/transport/src/submit.ts",
+        "packages/transport/test/connection.test.ts",
+        "packages/transport/test/fake-imap-server.ts",
+        "packages/transport/test/fake-smtp-server.ts",
+        "packages/transport/test/submit.test.ts"
       ]
     },
     {
       "id": "T050",
       "title": "Fix the worker lifecycle and cycle scheduling",
       "priority": 3,
-      "status": "todo",
+      "status": "done",
       "details": "Two defects in apps/worker/src/main.ts. The malformed-CREDENTIALS_KEY path returns early after starting pg-boss and opening the pool (lines 97-103), leaving an idle process with no workers or schedules whose shutdown handler only aborts a controller nothing reads, so it ignores SIGTERM and hangs the entrypoint wait until SIGKILL when the worker is started through any path that skips preflight; shut the queue and pool down and exit non-zero. And the sync.cycle schedule enqueues a new job every 30 seconds with no singleton key or depth check (lines 30, 273, 346-361), so a cycle slower than the tick, which the initial backfill over many accounts will be, piles up thousands of redundant jobs per day and then runs them back to back; make the schedule singleton or skip the enqueue while a cycle is in flight.",
       "tags": [
         "worker",
         "reliability"
       ],
-      "updated_at": "2026-09-19T17:39:46Z",
+      "updated_at": "2026-09-19T23:11:36Z",
       "files": [
         "apps/worker/src/main.ts"
       ]
