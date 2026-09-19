@@ -3,8 +3,25 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#f8fafc" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f8fa" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#11141b" />
     <title>Personal mail hub</title>
+    <script>
+      // Apply the stored theme before first paint. Keep in sync with
+      // src/theme.ts.
+      (() => {
+        try {
+          const stored = localStorage.getItem("mailhub.theme") ?? "system";
+          const dark =
+            stored === "dark" ||
+            (stored === "system" &&
+              matchMedia("(prefers-color-scheme: dark)").matches);
+          document.documentElement.classList.toggle("dark", dark);
+        } catch {
+          // Without storage access, fall back to the light theme.
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
