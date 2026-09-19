@@ -14,6 +14,7 @@
     "@mail-hub/contracts": "0.1.0",
     "@mail-hub/database": "0.1.0",
     "@mail-hub/ingestion": "0.1.0",
+    "@mail-hub/recovery": "0.1.0",
     "@mail-hub/settings": "0.1.0"
   },
   "devDependencies": {

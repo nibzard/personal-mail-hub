@@ -126,6 +126,29 @@ has no listener and disables it in the compose file.
    before the account saves.
 6. Wait for the first sync cycle, then read mail.
 
+## Classification evaluation
+
+Classification stays in shadow mode until the evaluation gate passes (SPEC
+section 12). Suggestions never route mail before that.
+
+1. Hand-label 100–200 of your own messages in a JSONL file, one object per
+   line: `{"messageId": "<uuid>", "class": "<message class>", "asksAction":
+   true}`. Include forwarded chains, bilingual mail, and mixed
+   receipt-plus-question mail.
+2. Run the measurement inside the app container:
+
+   ```sh
+   npm run eval:classify -- --labels /path/to/labels.jsonl
+   ```
+
+3. Read the report: critical false negatives (personal or action mail a
+   Reading or Notifications bundle would bury), coverage, and correction
+   rate per sender.
+4. Routing turns on only when the labeled set holds zero critical false
+   negatives. The command records the verdict durably; a later failing run
+   returns classification to shadow mode. The exit code is 0 only when the
+   gate passes.
+
 ## Backups
 
 `deploy/backup.sh` runs inside the app container (`npm run backup`):

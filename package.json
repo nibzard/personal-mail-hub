@@ -22,6 +22,7 @@
     "dev": "npm run dev --workspace=@mail-hub/web",
     "dev:api": "npm run dev --workspace=@mail-hub/api",
     "dev:worker": "npm run dev --workspace=@mail-hub/worker",
+    "eval:classify": "npm run eval:classify --workspace=@mail-hub/admin --",
     "preflight": "node deploy/preflight.mjs",
     "release:gate": "node scripts/release-gate.mjs",
     "restore": "sh deploy/restore.sh",

@@ -623,7 +623,7 @@ function hasAnswer(row: Record<string, unknown>): boolean {
 }
 
 /** The address of one stored sender, or `null` when unusable. */
-function senderAddressOf(sender: unknown): string | null {
+export function senderAddressOf(sender: unknown): string | null {
   if (sender === null || typeof sender !== "object") {
     return null;
   }

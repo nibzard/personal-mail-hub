@@ -2,7 +2,7 @@ import { createDatabase, createPool, createStorage } from "@mail-hub/database";
 import { RecoveryControls, describeControlStatus } from "@mail-hub/recovery";
 import { PasskeyAuthService, parseAuthConfig } from "@mail-hub/auth";
 import { AccountService, createCredentialCipher, parseCredentialsKey } from "@mail-hub/accounts";
-import { ClassificationService, jevAdapterFromEnv } from "@mail-hub/classification";
+import { ClassificationService, CorrectionService, jevAdapterFromEnv } from "@mail-hub/classification";
 import { ComposeService } from "@mail-hub/compose";
 import { OutboundService } from "@mail-hub/send";
 import { SearchService } from "@mail-hub/search";
@@ -13,6 +13,7 @@ import { HealthService } from "@mail-hub/observability";
 import { SettingsService } from "@mail-hub/settings";
 import { registerAccountRoutes } from "./account-routes.ts";
 import { registerAuthRoutes } from "./auth-routes.ts";
+import { registerClassificationRoutes } from "./classification-routes.ts";
 import { registerComposeRoutes } from "./compose-routes.ts";
 import { registerConnectionTestRoutes } from "./connection-test-routes.ts";
 import { registerHealthRoutes } from "./health-routes.ts";
@@ -141,6 +142,17 @@ if (authConfig === null) {
     verifySession: (token) => authService.verifySession(token),
   });
   app.log.info("Reading ready: message detail and attachment downloads.");
+
+  // Corrections choose their own scope — one message, one sender, or the
+  // deterministic rule that answered — and record one event each (SPEC F8).
+  // The recovery gate runs before any write, like every client mutation.
+  const correctionService = new CorrectionService(db, controls);
+  await registerClassificationRoutes(app, {
+    service: correctionService,
+    origin: authConfig.origin,
+    verifySession: (token) => authService.verifySession(token),
+  });
+  app.log.info("Classification corrections ready: scoped correction events.");
 
   // Account management seals mailbox passwords with CREDENTIALS_KEY (SPEC
   // section 9). Without a usable key the routes stay closed: storing plaintext

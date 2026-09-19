@@ -726,6 +726,38 @@ export interface MessageClassificationView {
   timeSensitive: boolean | null;
 }
 
+/** The scopes one correction may choose (SPEC F8): never guess the scope. */
+export const CORRECTION_SCOPES = ["message", "sender", "rule"] as const;
+
+/** One correction scope: this message only, this sender, or the rule. */
+export type CorrectionScope = (typeof CORRECTION_SCOPES)[number];
+
+/** The body of `POST /messages/:id/classification/correction`. */
+export interface ClassificationCorrectionBody {
+  /** What the correction applies to: one message, one sender, or the rule. */
+  scope: CorrectionScope;
+  /** The corrected class; `null` records "no class for this scope". */
+  classHint: MessageClass | null;
+  /** Why, in the owner's words. Kept with the correction event. */
+  note?: string | null;
+}
+
+/** Response of `POST /messages/:id/classification/correction`. */
+export interface ClassificationCorrectionResponse {
+  correction: {
+    scope: CorrectionScope;
+    classHint: MessageClass | null;
+    /** The sender address the correction named, when one did. */
+    sender: string | null;
+    /** The rule that answered the corrected message, for rule scope. */
+    rule: string | null;
+    /** The answer that stood before the correction, when one did. */
+    previous: { source: SuggestionSource | null; classHint: MessageClass | null } | null;
+    /** Messages that now carry the corrected answer. */
+    reapplied: number;
+  };
+}
+
 /** One message in full, as the reader shows it (SPEC F3). */
 export interface MessageDetailView {
   id: string;

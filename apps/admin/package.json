@@ -6,13 +6,15 @@
   "scripts": {
     "admin": "tsx src/main.ts",
     "check": "tsc --noEmit --pretty false",
-    "test": "vitest run"
+    "test": "vitest run",
+    "eval:classify": "tsx src/eval-classify.ts"
   },
   "dependencies": {
+    "@mail-hub/actions": "0.1.0",
     "@mail-hub/auth": "0.1.0",
+    "@mail-hub/classification": "0.1.0",
     "@mail-hub/database": "0.1.0",
-    "@mail-hub/recovery": "0.1.0",
-    "@mail-hub/actions": "0.1.0"
+    "@mail-hub/recovery": "0.1.0"
   },
   "devDependencies": {
     "@types/node": "26.6.1",

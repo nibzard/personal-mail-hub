@@ -63,7 +63,20 @@
   per-account toggle, and the backfill gate that classifies only mail
   ingested after the latest enabling when backfill is off. Suggestions are
   visible in the reader and route nothing; the health report's circuit state
-  comes from the same durable records.
+  comes from the same durable records. Corrections choose their own scope —
+  one message, one sender, or the deterministic rule that answered — and
+  record one `class.corrected` event each; a sender correction also writes
+  the `sender_overrides` row and re-applies it to that sender's mail in the
+  account, minus mail the owner placed by hand. The evaluation gate owns the
+  routing verdict (SPEC section 12): `npm run eval:classify -- --labels
+  <file.jsonl>` measures a hand-labeled set of 100–200 messages against the
+  stored answers — critical false negatives (personal or action mail a
+  Reading or Notifications bundle would bury, honoring the `security_alert`
+  and high-confidence `asks_action` breakout), coverage, and correction rate
+  per sender — and records one `class.gate` event. Routing is enabled only
+  while the newest `class.gate` event passed with zero critical false
+  negatives over at least the 100-message minimum; any later failing run
+  returns classification to shadow mode.
 - `packages/sync` contains the IMAP synchronization engine: resumable
   backfill in checkpointed UID windows newest first, background body
   fetching, steady-state polls with arrival bounds, flag refreshes, and
@@ -167,9 +180,15 @@
    first-passkey enrollment token, and `npm run admin -- auth recover` after
    all passkeys are lost. Set `BASE_URL` to the deployed origin first; the
    token prints once and only its hash is stored.
-8. Run `npm run preflight` to check the deployment environment. The
+8. Run `npm run eval:classify -- --labels <file.jsonl>` with `DATABASE_URL`
+   and `RECOVERY_GENERATION` set to measure stored classification answers
+   against a hand-labeled set and record the routing verdict. Each label
+   line is one JSON object: `messageId`, `class`, and an optional
+   `asksAction`. Label 100–200 of your own messages; the exit code is 0 only
+   when the gate passes with zero critical false negatives.
+9. Run `npm run preflight` to check the deployment environment. The
    container entrypoint runs the same checks before it applies migrations.
-9. Run `npm run backup` inside the app container for the nightly off-box
+10. Run `npm run backup` inside the app container for the nightly off-box
    backup, and `npm run restore -- <backup-dir> --yes` to restore one.
    `deploy/README.md` documents the schedule and the recovery runbook a
    restore must continue with.
