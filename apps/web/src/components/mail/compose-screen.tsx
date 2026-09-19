@@ -307,7 +307,7 @@ export function ComposeScreen({
                       <span className="truncate text-xs text-muted-foreground">
                         To {draft.recipients.to.map((entry) => entry.address).join(", ") || "nobody"}
                         {" · "}
-                        {formatListTime(draft.updatedAt)}
+                        <time dateTime={draft.updatedAt}>{formatListTime(draft.updatedAt)}</time>
                       </span>
                     </button>
                   </li>

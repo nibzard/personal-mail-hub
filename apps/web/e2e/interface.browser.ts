@@ -458,8 +458,9 @@ test.describe("visual regression", () => {
     await page.waitForTimeout(200);
     await expect(page).toHaveScreenshot("compose.png", {
       ...SHOT,
-      // The footer names the wall-clock edit time; mask it, not the layout.
-      mask: [compose.locator("footer p")],
+      // The footer and each drafts row name the wall-clock edit time; mask
+      // the times, not the layout.
+      mask: [compose.locator("footer p"), compose.locator("[data-testid='draft-list'] time")],
     });
     await page.keyboard.press("Escape");
     await compose.waitFor({ state: "hidden" });
