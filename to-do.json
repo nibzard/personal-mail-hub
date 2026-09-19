@@ -1427,7 +1427,7 @@
         "ingestion",
         "reliability"
       ],
-      "updated_at": "2026-09-19T21:10:16Z",
+      "updated_at": "2026-09-19T21:20:00Z",
       "files": [
         "packages/contracts/src/index.ts",
         "packages/ingestion/src/errors.ts",
