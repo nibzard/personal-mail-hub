@@ -1508,32 +1508,42 @@
         "api",
         "security"
       ],
-      "updated_at": "2026-09-19T22:04:06Z",
+      "updated_at": "2026-09-19T22:05:28Z",
       "files": [
         "apps/api/src/app.ts",
-        "apps/api/src/http-errors.ts",
         "apps/api/src/auth-routes.ts",
         "apps/api/src/compose-routes.ts",
         "apps/api/src/health-routes.ts",
+        "apps/api/src/http-errors.ts",
         "apps/api/test",
+        "apps/api/test/compose-routes.test.ts",
+        "apps/api/test/health-routes.test.ts",
+        "apps/api/test/settings-routes.test.ts",
+        "apps/web/e2e/fixture-data.mjs",
         "packages/accounts/src/service.ts",
+        "packages/accounts/test/service.test.ts",
+        "packages/auth/src/errors.ts",
         "packages/auth/src/state.ts",
+        "packages/auth/test/service.test.ts",
+        "packages/compose/src/index.ts",
         "packages/compose/src/validation.ts",
         "packages/contracts/src/index.ts",
-        "packages/observability/src/health.ts"
+        "packages/observability/src/health.ts",
+        "packages/observability/test/health.test.ts",
+        "to-do.json"
       ]
     },
     {
       "id": "T046",
       "title": "Make the release gate trust exit codes and keep its logs",
       "priority": 2,
-      "status": "todo",
-      "details": "The integration-tests and action-permissions checks decide only from the parsed vitest summary and never check the npm exit code (scripts/release-gate.mjs:200-215), so a run that prints a clean summary but exits non-zero (a global-teardown crash, an out-of-memory kill with buffered output, a failing posttest step) records PASS and the gate exits 0. The per-workspace test runner also uses the if-present flag, so a workspace with a missing or mistyped test script contributes no summary and passes silently. The log directory is deleted even when the verdict is FAIL (line 263), defeating the printed paths. Check the exit code of every spawned command, fail a check whose workspaces produced no summary, and keep the log directory on failure.",
+      "status": "done",
+      "details": "The integration-tests and action-permissions checks decide only from the parsed vitest summary and never check the npm exit code (scripts/release-gate.mjs:200-215), so a run that prints a clean summary but exits non-zero (a global-teardown crash, an out-of-memory kill with buffered output, a failing posttest step) records PASS and the gate exits 0. The per-workspace test runner also uses the if-present flag, so a workspace with a missing or mistyped test script contributes no summary and passes silently. The log directory is deleted even when the verdict is FAIL (line 263), defeating the printed paths. Check the exit code of every spawned command, fail a check whose workspaces produced no summary, and keep the log directory on failure. Done 2026-09-19: testCommandVerdict weighs the npm exit status above the parsed summary for the integration-tests and action-permissions checks; the expected summary count comes from npm query --json .workspace (check 3) and the named-suite list (check 4), so a silently skipped workspace fails; the log directory survives a FAIL verdict. Verified with a shimmed npm for each failure path and a full run against a scratch PostgreSQL database (PASS, 746 tests, logs removed).",
       "tags": [
         "testing",
         "release"
       ],
-      "updated_at": "2026-09-19T17:39:46Z",
+      "updated_at": "2026-09-19T22:15:59Z",
       "files": [
         "scripts/release-gate.mjs"
       ]

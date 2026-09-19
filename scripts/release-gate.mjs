@@ -24,10 +24,18 @@
  * 6. interface-checks   The `apps/web` accessibility and visual runner
  *                       (`test:a11y` or `a11y` script) once T033 ships one.
  *
+ * Checks 3 and 4 judge a test run by its npm exit status and by the count of
+ * per-run vitest summaries, never by the summary text alone: a run that
+ * prints a clean summary but exits non-zero (a global-teardown crash, an
+ * out-of-memory kill, a failing posttest step) fails, and so does a
+ * workspace that the `--if-present` fan-out skips without a summary.
+ *
  * Checks 5 and 6 are deferred until their runner exists, because no interface
  * has shipped to validate. A deferred check never passes silently: the verdict
  * lists it, and `--strict` (the mode for cutting a release) fails on it.
- * Exit status: 0 when every applicable check passed, 1 otherwise.
+ * Exit status: 0 when every applicable check passed, 1 otherwise. The log
+ * directory is removed after a passing run and kept after a failing one, so
+ * the printed log paths stay inspectable.
  */
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -70,7 +78,8 @@ function record(name, status, note) {
 
 /**
  * Run a command, capture its output in a log file, and report the outcome.
- * The log path prints so a failed check can be inspected in full.
+ * The log path prints so a failed check can be inspected in full, and the
+ * log directory survives any FAIL verdict.
  */
 function run(name, command, args, options = {}) {
   const logPath = join(logDir, `${name.replace(/[^a-z0-9-]/g, "-")}.log`);
@@ -88,18 +97,29 @@ function run(name, command, args, options = {}) {
   const seconds = ((Date.now() - started) / 1000).toFixed(1);
   const ok = child.status === 0;
   console.log(`  ${ok ? "command finished" : "command failed"} in ${seconds}s; output in ${logPath}`);
-  return { ok, stdout: child.stdout ?? "", stderr: child.stderr ?? "", logPath };
+  return { ok, status: child.status, stdout: child.stdout ?? "", stderr: child.stderr ?? "", logPath };
 }
 
 /**
  * Summarize a vitest run. Every `Test Files` and `Tests` summary line must
  * report zero failed and zero skipped: a skipped line is how a silently
- * skipped PostgreSQL suite looks when `TEST_DATABASE_URL` is missing.
+ * skipped PostgreSQL suite looks when `TEST_DATABASE_URL` is missing. Every
+ * vitest invocation prints exactly one `Test Files` line, so the count of
+ * those lines is the count of runs that reported, and it must equal
+ * expectedRuns: the per-workspace test fan-out runs with `--if-present`, so
+ * a workspace with a missing or mistyped test script contributes no summary
+ * and npm still exits 0.
  */
-function parseVitestSummary(output, label) {
+function parseVitestSummary(output, label, expectedRuns) {
   const lines = output.split(/\r?\n/).filter((line) => /^\s*(Test Files|Tests)\s+\d/.test(line));
-  if (lines.length === 0) {
-    return { ok: false, note: `${label}: no vitest summary found` };
+  const runs = lines.filter((line) => /^\s*Test Files\s+\d/.test(line)).length;
+  if (runs !== expectedRuns) {
+    return {
+      ok: false,
+      note:
+        `${label}: found ${runs} of ${expectedRuns} expected vitest summaries — ` +
+        "a test script is missing, mistyped, or crashed before reporting",
+    };
   }
   let failed = 0;
   let skipped = 0;
@@ -118,6 +138,21 @@ function parseVitestSummary(output, label) {
     };
   }
   return { ok: true, note: `${label}: ${testsPassed} tests passed, 0 failed, 0 skipped` };
+}
+
+/**
+ * Weigh a test command's exit status against its parsed vitest summary. The
+ * summary alone never clears a run: a global-teardown crash, an out-of-memory
+ * kill with buffered output, or a failing posttest step can leave output that
+ * parses as a pass while npm exits non-zero. The exit code wins.
+ */
+function testCommandVerdict(command, parsed) {
+  if (command.ok) {
+    return parsed;
+  }
+  const exit = command.status === null ? "the command never started" : `npm exited ${command.status}`;
+  const summary = parsed.ok ? "the printed summary looks clean, but the exit code decides" : parsed.note;
+  return { ok: false, note: `${exit} — ${summary}` };
 }
 
 function countUnit(line, unit) {
@@ -197,21 +232,54 @@ function countUnit(line, unit) {
 
 // 3. Integration tests across every workspace, with nothing skipped.
 {
-  const tests = run("integration-tests", "npm", ["test"]);
-  const parsed = parseVitestSummary(tests.stdout, "workspace suite");
-  record("integration-tests", parsed.ok ? "pass" : "fail", parsed.note);
+  // The expected summary count comes from the workspace inventory, because
+  // the root `test` script fans out with `--if-present`: a workspace whose
+  // test script is missing or mistyped runs nothing, prints no summary, and
+  // leaves npm's exit status at 0. An inventory that cannot be read fails
+  // the check rather than lowering the expected count.
+  const inventory = run("test-inventory", "npm", ["query", "--json", ".workspace"]);
+  let expectedRuns = null;
+  let inventoryNote = "";
+  try {
+    if (!inventory.ok) {
+      inventoryNote = `npm query exited with status ${inventory.status}`;
+    } else {
+      const withTests = JSON.parse(inventory.stdout).filter(
+        (node) => typeof node.scripts?.test === "string",
+      );
+      if (withTests.length === 0) {
+        inventoryNote = "no workspace declares a test script";
+      } else {
+        expectedRuns = withTests.length;
+      }
+    }
+  } catch (error) {
+    inventoryNote = `npm query output is not workspace JSON (${error instanceof Error ? error.message : String(error)})`;
+  }
+  if (expectedRuns === null) {
+    record("integration-tests", "fail", `cannot count the workspace test scripts — ${inventoryNote}`);
+  } else {
+    const tests = run("integration-tests", "npm", ["test"]);
+    const parsed = testCommandVerdict(
+      tests,
+      parseVitestSummary(tests.stdout, "workspace suite", expectedRuns),
+    );
+    record("integration-tests", parsed.ok ? "pass" : "fail", parsed.note);
+  }
 }
 
 // 4. Action-service permission suites.
 {
-  const permissions = run("action-permissions", "npm", [
-    "test",
-    "--workspace",
-    "@mail-hub/actions",
-    "--workspace",
-    "@mail-hub/api",
-  ]);
-  const parsed = parseVitestSummary(permissions.stdout, "actions and api suites");
+  const permissionSuites = ["@mail-hub/actions", "@mail-hub/api"];
+  const permissions = run(
+    "action-permissions",
+    "npm",
+    ["test", ...permissionSuites.flatMap((name) => ["--workspace", name])],
+  );
+  const parsed = testCommandVerdict(
+    permissions,
+    parseVitestSummary(permissions.stdout, "actions and api suites", permissionSuites.length),
+  );
   record("action-permissions", parsed.ok ? "pass" : "fail", parsed.note);
 }
 
@@ -247,6 +315,7 @@ const webPackage = JSON.parse(await readFile(join(repoRoot, "apps", "web", "pack
 // Verdict.
 const failed = results.filter((result) => result.status === "fail");
 const deferred = results.filter((result) => result.status === "defer");
+const gateFailed = failed.length > 0 || (strict && deferred.length > 0);
 console.log("");
 if (failed.length > 0) {
   console.log(`Verdict: FAIL — ${failed.map((result) => result.name).join(", ")} did not pass.`);
@@ -260,8 +329,13 @@ if (failed.length > 0) {
 } else {
   console.log("Verdict: PASS — every check ran and passed.");
 }
-await rm(logDir, { recursive: true, force: true }).catch(() => undefined);
-process.exit(failed.length > 0 || (strict && deferred.length > 0) ? 1 : 0);
+if (gateFailed) {
+  // The log paths printed above must survive the failure they explain.
+  console.log(`Logs kept for inspection: ${logDir}`);
+} else {
+  await rm(logDir, { recursive: true, force: true }).catch(() => undefined);
+}
+process.exit(gateFailed ? 1 : 0);
 
 /**
  * Drop the scratch database, retrying while a transient backend holds it.
