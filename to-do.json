@@ -590,7 +590,7 @@
       "title": "Implement immutable outbound snapshots and SMTP sending",
       "priority": 1,
       "status": "done",
-      "details": "Generate and store exact MIME bytes, validate queued requests, enforce one submission, preserve recipient-level SMTP results, and create local sent records after acceptance. Done: new @mail-hub/send package (snapshot freeze, MIME composition, Markdown render, atomic claim, outcome classification, local sent record), submitSmtpMessage in @mail-hub/transport, POST /drafts/:id/send and GET /outbound/:id routes, worker send.cycle sweep, and Postgres-backed tests.",
+      "details": "Generate and store exact MIME bytes, validate queued requests, enforce one submission, preserve recipient-level SMTP results, and create local sent records after acceptance. Done: new @mail-hub/send package (snapshot freeze, MIME composition, Markdown render, atomic claim, outcome classification, local sent record), submitSmtpMessage in @mail-hub/transport, POST /drafts/:id/send and GET /outbound/:id routes, worker send.cycle sweep, and Postgres-backed tests. Verified 2026-09-19 after commit 29b4287: full workspace suite with the PostgreSQL test database passes 380 tests across 12 workspaces with no skipped suites; TypeScript checks pass in every workspace; worker send.cycle sweep and API route wiring confirmed.",
       "depends_on": [
         "T003",
         "T007",
@@ -601,7 +601,7 @@
         "send",
         "safety"
       ],
-      "updated_at": "2026-09-19T05:50:08Z",
+      "updated_at": "2026-09-19T05:55:33Z",
       "files": [
         "packages/send/src/service.ts",
         "packages/send/src/mime.ts",
