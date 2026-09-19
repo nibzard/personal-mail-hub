@@ -279,6 +279,11 @@ export class ImapMailboxSession implements MailboxSession, WritableActionMailbox
         uid: appended.uid ?? null,
       };
     } catch (cause) {
+      if (taggedNo(cause)) {
+        // A tagged `NO` is the server stating it stored nothing: a definitive
+        // refusal, not a lost response (SPEC F7 step 5).
+        return { result: "rejected" };
+      }
       return uncertain(describe(cause));
     }
   }
@@ -320,6 +325,15 @@ function toBuffer(bytes: Uint8Array): Buffer {
 
 function uncertain(reason: string): { result: "uncertain"; reason: string } {
   return { result: "uncertain", reason };
+}
+
+/**
+ * Whether one thrown ImapFlow error carries a tagged `NO`, the server's own
+ * definitive refusal of the command. Everything else — timeouts, resets, lost
+ * connections — stays uncertain.
+ */
+function taggedNo(cause: unknown): boolean {
+  return (cause as { responseStatus?: unknown } | null | undefined)?.responseStatus === "NO";
 }
 
 /** An internal date the server reported as a string instead of a Date. */

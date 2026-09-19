@@ -247,7 +247,36 @@ export class OutboundService {
 
     // Everything heavy — upload verification, rendering, composition, and the
     // durable write — happens before the transaction opens. The transaction
-    // re-checks the draft under its lock, so nothing mutable slips in.
+    // re-checks the draft under its lock, so nothing mutable slips in. A
+    // concurrent request with this key that created the snapshot first is
+    // answered by the shared idempotency rules below, whatever stage of the
+    // freeze the loser reached (SPEC F7 step 3).
+    try {
+      return {
+        created: true,
+        outbound: await this.freezeSnapshot(input, generation, requestHash),
+      };
+    } catch (cause) {
+      if (isUniqueViolation(cause) || isLostLockRace(cause)) {
+        const raced = await this.findByIdempotencyKey(input.idempotencyKey);
+        if (raced !== null) {
+          return { created: false, outbound: await this.existingSnapshot(raced, requestHash) };
+        }
+      }
+      throw cause;
+    }
+  }
+
+  /**
+   * Compose and durably store one snapshot, then commit it with its draft
+   * lock in one transaction. Only the request that wins the draft lock gets
+   * here; every later caller of `queueSend` reads the stored row instead.
+   */
+  private async freezeSnapshot(
+    input: QueueSendInput,
+    generation: string,
+    requestHash: string,
+  ): Promise<OutboundRecord> {
     const draft = await this.loadEditableDraft(input.draftId);
     if (draft.revision !== input.baseRevision) {
       throw new SendError(
@@ -299,85 +328,70 @@ export class OutboundService {
       );
     }
 
-    try {
-      return {
-        created: true,
-        outbound: await this.db.transaction(async (tx) => {
-          const locked = await lockDraftRow(tx, draft.id);
-          if (locked.deletedAt !== null) {
-            throw new SendError("not_found", "No draft exists with this identifier.");
-          }
-          if (locked.revision !== input.baseRevision) {
-            throw new SendError(
-              "draft_stale",
-              `This draft changed elsewhere; the server holds revision ${locked.revision}.`,
-              locked.revision,
-            );
-          }
-          if (locked.lockedBySend !== null) {
-            throw new SendError("draft_locked", "This draft is already locked by a queued send.");
-          }
-
-          const inserted = await tx
-            .insert(outboundMessages)
-            .values({
-              id: outboundId,
-              accountId: draft.accountId,
-              recoveryGeneration: generation,
-              idempotencyKey: input.idempotencyKey,
-              requestHash,
-              draftId: draft.id,
-              draftRevision: draft.revision,
-              identity: { address: draft.identity.address, name: draft.identity.name },
-              envelopeSender: draft.identity.address,
-              envelopeRecipients: envelope,
-              status: "queued",
-              threadId: draft.threadId,
-              replyParentId: draft.replyParentId,
-              inReplyTo: draft.inReplyTo,
-              referenceIds: draft.referenceIds,
-              recipients: draft.recipients,
-              subject: draft.subject,
-              markdownSource: draft.markdown,
-              html,
-              rfcMessageId,
-              mimeStorageKey: storageKey,
-              mimeSha256,
-            })
-            .returning();
-          const row = inserted[0]!;
-          if (attachments.length > 0) {
-            await tx.insert(outboundUploads).values(
-              attachments.map((attachment) => ({
-                outboundId,
-                uploadId: attachment.upload.id,
-                ordinal: attachment.ordinal,
-              })),
-            );
-          }
-          await lockDraftForSend(tx, draft.id, draft.revision, outboundId);
-          await recordSendEvent(tx, "user", SEND_QUEUED_EVENT, outboundId, {
-            accountId: draft.accountId,
-            draftId: draft.id,
-            draftRevision: draft.revision,
-            recipients: envelope.length,
-            attachments: attachments.length,
-            rfcMessageId,
-          });
-          return toOutboundRecord(row);
-        }),
-      };
-    } catch (cause) {
-      // A concurrent request with the same key inserted first; the shared
-      // idempotency rules answer instead of surfacing the race.
-      if (isUniqueViolation(cause)) {
-        const raced = await this.findByIdempotencyKey(input.idempotencyKey);
-        if (raced !== null) {
-          return { created: false, outbound: await this.existingSnapshot(raced, requestHash) };
-        }
+    return this.db.transaction(async (tx) => {
+      const locked = await lockDraftRow(tx, draft.id);
+      if (locked.deletedAt !== null) {
+        throw new SendError("not_found", "No draft exists with this identifier.");
       }
-      throw cause;
-    }
+      if (locked.revision !== input.baseRevision) {
+        throw new SendError(
+          "draft_stale",
+          `This draft changed elsewhere; the server holds revision ${locked.revision}.`,
+          locked.revision,
+        );
+      }
+      if (locked.lockedBySend !== null) {
+        throw new SendError("draft_locked", "This draft is already locked by a queued send.");
+      }
+
+      const inserted = await tx
+        .insert(outboundMessages)
+        .values({
+          id: outboundId,
+          accountId: draft.accountId,
+          recoveryGeneration: generation,
+          idempotencyKey: input.idempotencyKey,
+          requestHash,
+          draftId: draft.id,
+          draftRevision: draft.revision,
+          identity: { address: draft.identity.address, name: draft.identity.name },
+          envelopeSender: draft.identity.address,
+          envelopeRecipients: envelope,
+          status: "queued",
+          threadId: draft.threadId,
+          replyParentId: draft.replyParentId,
+          inReplyTo: draft.inReplyTo,
+          referenceIds: draft.referenceIds,
+          recipients: draft.recipients,
+          subject: draft.subject,
+          markdownSource: draft.markdown,
+          html,
+          rfcMessageId,
+          mimeStorageKey: storageKey,
+          mimeSha256,
+        })
+        .returning();
+      const row = inserted[0]!;
+      if (attachments.length > 0) {
+        await tx.insert(outboundUploads).values(
+          attachments.map((attachment) => ({
+            outboundId,
+            uploadId: attachment.upload.id,
+            ordinal: attachment.ordinal,
+          })),
+        );
+      }
+      await lockDraftForSend(tx, draft.id, draft.revision, outboundId);
+      await recordSendEvent(tx, "user", SEND_QUEUED_EVENT, outboundId, {
+        accountId: draft.accountId,
+        draftId: draft.id,
+        draftRevision: draft.revision,
+        recipients: envelope.length,
+        attachments: attachments.length,
+        rfcMessageId,
+      });
+      return toOutboundRecord(row);
+    });
   }
 
   /** Read one outbound snapshot. */
@@ -1500,4 +1514,13 @@ function isUniqueViolation(cause: unknown): boolean {
     "code" in cause &&
     (cause as { code?: unknown }).code === "23505"
   );
+}
+
+/**
+ * The draft lock left with another request, the shape of a queue race the
+ * idempotency key must settle: when the winner carried the same key, the
+ * loser replays the stored snapshot instead of surfacing the lock.
+ */
+function isLostLockRace(cause: unknown): boolean {
+  return cause instanceof SendError && cause.code === "draft_locked";
 }

@@ -820,7 +820,7 @@
         "security",
         "recovery"
       ],
-      "updated_at": "2026-09-19T07:58:06Z",
+      "updated_at": "2026-09-19T07:58:34Z",
       "files": [
         "apps/api/package.json",
         "apps/api/test/restore-acceptance.test.ts",
@@ -833,8 +833,8 @@
       "id": "T032",
       "title": "Add compose and send safety acceptance tests",
       "priority": 1,
-      "status": "todo",
-      "details": "Test reply recipients and headers, snapshot immutability, SMTP outcomes, partial acceptance, append recovery, sent import, duplicate prevention, and restore behavior.",
+      "status": "done",
+      "details": "Done in packages/send/test/acceptance.test.ts: 17 scenarios over real PostgreSQL, the filesystem store, the scripted SMTP server, and the scripted IMAP harness. Covers reply recipients and headers on the wire (Reply-To, reply-all dedupe, own sent message, grouped copies, chain references), snapshot immutability after identity and thread changes, duplicate prevention for repeated and concurrent requests, SMTP outcomes (definitive refusal, partial acceptance, lost final response, cut-off transfer, abandoned claim), Sent append recovery (refused, retried, lost response), Sent import by hash, evidence-based reconciliation of unknown sends, and the restore hold of a queued send across generations. Two product gaps the suite surfaced are fixed: concurrent same-key queueSend requests now replay the stored snapshot instead of surfacing the draft lock, and a tagged NO on the Sent append is classified as a definitive refusal.",
       "depends_on": [
         "T020",
         "T021",
@@ -844,6 +844,14 @@
       "tags": [
         "testing",
         "send"
+      ],
+      "updated_at": "2026-09-19T08:26:29Z",
+      "files": [
+        "packages/send/test/acceptance.test.ts",
+        "packages/send/src/service.ts",
+        "packages/send/package.json",
+        "packages/sync/src/imap-session.ts",
+        "package-lock.json"
       ]
     },
     {
