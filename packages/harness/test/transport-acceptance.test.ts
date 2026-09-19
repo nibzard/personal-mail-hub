@@ -237,7 +237,8 @@ describe("the SMTP connection test on the harness server", () => {
     expect(report.stage).toBe("tls");
     expect(report.error?.code).toBe("tls_invalid");
     expect(authLines(server)).toHaveLength(0);
-    expect(server.sawText(PASSWORD)).toBe(false);
+    // Decoded payloads included: base64 is not protection on a plaintext link.
+    expect(server.sawTextInPlaintext(PASSWORD)).toBe(false);
     expect(server.sawMailSubmission()).toBe(false);
   });
 

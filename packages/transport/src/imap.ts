@@ -25,9 +25,10 @@ export interface TransportTestContext {
   username: string;
   password: string;
   /**
-   * PEM certificate authorities to trust in addition to the system store.
-   * Tests inject their trusted test authority here; nothing in production
-   * may use it to weaken validation (SPEC section 12).
+   * PEM certificate authorities the connection trusts instead of the system
+   * root store: Node's `ca` option replaces the defaults, it does not extend
+   * them. Tests inject their trusted test authority here; nothing in
+   * production may use it to weaken validation (SPEC section 12).
    */
   trustedCaPem?: string[];
   timeouts?: Partial<ConnectionTimeouts>;

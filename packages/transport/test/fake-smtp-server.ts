@@ -40,25 +40,35 @@ export interface FakeSmtpServerOptions {
   auth: { user: string; pass: string } | null;
   /** Submission behavior. Without it the server refuses mail commands. */
   submission?: FakeSmtpSubmissionScript;
+  /** Advertise `AUTH` in the EHLO response (default: true). */
+  advertiseAuth?: boolean;
 }
 
 /** One recorded command line with the phase it arrived in. */
 export interface RecordedCommand {
   phase: "plaintext" | "tls";
   line: string;
+  /**
+   * The decoded SASL payload when the line carried base64 credentials.
+   * `AUTH LOGIN` and `AUTH PLAIN` move the password encoded, so an assertion
+   * on the raw line alone proves nothing about what a tap could read.
+   */
+  decoded?: string;
 }
+
+/**
+ * The longest line the server tolerates, in bytes. A client that never sends
+ * a line terminator must not grow the buffer without end, so a longer line or
+ * an unterminated remainder destroys the connection.
+ */
+const MAX_LINE_BYTES = 1_048_576;
 
 export class FakeSmtpServer {
   /** The listening port, set once `start` resolves. */
   declare readonly port: number;
   private readonly options: FakeSmtpServerOptions;
-  private readonly secureContext: tls.SecureContext;
   private readonly server: net.Server;
   private readonly sockets = new Set<net.Socket>();
-  private buffer = "";
-  private upgraded = false;
-  private loginStage: "user" | "pass" | null = null;
-  private inDataMode = false;
   private closed = false;
 
   /** Every command line the server received, in order. */
@@ -76,10 +86,6 @@ export class FakeSmtpServer {
   private constructor(server: net.Server, options: FakeSmtpServerOptions) {
     this.server = server;
     this.options = options;
-    this.secureContext = tls.createSecureContext({
-      key: options.certificate.keyPem,
-      cert: options.certificate.certPem,
-    });
   }
 
   /** Start the server on an ephemeral loopback port. */
@@ -88,12 +94,12 @@ export class FakeSmtpServer {
       options.mode === "implicit"
         ? tls.createServer({ key: options.certificate.keyPem, cert: options.certificate.certPem })
         : net.createServer();
+    const fake = new FakeSmtpServer(server, options);
     if (options.mode === "implicit") {
       (server as tls.Server).on("secureConnection", (socket) => fake.onConnection(socket, "tls"));
     } else {
       server.on("connection", (socket) => fake.onConnection(socket, "plaintext"));
     }
-    const fake = new FakeSmtpServer(server, options);
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     Object.defineProperty(fake, "port", { value: (server.address() as { port: number }).port });
     return fake;
@@ -131,9 +137,16 @@ export class FakeSmtpServer {
     return this.commands.some(({ phase, line }) => phase === "tls" && /^AUTH\b/i.test(line));
   }
 
-  /** True when any recorded line contains the given text. */
+  /** True when any recorded line contains the given text, decoded payloads included. */
   sawText(text: string): boolean {
-    return this.commands.some(({ line }) => line.includes(text));
+    return this.commands.some(({ line, decoded }) => line.includes(text) || (decoded?.includes(text) ?? false));
+  }
+
+  /** True when the text appeared in a plaintext-phase line, decoded payloads included. */
+  sawTextInPlaintext(text: string): boolean {
+    return this.commands.some(
+      ({ phase, line, decoded }) => phase === "plaintext" && (line.includes(text) || (decoded?.includes(text) ?? false)),
+    );
   }
 
   /**
@@ -159,110 +172,160 @@ export class FakeSmtpServer {
     socket.on("close", () => {
       this.sockets.delete(socket);
     });
-    socket.on("data", (chunk: Buffer) => {
-      this.receive(socket, chunk, phase === "tls" || this.upgraded);
+    // One session per connection: the buffer, the upgrade state, and the
+    // login stage never cross connections, so a second connection to an
+    // upgraded server is still labeled plaintext until it upgrades itself.
+    new FakeSmtpSession(socket, phase, this.options, this).start();
+  }
+}
+
+/** One SMTP conversation over one socket. */
+class FakeSmtpSession {
+  private buffer = "";
+  /** The socket responses go to: the raw socket, or its TLS wrapper. */
+  private transport: net.Socket;
+  private upgraded: boolean;
+  private loginStage: "user" | "pass" | null = null;
+  private inDataMode = false;
+  private readonly secureContext: tls.SecureContext;
+
+  constructor(
+    private readonly socket: net.Socket,
+    phase: "plaintext" | "tls",
+    private readonly options: FakeSmtpServerOptions,
+    private readonly owner: FakeSmtpServer,
+  ) {
+    this.upgraded = phase === "tls";
+    this.transport = socket;
+    this.secureContext = tls.createSecureContext({
+      key: options.certificate.keyPem,
+      cert: options.certificate.certPem,
     });
-    socket.write("220 fake.example ESMTP Fake SMTP ready\r\n");
+  }
+
+  start(): void {
+    this.socket.on("data", (chunk: Buffer) => this.receive(chunk));
+    this.transport.write("220 fake.example ESMTP Fake SMTP ready\r\n");
   }
 
   /** Buffer one chunk and dispatch the complete lines inside it. */
-  private receive(socket: net.Socket, chunk: Buffer, secure: boolean): void {
+  private receive(chunk: Buffer): void {
     this.buffer += chunk.toString("binary");
     let index = this.buffer.indexOf("\r\n");
     while (index !== -1) {
       const line = this.buffer.slice(0, index);
       this.buffer = this.buffer.slice(index + 2);
-      this.handleLine(socket, line, secure);
+      if (line.length > MAX_LINE_BYTES) {
+        this.socket.destroy();
+        return;
+      }
+      this.handleLine(line);
       index = this.buffer.indexOf("\r\n");
+    }
+    if (this.buffer.length > MAX_LINE_BYTES) {
+      this.socket.destroy();
     }
   }
 
-  private handleLine(socket: net.Socket, line: string, secure: boolean): void {
+  private handleLine(line: string): void {
     if (this.inDataMode) {
-      this.receiveDataLine(socket, line);
+      this.receiveDataLine(line);
       return;
     }
 
-    this.commands.push({ phase: secure ? "tls" : "plaintext", line });
+    const decoded = decodedAuthPayload(line, this.loginStage);
+    this.owner.commands.push({
+      phase: this.upgraded ? "tls" : "plaintext",
+      line,
+      ...(decoded === null ? {} : { decoded }),
+    });
     const command = line.toUpperCase();
 
     if (command.startsWith("MAIL FROM")) {
       const script = this.options.submission;
       if (script === undefined) {
-        socket.write("503 5.5.1 This server accepts no mail\r\n");
+        this.transport.write("503 5.5.1 This server accepts no mail\r\n");
         return;
       }
       if (script.rejectSender) {
-        socket.write("550 5.7.1 Sender rejected\r\n");
+        this.transport.write("550 5.7.1 Sender rejected\r\n");
         return;
       }
-      this.mailFrom = envelopeAddress(line);
-      socket.write("250 2.1.0 Ok\r\n");
+      this.owner.mailFrom = envelopeAddress(line);
+      this.transport.write("250 2.1.0 Ok\r\n");
       return;
     }
 
     if (command.startsWith("RCPT TO")) {
       const script = this.options.submission;
       if (script === undefined) {
-        socket.write("503 5.5.1 This server accepts no mail\r\n");
+        this.transport.write("503 5.5.1 This server accepts no mail\r\n");
         return;
       }
       const address = envelopeAddress(line);
       if (script.rejectedRecipients?.includes(address) === true) {
-        socket.write(`550 5.1.1 <${address}> User unknown\r\n`);
+        this.transport.write(`550 5.1.1 <${address}> User unknown\r\n`);
         return;
       }
-      this.acceptedRecipients.push(address);
-      socket.write("250 2.1.5 Ok\r\n");
+      this.owner.acceptedRecipients.push(address);
+      this.transport.write("250 2.1.5 Ok\r\n");
       return;
     }
 
     if (command === "DATA") {
       const script = this.options.submission;
       if (script === undefined) {
-        socket.write("503 5.5.1 This server accepts no mail\r\n");
+        this.transport.write("503 5.5.1 This server accepts no mail\r\n");
         return;
       }
       this.inDataMode = true;
-      this.dataLines = [];
-      socket.write("354 End data with <CR><LF>.<CR><LF>\r\n");
+      this.owner.dataLines = [];
+      this.transport.write("354 End data with <CR><LF>.<CR><LF>\r\n");
       return;
     }
 
     if (command === "STARTTLS") {
-      if (secure) {
-        socket.write("503 5.5.1 Already running TLS\r\n");
+      if (this.upgraded) {
+        this.transport.write("503 5.5.1 Already running TLS\r\n");
         return;
       }
       // A server that does not offer STARTTLS rejects the command outright.
       // The client cannot tell a missing offer from a refused upgrade until it
       // tries, and `requireTLS` clients do try.
       if (this.options.mode !== "starttls") {
-        socket.write("454 4.7.0 TLS not available\r\n");
+        this.transport.write("454 4.7.0 TLS not available\r\n");
         return;
       }
-      socket.write("220 2.0.0 Ready to start TLS\r\n");
-      this.upgrade(socket);
+      this.transport.write("220 2.0.0 Ready to start TLS\r\n");
+      this.upgrade();
       return;
     }
 
     if (command.startsWith("EHLO")) {
-      socket.write("250-fake.example greets you\r\n");
-      socket.write("250-PIPELINING\r\n");
-      socket.write("250-SIZE 35882577\r\n");
-      socket.write("250-AUTH PLAIN LOGIN\r\n");
-      socket.write(!secure && this.options.mode === "starttls" ? "250 STARTTLS\r\n" : "250 OK\r\n");
+      this.transport.write("250-fake.example greets you\r\n");
+      this.transport.write("250-PIPELINING\r\n");
+      this.transport.write("250-SIZE 35882577\r\n");
+      if (this.options.advertiseAuth !== false) {
+        this.transport.write("250-AUTH PLAIN LOGIN\r\n");
+      }
+      this.transport.write(!this.upgraded && this.options.mode === "starttls" ? "250 STARTTLS\r\n" : "250 OK\r\n");
       return;
     }
 
     if (command.startsWith("HELO")) {
-      socket.write("250 fake.example\r\n");
+      this.transport.write("250 fake.example\r\n");
       return;
     }
 
     if (command.startsWith("AUTH PLAIN")) {
+      if (this.options.advertiseAuth === false) {
+        // A server that advertised no AUTH refuses the command, the way a
+        // real one answers a capability the session never offered.
+        this.transport.write("502 5.5.1 Authentication not advertised\r\n");
+        return;
+      }
       const payload = line.slice("AUTH PLAIN".length).trim();
-      socket.write(
+      this.transport.write(
         this.checkPlainAuth(payload)
           ? "235 2.7.0 Authentication successful\r\n"
           : "535 5.7.8 Authentication credentials invalid\r\n",
@@ -271,8 +334,12 @@ export class FakeSmtpServer {
     }
 
     if (command === "AUTH LOGIN") {
+      if (this.options.advertiseAuth === false) {
+        this.transport.write("502 5.5.1 Authentication not advertised\r\n");
+        return;
+      }
       this.loginStage = "user";
-      socket.write("334 VXNlcm5hbWU6\r\n");
+      this.transport.write("334 VXNlcm5hbWU6\r\n");
       return;
     }
 
@@ -280,11 +347,11 @@ export class FakeSmtpServer {
     if (this.loginStage !== null && /^[A-Za-z0-9+/=]+$/.test(line)) {
       if (this.loginStage === "user") {
         this.loginStage = "pass";
-        socket.write("334 UGFzc3dvcmQ6\r\n");
+        this.transport.write("334 UGFzc3dvcmQ6\r\n");
         return;
       }
       const pass = Buffer.from(line, "base64").toString("utf8");
-      socket.write(
+      this.transport.write(
         this.options.auth !== null && pass === this.options.auth.pass
           ? "235 2.7.0 Authentication successful\r\n"
           : "535 5.7.8 Authentication credentials invalid\r\n",
@@ -294,28 +361,28 @@ export class FakeSmtpServer {
     }
 
     if (command === "QUIT") {
-      socket.write("221 2.0.0 Bye\r\n");
-      socket.end();
+      this.transport.write("221 2.0.0 Bye\r\n");
+      this.transport.end();
       return;
     }
 
-    socket.write("502 5.5.1 Command not implemented\r\n");
+    this.transport.write("502 5.5.1 Command not implemented\r\n");
   }
 
   /** Collect one message-data line; the terminating dot ends the transfer. */
-  private receiveDataLine(socket: net.Socket, line: string): void {
+  private receiveDataLine(line: string): void {
     if (line !== ".") {
-      this.dataLines.push(line);
+      this.owner.dataLines.push(line);
       return;
     }
     this.inDataMode = false;
     const script = this.options.submission;
     if (script?.dropAfterData === true) {
       // The final response is lost; the client cannot know the outcome.
-      socket.destroy();
+      this.transport.destroy();
       return;
     }
-    socket.write(`${script?.finalResponse ?? "250 2.0.0 Ok: queued"}\r\n`);
+    this.transport.write(`${script?.finalResponse ?? "250 2.0.0 Ok: queued"}\r\n`);
   }
 
   /** Validate one `AUTH PLAIN <base64>` payload against the accepted login. */
@@ -330,19 +397,31 @@ export class FakeSmtpServer {
   }
 
   /** Wrap the plaintext socket in TLS after the client's STARTTLS. */
-  private upgrade(socket: net.Socket): void {
-    socket.removeAllListeners("data");
-    socket.pause();
-    const secureSocket = new tls.TLSSocket(socket, { isServer: true, secureContext: this.secureContext });
+  private upgrade(): void {
+    this.socket.removeAllListeners("data");
+    this.socket.pause();
+    const secureSocket = new tls.TLSSocket(this.socket, { isServer: true, secureContext: this.secureContext });
     this.upgraded = true;
-    secureSocket.on("error", () => {
-      this.sockets.delete(socket);
-    });
-    secureSocket.on("data", (chunk: Buffer) => {
-      this.receive(secureSocket, chunk, true);
-    });
+    this.transport = secureSocket;
+    secureSocket.on("error", () => undefined);
+    secureSocket.on("data", (chunk: Buffer) => this.receive(chunk));
     secureSocket.resume();
   }
+}
+
+/**
+ * The decoded SASL payload of one authentication line: the NUL-separated
+ * PLAIN tuple, or the bare LOGIN credential the stage expects. Null for
+ * lines that carry none.
+ */
+function decodedAuthPayload(line: string, loginStage: "user" | "pass" | null): string | null {
+  if (/^AUTH PLAIN \S/i.test(line)) {
+    return Buffer.from(line.slice("AUTH PLAIN".length).trim(), "base64").toString("utf8");
+  }
+  if (loginStage !== null && /^[A-Za-z0-9+/=]+$/.test(line)) {
+    return Buffer.from(line, "base64").toString("utf8");
+  }
+  return null;
 }
 
 /** The bare address of one `MAIL FROM:<addr>` or `RCPT TO:<addr>` line. */

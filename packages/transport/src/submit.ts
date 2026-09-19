@@ -53,6 +53,10 @@ export async function submitSmtpMessage(request: SmtpSubmitRequest): Promise<Smt
     requireTLS: starttlsRequired,
     ignoreTLS: false,
     opportunisticTLS: false,
+    // Authentication is not optional here either: without this flag a server
+    // whose EHLO advertises no AUTH makes nodemailer submit silently
+    // unauthenticated (SPEC section 9).
+    forceAuth: true,
     auth: { user: request.username, pass: request.password },
     tls: verifiedTlsOptions(request.trustedCaPem),
     connectionTimeout: timeouts.connectMs,

@@ -1,3 +1,4 @@
+import tls from "node:tls";
 import { ImapFlow } from "imapflow";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { verifiedTlsOptions } from "@mail-hub/transport";
@@ -440,5 +441,38 @@ describe("scripted IMAP server", () => {
     } finally {
       await client.logout();
     }
+  });
+});
+
+describe("the scripted IMAP server's input bounds", () => {
+  /** One raw TLS connection, trusted the way the production clients trust. */
+  function rawConnect(server: ScriptedImapServer): Promise<tls.TLSSocket> {
+    return new Promise((resolve, reject) => {
+      const socket = tls.connect({ host: HOST, port: server.port, ...verifiedTlsOptions([authority.certPem]) });
+      // A real client reads the greeting; an unread peer obscures the close.
+      socket.on("data", () => undefined);
+      socket.once("secureConnect", () => resolve(socket));
+      socket.once("error", (error) => reject(error));
+    });
+  }
+
+  it("destroys the connection when a line grows past the bound", async () => {
+    const server = await startImap();
+    const socket = await rawConnect(server);
+    const closed = new Promise<void>((resolve) => socket.once("close", resolve));
+    // No line terminator: the unterminated remainder is what the bound stops.
+    socket.write(`a1 NOOP ${"x".repeat(1_048_577)}`);
+    await closed;
+    expect(server.commands).toHaveLength(0);
+  });
+
+  it("destroys the connection on an oversized literal claim", async () => {
+    const server = await startImap();
+    const socket = await rawConnect(server);
+    const closed = new Promise<void>((resolve) => socket.once("close", resolve));
+    // The claim alone crosses the bound; no literal bytes need to follow.
+    socket.write(`a1 APPEND "Sent" {67108865}\r\n`);
+    await closed;
+    expect(server.commands).toHaveLength(0);
   });
 });

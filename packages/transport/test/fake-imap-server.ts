@@ -38,14 +38,30 @@ export interface RecordedCommand {
   line: string;
 }
 
+/**
+ * The per-connection protocol state. The buffer and the authenticated flag
+ * belong to one connection: a second connection starts unauthenticated, with
+ * an empty buffer, whatever happened on the first (the session pattern the
+ * harness package uses).
+ */
+interface ConnectionState {
+  buffer: string;
+  authenticated: boolean;
+}
+
+/**
+ * The longest line the server tolerates, in bytes. A client that never sends
+ * a line terminator must not grow the buffer without end, so a longer line or
+ * an unterminated remainder destroys the connection.
+ */
+const MAX_LINE_BYTES = 1_048_576;
+
 export class FakeImapServer {
   /** The listening port, set once `start` resolves. */
   declare readonly port: number;
   private readonly server: tls.Server;
   private readonly sockets = new Set<tls.TLSSocket>();
   private readonly options: FakeImapServerOptions;
-  private buffer = "";
-  private authenticated = false;
   private closed = false;
 
   /** Every command line the server received, in order. */
@@ -103,6 +119,7 @@ export class FakeImapServer {
       return;
     }
     this.sockets.add(socket);
+    const state: ConnectionState = { buffer: "", authenticated: false };
     socket.on("error", () => {
       this.sockets.delete(socket);
     });
@@ -110,20 +127,27 @@ export class FakeImapServer {
       this.sockets.delete(socket);
     });
     socket.on("data", (chunk: Buffer) => {
-      this.buffer += chunk.toString("binary");
-      let index = this.buffer.indexOf("\r\n");
+      state.buffer += chunk.toString("binary");
+      let index = state.buffer.indexOf("\r\n");
       while (index !== -1) {
-        const line = this.buffer.slice(0, index);
-        this.buffer = this.buffer.slice(index + 2);
-        this.handleLine(socket, line);
-        index = this.buffer.indexOf("\r\n");
+        const line = state.buffer.slice(0, index);
+        state.buffer = state.buffer.slice(index + 2);
+        if (line.length > MAX_LINE_BYTES) {
+          socket.destroy();
+          return;
+        }
+        this.handleLine(socket, state, line);
+        index = state.buffer.indexOf("\r\n");
+      }
+      if (state.buffer.length > MAX_LINE_BYTES) {
+        socket.destroy();
       }
     });
     // The greeting carries the pre-authentication capabilities.
     socket.write(`* OK [CAPABILITY ${PREAUTH_CAPABILITIES}] Fake IMAP ready\r\n`);
   }
 
-  private handleLine(socket: tls.TLSSocket, line: string): void {
+  private handleLine(socket: tls.TLSSocket, state: ConnectionState, line: string): void {
     // Everything on this server arrives over TLS; the phase marker exists so
     // assertions read the same way as the SMTP suite's.
     this.commands.push({ phase: "tls", line });
@@ -135,13 +159,13 @@ export class FakeImapServer {
 
     switch (command.toUpperCase()) {
       case "CAPABILITY":
-        socket.write(`* CAPABILITY ${this.authenticated ? POSTAUTH_CAPABILITIES : PREAUTH_CAPABILITIES}\r\n`);
+        socket.write(`* CAPABILITY ${state.authenticated ? POSTAUTH_CAPABILITIES : PREAUTH_CAPABILITIES}\r\n`);
         socket.write(`${tag} OK CAPABILITY completed\r\n`);
         return;
       case "LOGIN": {
         const credentials = parseLoginArgs(rest);
         if (credentials !== null && this.accepts(credentials)) {
-          this.authenticated = true;
+          state.authenticated = true;
           socket.write(`${tag} OK [CAPABILITY ${POSTAUTH_CAPABILITIES}] Logged in\r\n`);
         } else {
           socket.write(`${tag} NO [AUTHENTICATIONFAILED] Invalid credentials\r\n`);

@@ -901,6 +901,20 @@ const SEARCH_FLAGS_EXPECTED: Record<string, boolean> = {
 };
 
 /**
+ * The longest line the reader tolerates, in bytes. A client that never sends
+ * a line terminator must not grow the buffer without end, so a longer line or
+ * an unterminated remainder destroys the connection.
+ */
+const MAX_LINE_BYTES = 1_048_576;
+
+/**
+ * The largest client-declared literal the reader accepts, in bytes. The SPEC
+ * maximum message size is 50 MiB, so the cap sits above every legitimate
+ * `APPEND`; a larger `{n}` claim destroys the connection.
+ */
+const MAX_LITERAL_BYTES = 64 * 1_048_576;
+
+/**
  * Reads command lines with client-to-server literals. An `{n}` marker at the
  * end of a line asks for a continuation; the reader answers it, collects the
  * exact byte count, and hands the dispatcher one complete command. The rest
@@ -943,12 +957,23 @@ class CommandReader {
       }
       const index = this.buffer.indexOf("\r\n");
       if (index === -1) {
+        if (this.buffer.length > MAX_LINE_BYTES) {
+          this.socket.destroy();
+        }
+        return;
+      }
+      if (index > MAX_LINE_BYTES) {
+        this.socket.destroy();
         return;
       }
       const line = this.buffer.subarray(0, index).toString("binary");
       this.buffer = this.buffer.subarray(index + 2);
       const parsed = tokenize(line);
       if (parsed.literalSize !== null) {
+        if (parsed.literalSize > MAX_LITERAL_BYTES) {
+          this.socket.destroy();
+          return;
+        }
         if (this.tokens.length === 0) {
           this.firstLine = line;
         }

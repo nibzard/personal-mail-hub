@@ -64,12 +64,20 @@ export interface ScriptedSmtpServerOptions {
   greeting?: string;
   /** Submission behavior. Without it the server refuses mail commands. */
   submission?: SmtpSubmissionScript;
+  /** Advertise `AUTH` in the EHLO response (default: true). */
+  advertiseAuth?: boolean;
 }
 
 /** One recorded command line with the phase it arrived in. */
 export interface RecordedSmtpCommand {
   phase: "plaintext" | "tls";
   line: string;
+  /**
+   * The decoded SASL payload when the line carried base64 credentials.
+   * `AUTH LOGIN` and `AUTH PLAIN` move the password encoded, so an assertion
+   * on the raw line alone proves nothing about what a tap could read.
+   */
+  decoded?: string;
 }
 
 /** One submission attempt, complete or not. */
@@ -86,6 +94,13 @@ export interface RecordedSubmission {
    */
   message: Buffer | null;
 }
+
+/**
+ * The longest line the server tolerates, in bytes. A client that never sends
+ * a line terminator must not grow the buffer without end, so a longer line or
+ * an unterminated remainder destroys the connection.
+ */
+const MAX_LINE_BYTES = 1_048_576;
 
 export class ScriptedSmtpServer {
   /** The listening port, set once `start` resolves. */
@@ -141,9 +156,16 @@ export class ScriptedSmtpServer {
     return this.submissions.filter((attempt) => attempt.message !== null);
   }
 
-  /** True when any recorded line contains the given text. */
+  /** True when any recorded line contains the given text, decoded payloads included. */
   sawText(text: string): boolean {
-    return this.commands.some(({ line }) => line.includes(text));
+    return this.commands.some(({ line, decoded }) => line.includes(text) || (decoded?.includes(text) ?? false));
+  }
+
+  /** True when the text appeared in a plaintext-phase line, decoded payloads included. */
+  sawTextInPlaintext(text: string): boolean {
+    return this.commands.some(
+      ({ phase, line, decoded }) => phase === "plaintext" && (line.includes(text) || (decoded?.includes(text) ?? false)),
+    );
   }
 
   /** True when the client attempted any mail submission. */
@@ -210,8 +232,15 @@ class SmtpSession {
     while (index !== -1) {
       const line = this.buffer.slice(0, index);
       this.buffer = this.buffer.slice(index + 2);
+      if (line.length > MAX_LINE_BYTES) {
+        this.socket.destroy();
+        return;
+      }
       this.handleLine(line);
       index = this.buffer.indexOf("\r\n");
+    }
+    if (this.buffer.length > MAX_LINE_BYTES) {
+      this.socket.destroy();
     }
   }
 
@@ -221,7 +250,12 @@ class SmtpSession {
       return;
     }
 
-    this.log.push({ phase: this.secure() ? "tls" : "plaintext", line });
+    const decoded = decodedAuthPayload(line, this.loginStage);
+    this.log.push({
+      phase: this.secure() ? "tls" : "plaintext",
+      line,
+      ...(decoded === null ? {} : { decoded }),
+    });
     const command = line.toUpperCase();
 
     if (command.startsWith("MAIL FROM")) {
@@ -296,7 +330,9 @@ class SmtpSession {
       this.transport.write("250-scripted.example greets you\r\n");
       this.transport.write("250-PIPELINING\r\n");
       this.transport.write("250-SIZE 35882577\r\n");
-      this.transport.write("250-AUTH PLAIN LOGIN\r\n");
+      if (this.options.advertiseAuth !== false) {
+        this.transport.write("250-AUTH PLAIN LOGIN\r\n");
+      }
       this.transport.write(!this.secure() && this.options.mode === "starttls" ? "250 STARTTLS\r\n" : "250 OK\r\n");
       return;
     }
@@ -307,6 +343,12 @@ class SmtpSession {
     }
 
     if (command.startsWith("AUTH PLAIN")) {
+      if (this.options.advertiseAuth === false) {
+        // A server that advertised no AUTH refuses the command, the way a
+        // real one answers a capability the session never offered.
+        this.transport.write("502 5.5.1 Authentication not advertised\r\n");
+        return;
+      }
       const payload = line.slice("AUTH PLAIN".length).trim();
       this.transport.write(
         this.checkPlainAuth(payload)
@@ -317,6 +359,10 @@ class SmtpSession {
     }
 
     if (command === "AUTH LOGIN") {
+      if (this.options.advertiseAuth === false) {
+        this.transport.write("502 5.5.1 Authentication not advertised\r\n");
+        return;
+      }
       this.loginStage = "user";
       this.transport.write("334 VXNlcm5hbWU6\r\n");
       return;
@@ -429,6 +475,21 @@ function envelopeAddress(line: string): string {
     return line;
   }
   return line.slice(start + 1, end);
+}
+
+/**
+ * The decoded SASL payload of one authentication line: the NUL-separated
+ * PLAIN tuple, or the bare LOGIN credential the stage expects. Null for
+ * lines that carry none.
+ */
+function decodedAuthPayload(line: string, loginStage: "user" | "pass" | null): string | null {
+  if (/^AUTH PLAIN \S/i.test(line)) {
+    return Buffer.from(line.slice("AUTH PLAIN".length).trim(), "base64").toString("utf8");
+  }
+  if (loginStage !== null && /^[A-Za-z0-9+/=]+$/.test(line)) {
+    return Buffer.from(line, "base64").toString("utf8");
+  }
+  return null;
 }
 
 /** Undo SMTP dot-stuffing on the received lines. */

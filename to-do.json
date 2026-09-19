@@ -1585,32 +1585,39 @@
         "storage",
         "hygiene"
       ],
-      "updated_at": "2026-09-19T22:42:44Z",
+      "updated_at": "2026-09-19T22:42:59Z",
       "files": [
+        ".gitignore",
+        "AGENTS.md",
         "packages/database/src/storage/fs-object-store.ts",
         "packages/database/test/storage.test.ts",
-        ".gitignore",
-        "AGENTS.md"
+        "to-do.json"
       ]
     },
     {
       "id": "T049",
       "title": "Harden the transport clients and test fakes",
       "priority": 3,
-      "status": "todo",
+      "status": "done",
       "details": "Five items. submitSmtpMessage omits forceAuth while the connection test sets it (packages/transport/src/submit.ts:46-65), so a server whose EHLO advertises no AUTH makes nodemailer submit silently unauthenticated; set forceAuth and add a harness case. The transport-package fakes keep the buffer, upgrade state, login stage, and authenticated flag on the server instead of per connection (test/fake-imap-server.ts:47-48, test/fake-smtp-server.ts:58-61), so a second connection to an upgraded server mislabels plaintext lines and can turn the no-credentials-in-plaintext assertion into a false negative; adopt the per-connection session pattern the harness package already uses. All four fake servers accumulate lines and client-declared literals without a cap (packages/harness/src/imap-server.ts:957, packages/harness/src/smtp-server.ts:208 and the transport fakes); add a maximum line and literal size that destroys the connection. The plaintext-password assertion is vacuous because AUTH LOGIN and PLAIN send the password base64-encoded (packages/transport/test/connection.test.ts:219); decode the AUTH lines in the fake or assert on the decoded form. And the trusted-CA comment in packages/transport/src/imap.ts:29-31 is wrong: the ca option replaces the system root store rather than adding to it.",
       "tags": [
         "transport",
         "harness",
         "security"
       ],
-      "updated_at": "2026-09-19T17:39:46Z",
+      "updated_at": "2026-09-19T22:59:41Z",
       "files": [
         "packages/transport/src/submit.ts",
         "packages/transport/src/imap.ts",
-        "packages/transport/test",
+        "packages/transport/test/fake-imap-server.ts",
+        "packages/transport/test/fake-smtp-server.ts",
+        "packages/transport/test/connection.test.ts",
+        "packages/transport/test/submit.test.ts",
         "packages/harness/src/imap-server.ts",
-        "packages/harness/src/smtp-server.ts"
+        "packages/harness/src/smtp-server.ts",
+        "packages/harness/test/imap-server.test.ts",
+        "packages/harness/test/smtp-server.test.ts",
+        "packages/harness/test/transport-acceptance.test.ts"
       ]
     },
     {

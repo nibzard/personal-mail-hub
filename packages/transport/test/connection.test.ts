@@ -216,7 +216,8 @@ describe("the SMTP connection test", () => {
     expect(report.stage).toBe("tls");
     expect(report.error?.code).toBe("tls_invalid");
     expect(server.sawAuthentication()).toBe(false);
-    expect(server.sawText(PASSWORD)).toBe(false);
+    // Decoded payloads included: base64 is not protection on a plaintext link.
+    expect(server.sawTextInPlaintext(PASSWORD)).toBe(false);
     expect(server.sawMailSubmission()).toBe(false);
   });
 
@@ -247,6 +248,26 @@ describe("the SMTP connection test", () => {
     // The credentials were refused, but only after the upgrade succeeded.
     expect(server.sawAuthenticationOverTls()).toBe(true);
     expect(server.sawAuthenticationInPlaintext()).toBe(false);
+    expect(server.sawTextInPlaintext(PASSWORD)).toBe(false);
+  });
+
+  it("labels a second connection plaintext until that connection upgrades", async () => {
+    const server = await startSmtp("starttls", valid, { user: USER, pass: PASSWORD });
+    // The first session upgrades; a later connection must not inherit its
+    // state, or plaintext lines would be mislabeled and the no-credentials-
+    // in-plaintext assertion could pass as a false negative.
+    const report = await testSmtpConnection(
+      { host: HOST, port: server.port, security: "starttls_required" },
+      trusted(),
+    );
+    expect(report.ok).toBe(true);
+
+    const probe = net.createConnection({ host: HOST, port: server.port });
+    await new Promise<void>((resolve) => probe.once("connect", resolve));
+    probe.write("NOOP\r\n");
+    await vi.waitFor(() => expect(server.sawText("NOOP")).toBe(true));
+    expect(server.commands.find(({ line }) => line === "NOOP")?.phase).toBe("plaintext");
+    probe.destroy();
   });
 
   it("classifies an unreachable endpoint as a network failure", async () => {

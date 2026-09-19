@@ -165,6 +165,18 @@ describe("SMTP message submission", () => {
     expect(server.sawMailSubmission()).toBe(false);
   });
 
+  it("refuses to submit unauthenticated when the server advertises no AUTH", async () => {
+    const server = await startSmtp({ advertiseAuth: false });
+    const report = await submitSmtpMessage(request(server.port, [authority.certPem]));
+
+    // Without `forceAuth` nodemailer would skip the login and hand the
+    // message to the server anyway, unauthenticated (SPEC section 9).
+    expect(report.state).toBe("rejected");
+    expect(report.error?.code).toBe("EAUTH");
+    expect(server.sawMailSubmission()).toBe(false);
+    expect(server.acceptedRecipients).toEqual([]);
+  });
+
   it("classifies a refused STARTTLS upgrade as rejected", async () => {
     const server = await startSmtp({ mode: "starttls-missing" });
     const report = await submitSmtpMessage(request(server.port, [authority.certPem]));

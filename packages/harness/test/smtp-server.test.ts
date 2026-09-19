@@ -1,3 +1,4 @@
+import net from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { submitSmtpMessage } from "@mail-hub/transport";
 import {
@@ -193,6 +194,19 @@ describe("scripted SMTP server", () => {
     expect(server.sawMailSubmission()).toBe(false);
   });
 
+  it("counts a server that advertises no authentication as rejected, before any mail", async () => {
+    const server = await startSmtp({ advertiseAuth: false });
+    const report = await submitSmtpMessage(request(server.port));
+
+    // `forceAuth` makes the submitter demand the login: without it nodemailer
+    // skips the authentication entirely and hands the message to the server
+    // unauthenticated (SPEC section 9).
+    expect(report.state).toBe("rejected");
+    expect(report.error?.code).toBe("EAUTH");
+    expect(server.sawMailSubmission()).toBe(false);
+    expect(server.completedSubmissions()).toHaveLength(0);
+  });
+
   it("counts a missing STARTTLS offer as rejected", async () => {
     const server = await startSmtp({ mode: "starttls-missing" });
     const report = await submitSmtpMessage(request(server.port));
@@ -250,5 +264,19 @@ describe("scripted SMTP server", () => {
     expect(server.sawText("MAIL FROM")).toBe(true);
     expect(server.sawText("RCPT TO")).toBe(true);
     expect(server.commands.every((command) => command.line !== "")).toBe(true);
+  });
+
+  it("destroys the connection when a line grows past the bound", async () => {
+    const server = await startSmtp({});
+    const socket = net.createConnection({ host: HOST, port: server.port });
+    await new Promise<void>((resolve) => socket.once("connect", resolve));
+    // A real client reads the greeting; an unread peer obscures the close.
+    socket.on("data", () => undefined);
+    socket.on("error", () => undefined);
+    const closed = new Promise<void>((resolve) => socket.once("close", resolve));
+    // No line terminator: the unterminated remainder is what the bound stops.
+    socket.write(`NOOP ${"x".repeat(1_048_577)}`);
+    await closed;
+    expect(server.commands).toHaveLength(0);
   });
 });
