@@ -52,7 +52,10 @@ const BOUNCE_SUBJECT_PATTERN =
 
 /** The address fields one rule may read. */
 export interface RuleInput {
-  /** Lowercased sender address, or `null` when the header was unusable. */
+  /**
+   * Sender address, or `null` when the header was unusable. Stored addresses
+   * keep the case the server sent, so the rules compare the lowercased form.
+   */
   senderAddress: string | null;
   subject: string | null;
 }
@@ -64,7 +67,7 @@ export interface RuleInput {
  */
 export function matchDeterministicRules(input: RuleInput): DeterministicRuleMatch | null {
   const subject = input.subject ?? "";
-  const [localPart = "", domain = ""] = (input.senderAddress ?? "").split("@");
+  const [localPart = "", domain = ""] = (input.senderAddress ?? "").toLowerCase().split("@");
 
   if (BOUNCE_SENDER_LOCALS.has(localPart) || BOUNCE_SUBJECT_PATTERN.test(subject)) {
     return { classHint: "bounce", rule: "bounce_sender_or_subject" };

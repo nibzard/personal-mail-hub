@@ -50,13 +50,13 @@ export const CLASS_ERROR_EVENT = "class.error";
 /** The session event that marks when classification was enabled or disabled. */
 export const CLASS_SESSION_EVENT = "class.session";
 
-/** Failures inside the window that trip the breaker. */
+/** Failures inside one burst window that trip the breaker. */
 export const CIRCUIT_ERROR_THRESHOLD = 5;
 
-/** How long failures stay counted, in milliseconds. */
+/** The burst window that trips the breaker, in milliseconds. */
 export const CIRCUIT_WINDOW_MS = 10 * 60_000;
 
-/** How long the breaker stays open after the newest counted failure. */
+/** How long a tripped breaker stays open after the burst that tripped it. */
 export const CIRCUIT_COOLDOWN_MS = 30 * 60_000;
 
 /** Billed input tokens one call is assumed to cost (SPEC section 13). */
@@ -93,7 +93,10 @@ export type CycleSkipReason = "not_configured" | "disabled" | "circuit_open" | "
 /** What classifying one message produced. */
 export type ClassifyMessageOutcome =
   | { state: "classified"; source: SuggestionSource; classHint: MessageClass | null }
-  | { state: "skipped"; reason: "not_found" | "not_ready" | "already_classified" | "cost_cap" }
+  | {
+      state: "skipped";
+      reason: "not_found" | "not_ready" | "already_classified" | "cost_cap" | "circuit_open";
+    }
   | { state: "failed"; kind: JevFailureKind };
 
 /** The circuit verdict the health report repeats. */
@@ -217,8 +220,10 @@ export class ClassificationService {
   }
 
   /**
-   * Classify one message by identifier. The same precedence chain runs; the
-   * sweep and any future per-message queue share this path.
+   * Classify one message by identifier. The same precedence chain and
+   * guardrails run as in the sweep — an open breaker pauses this path exactly
+   * as it pauses the cycle — so the sweep and any future per-message queue
+   * share this path.
    */
   async classifyMessage(messageId: string): Promise<ClassifyMessageOutcome> {
     requireUuid("message id", messageId);
@@ -228,6 +233,10 @@ export class ClassificationService {
     }
     if (this.options.adapter === null) {
       return { state: "skipped", reason: "not_ready" };
+    }
+    const assessment = await this.assessCircuit(settings);
+    if (assessment.reason === "errors") {
+      return { state: "skipped", reason: "circuit_open" };
     }
     const rows = await this.db.execute(sql`
       select m.id, m.account_id, m.sender, m.subject, m.metadata,
@@ -550,24 +559,29 @@ export class ClassificationService {
     }
 
     const now = this.now();
-    const since = new Date(now.getTime() - CIRCUIT_WINDOW_MS);
+    // Failures stay readable for the whole cooldown, not just the burst
+    // window: a burst that tripped the breaker must keep it open until the
+    // cooldown ends, instead of letting the count decay close it early.
+    const since = new Date(now.getTime() - CIRCUIT_COOLDOWN_MS);
     const errorRows = await this.db.execute(sql`
-      select count(*)::int as count, max(at) as newest
+      select at
       from events
       where type = ${CLASS_ERROR_EVENT} and at > ${since}
+      order by at asc
     `);
-    const errorCount = wholeNumber(errorRows.rows[0]?.count) ?? 0;
-    const newest = timestampOf(errorRows.rows[0]?.newest);
-    if (errorCount >= CIRCUIT_ERROR_THRESHOLD && newest !== null) {
-      if (now.getTime() - newest.getTime() < CIRCUIT_COOLDOWN_MS) {
-        return {
-          circuit: "open",
-          reason: "errors",
-          description: `Classification is paused: ${errorCount} evaluation failures within the last ${
-            CIRCUIT_WINDOW_MS / 60_000
-          } minutes. It resumes ${CIRCUIT_COOLDOWN_MS / 60_000} minutes after the newest failure.`,
-        };
-      }
+    const failureTimes = errorRows.rows.flatMap((row) => {
+      const at = timestampOf(row.at);
+      return at === null ? [] : [at.getTime()];
+    });
+    const burst = widestBurstSize(failureTimes, CIRCUIT_WINDOW_MS);
+    if (burst >= CIRCUIT_ERROR_THRESHOLD) {
+      return {
+        circuit: "open",
+        reason: "errors",
+        description: `Classification is paused: ${burst} evaluation failures within a ${
+          CIRCUIT_WINDOW_MS / 60_000
+        }-minute window. It resumes ${CIRCUIT_COOLDOWN_MS / 60_000} minutes after the newest counted failure.`,
+      };
     }
 
     const cap = settings.classificationMonthlyCostCapUsd;
@@ -652,8 +666,22 @@ function roundCents(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
-function wholeNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+/**
+ * The most failures one `windowMs` span of the ascending times holds. The
+ * breaker trips on a burst anywhere inside the cooldown, so a burst that has
+ * already aged past the window still holds the breaker open until the
+ * cooldown expires.
+ */
+function widestBurstSize(times: number[], windowMs: number): number {
+  let widest = 0;
+  let first = 0;
+  for (let last = 0; last < times.length; last += 1) {
+    while (times[last]! - times[first]! > windowMs) {
+      first += 1;
+    }
+    widest = Math.max(widest, last - first + 1);
+  }
+  return widest;
 }
 
 /**

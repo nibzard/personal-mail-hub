@@ -342,6 +342,16 @@ suite("classification service", () => {
     const failures = await db.select().from(events).where(eq(events.type, CLASS_ERROR_EVENT));
     expect(failures).toHaveLength(CIRCUIT_ERROR_THRESHOLD);
 
+    // The burst ages out of the 10-minute trip window but stays inside the
+    // 30-minute cooldown: the breaker must hold open, not silently close and
+    // call the broken endpoint again.
+    const lapsed = new Date(Date.now() - 15 * 60_000);
+    await db.update(events).set({ at: lapsed }).where(eq(events.type, CLASS_ERROR_EVENT));
+    expect((await service.readCircuit()).circuit).toBe("open");
+    const held = await service.runCycle();
+    expect(held.skipped).toBe("circuit_open");
+    expect(failing.texts).toHaveLength(CIRCUIT_ERROR_THRESHOLD);
+
     // After the cooldown the breaker half-opens: attempts run again.
     const aged = new Date(Date.now() - 45 * 60_000);
     await db.update(events).set({ at: aged }).where(eq(events.type, CLASS_ERROR_EVENT));
@@ -349,6 +359,30 @@ suite("classification service", () => {
     expect(recovered.errors).toBe(1);
 
     // Remove the fixture so the backfill counts below stay exact.
+    await db.delete(bodies).where(eq(bodies.messageId, stuck.messageId));
+    await db.delete(messages).where(eq(messages.id, stuck.messageId));
+  });
+
+  it("keeps the per-message entry point behind the open breaker too", async () => {
+    const failing = stubAdapter({}, "timeout");
+    service = buildService(failing);
+    const stuck = await insertMessage({ subject: "Per-message circuit check", senderAddress: "x@example.com" });
+
+    for (let attempt = 0; attempt < CIRCUIT_ERROR_THRESHOLD; attempt += 1) {
+      await service.runCycle();
+    }
+    expect((await service.readCircuit()).circuit).toBe("open");
+
+    adapter = stubAdapter();
+    service = buildService();
+    const outcome = await service.classifyMessage(stuck.messageId);
+    expect(outcome).toEqual({ state: "skipped", reason: "circuit_open" });
+    expect(adapter.texts).toHaveLength(0);
+
+    // Release the breaker so the suites below start from a closed circuit,
+    // and remove the fixture so the backfill counts below stay exact.
+    const aged = new Date(Date.now() - 45 * 60_000);
+    await db.update(events).set({ at: aged }).where(eq(events.type, CLASS_ERROR_EVENT));
     await db.delete(bodies).where(eq(bodies.messageId, stuck.messageId));
     await db.delete(messages).where(eq(messages.id, stuck.messageId));
   });

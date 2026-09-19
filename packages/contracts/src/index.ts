@@ -55,7 +55,8 @@ export interface HealthzQueue {
 
 /** Classification state as the health check reports it (SPEC section 11). */
 export interface HealthzClassification {
-  circuit: "closed" | "open" | "not_configured";
+  /** `unknown` when the circuit state itself could not be read. */
+  circuit: "closed" | "open" | "not_configured" | "unknown";
   /** Recorded Jev answers, from the `decisions` table. */
   calls: number;
   /** Recorded Jev failures, from `class.error` audit events. */

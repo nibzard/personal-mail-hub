@@ -164,7 +164,7 @@ suite("health service", () => {
     const degraded = await broken.readHealth();
     expect(degraded.available).toBe(true);
     if (degraded.available) {
-      expect(degraded.report.classification.circuit).toBe("not_configured");
+      expect(degraded.report.classification.circuit).toBe("unknown");
       expect(degraded.report.classification.description).toBe(
         "The classification circuit state could not be read.",
       );

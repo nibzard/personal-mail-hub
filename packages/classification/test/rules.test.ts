@@ -26,6 +26,13 @@ describe("deterministic rules", () => {
       .toMatchObject({ classHint: "bounce" });
   });
 
+  it("matches sender addresses regardless of the case the server sent", () => {
+    expect(matchDeterministicRules({ senderAddress: "MAILER-DAEMON@MX.Example", subject: null }))
+      .toMatchObject({ classHint: "bounce" });
+    expect(matchDeterministicRules({ senderAddress: "noreply@GitHub.com", subject: null }))
+      .toMatchObject({ classHint: "security_alert" });
+  });
+
   it("classifies statement and invoice subjects as receipts", () => {
     expect(matchDeterministicRules({ senderAddress: "statements@bank.example", subject: "Your September statement" }))
       .toMatchObject({ classHint: "receipt" });

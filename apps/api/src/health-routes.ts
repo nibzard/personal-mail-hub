@@ -123,7 +123,7 @@ const HEALTHZ_SCHEMA = {
       type: "object",
       required: ["circuit", "calls", "errors", "description"],
       properties: {
-        circuit: { enum: ["closed", "open", "not_configured"] },
+        circuit: { enum: ["closed", "open", "not_configured", "unknown"] },
         calls: { type: "integer", minimum: 0 },
         errors: { type: "integer", minimum: 0 },
         description: { type: "string" },

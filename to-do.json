@@ -1460,7 +1460,7 @@
         "pwa",
         "compose"
       ],
-      "updated_at": "2026-09-19T21:29:55Z",
+      "updated_at": "2026-09-19T21:31:10Z",
       "files": [
         "apps/web/src/components/mail/app-shell.tsx",
         "apps/web/src/components/mail/sync-status.tsx",
@@ -1480,18 +1480,20 @@
       "id": "T044",
       "title": "Fix the classification circuit and rule matching",
       "priority": 2,
-      "status": "todo",
+      "status": "done",
       "details": "Four defects. The deterministic rules compare sender addresses case-sensitively (packages/classification/src/rules.ts:67-74) although the input contract documents lowercase addresses and every other path lowercases, so senders such as MAILER-DAEMON at a mixed-case host miss the bounce and security rules and spend a Jev call the SPEC says not to spend. The 30-minute circuit cooldown is dead code (packages/classification/src/service.ts:552-571 with the constant at line 60) because counted failures are filtered to a 10-minute window, so the breaker silently closes after about ten minutes and oscillates during a hard outage while healthz still claims a 30-minute pause. classifyMessage never consults the circuit (service.ts:223-255), so the per-message entry point keeps calling the adapter while the breaker is open. And when the circuit read throws, healthz reports not_configured instead of an unknown state (packages/observability/src/health.ts:228-240) because the classification circuit union has no unknown member; add the member and report unreadable state honestly.",
       "tags": [
         "classification",
         "observability"
       ],
-      "updated_at": "2026-09-19T17:39:46Z",
+      "updated_at": "2026-09-19T21:42:52Z",
       "files": [
+        "apps/api/src/health-routes.ts",
         "packages/classification/src/rules.ts",
         "packages/classification/src/service.ts",
         "packages/classification/test/rules.test.ts",
         "packages/classification/test/service.test.ts",
+        "packages/contracts/src/index.ts",
         "packages/observability/src/health.ts",
         "packages/observability/test/health.test.ts"
       ]

@@ -222,8 +222,8 @@ export class HealthService {
 
   /**
    * The circuit verdict. The reader derives it from durable records; a read
-   * that fails leaves the not-configured shape rather than guessing, with a
-   * description that says so.
+   * that fails reports an unknown circuit rather than guessing a state the
+   * records never supported, with a description that says so.
    */
   private async classificationSection(): Promise<Pick<HealthzClassification, "circuit" | "description">> {
     if (this.classification === null) {
@@ -233,7 +233,7 @@ export class HealthService {
       return await this.classification.readCircuit();
     } catch {
       return {
-        circuit: "not_configured",
+        circuit: "unknown",
         description: "The classification circuit state could not be read.",
       };
     }
