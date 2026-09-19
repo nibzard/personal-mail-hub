@@ -1,0 +1,16 @@
+# Context
+
+## Why This Way
+Commit 58f8f43 marked T014 done, then an uncommitted edit flipped
+it back to doing with no recorded reason. Re-verification (release
+gate PASS with the two known deferrals, web type check, vite
+build, token contrast script) confirmed every item of the task
+scope, so the ledger restores done and records the evidence.
+
+## Gotchas
+- SPEC F12 names Motion for React for dialog transitions; the
+  implementation uses tw-animate-css data-state classes. The
+  deviation is recorded in T014. Revisit only when a coordinated
+  transition needs more than CSS.
+- npm run check:tokens runs outside the release gate until T033
+  adds the interface checks.
