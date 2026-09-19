@@ -519,8 +519,8 @@
       "id": "T015",
       "title": "Build responsive mail navigation and message list",
       "priority": 2,
-      "status": "todo",
-      "details": "Create desktop three-pane and mobile single-pane layouts with account views, unified inbox, rows, state markers, account indicators, and bounded rendering.",
+      "status": "done",
+      "details": "Desktop three-pane and mobile single-pane shell wired to the live API: navigation pane with unified Inbox, All Mail, and per-account folder trees (collapse, role icons, account color dots); message list with search, fixed-height virtualized rows (density token driven), sender/subject/snippet/time row anatomy, one state marker (unread, flagged, attachment), account indicators, honest no-body and indexing status, and bounded paging that mirrors the API caps; unified inbox merges per-account inbox requests with client-side ordering and dedupe; reader pane placeholder with summary and badges (sanitized body arrives with T016); passkey sign-in screen for expired sessions. Verified with a mock API in a browser: desktop and 375px layouts, pane switching, scope changes, selection, auto load-more, and the 401 sign-in path. Deferred: unread counts in nav (needs API), keyboard j/k navigation (T018), e2e/a11y tests (T033).",
       "depends_on": [
         "T009",
         "T014"
@@ -528,6 +528,28 @@
       "tags": [
         "ui",
         "reading"
+      ],
+      "updated_at": "2026-09-19T11:12:06Z",
+      "files": [
+        "apps/web/src/main.tsx",
+        "apps/web/src/vite-env.d.ts",
+        "apps/web/src/lib/api.ts",
+        "apps/web/src/lib/format.ts",
+        "apps/web/src/lib/hooks.ts",
+        "apps/web/src/mail/view.ts",
+        "apps/web/src/mail/use-resource.ts",
+        "apps/web/src/mail/data.ts",
+        "apps/web/src/components/mail/nav-pane.tsx",
+        "apps/web/src/components/mail/message-row.tsx",
+        "apps/web/src/components/mail/message-list.tsx",
+        "apps/web/src/components/mail/reader-pane.tsx",
+        "apps/web/src/components/mail/app-shell.tsx",
+        "apps/web/src/components/mail/sign-in.tsx",
+        "apps/web/src/styles.css",
+        "apps/web/vite.config.ts",
+        "apps/web/package.json",
+        "apps/web/package-lock.json",
+        ".env.example"
       ]
     },
     {

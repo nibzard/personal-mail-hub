@@ -64,6 +64,9 @@
 
   /* Density. Compact is the default; comfortable widens row padding only. */
   --row-padding-y: 0.375rem;
+  /* Fixed row height of the virtualized message list; padding grows with
+     density, text legibility does not change. */
+  --row-height: 5.25rem;
 
   color-scheme: light;
 }
@@ -112,6 +115,7 @@
 
 [data-density="comfortable"] {
   --row-padding-y: 0.75rem;
+  --row-height: 6rem;
 }
 
 /*

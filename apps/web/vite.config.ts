@@ -10,5 +10,17 @@ export default defineConfig({
       "@": fileURLToPath(new URL("./src", import.meta.url)),
     },
   },
-  server: { port: 5173, strictPort: true },
+  server: {
+    port: 5173,
+    strictPort: true,
+    // The client reads same-origin /api paths; development proxies them to
+    // the Fastify listener from .env.example (HOST/PORT).
+    proxy: {
+      "/api": {
+        target: "http://127.0.0.1:3000",
+        changeOrigin: false,
+        rewrite: (path) => path.replace(/^\/api/, ""),
+      },
+    },
+  },
 });
