@@ -438,7 +438,7 @@
       "title": "Implement full-text search and query operators",
       "priority": 2,
       "status": "done",
-      "details": "Provide cross-account PostgreSQL search for headers and bodies, filters, ranking, highlights, saved-search query state, and a 500 ms p95 target at 100k messages.",
+      "details": "Provide cross-account PostgreSQL search for headers and bodies, filters, ranking, highlights, saved-search query state, and a 500 ms p95 target at 100k messages. Re-verified 2026-09-19: release gate PASS (typecheck, migrations, 473 workspace tests, 95 action/api tests, 0 skipped); search suite 33/33 including the 100k-message p95 benchmark.",
       "depends_on": [
         "T007",
         "T008"
@@ -446,7 +446,7 @@
       "tags": [
         "search"
       ],
-      "updated_at": "2026-09-19T09:34:18Z",
+      "updated_at": "2026-09-19T09:42:55Z",
       "files": [
         "packages/database/src/schema.ts",
         "packages/database/drizzle/0005_awesome_shape.sql",
