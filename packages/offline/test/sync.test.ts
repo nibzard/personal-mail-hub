@@ -14,8 +14,9 @@ import {
 /*
  * The replay controls (SPEC F9 and section 10): the current generation
  * stamps new work, replay stops on a generation change after a restore, an
- * uncertain send never replays itself, and every review resolution needs
- * the explicit step its kind requires.
+ * uncertain send never replays itself, an ended session pauses the pass
+ * until sign-in, and every review resolution needs the explicit step its
+ * kind requires.
  */
 
 const GENERATION_A = "11111111-1111-4111-8111-111111111111";
@@ -197,7 +198,12 @@ describe("replay", () => {
     expect(snapshot.pendingUploads).toBe(1);
 
     snapshot = (await sync.sync()).snapshot;
-    expect(snapshot.failedActions).toBe(1);
+    expect(snapshot.failedActions).toHaveLength(1);
+    expect(snapshot.failedActions[0]).toMatchObject({
+      kind: "upload",
+      failure: "413 too large",
+      draftId: "d1",
+    });
     expect(snapshot.pendingActions).toBe(0);
 
     const failedId = (await store.allActions()).find((entry) => entry.state === "failed")!.localId;
@@ -462,5 +468,219 @@ describe("the restore review", () => {
 
   it("keeps the restore message stable for the interface", () => {
     expect(RESTORE_REVIEW_MESSAGE).toBe("Server restored; review pending changes");
+  });
+});
+
+describe("an ended session during replay", () => {
+  it("keeps the items pending, pauses the pass, and asks for sign-in", async () => {
+    const saveDraft = vi.fn(async (): Promise<ReplayOutcome> => ({
+      state: "retry",
+      reason: "The session ended.",
+      signInRequired: true,
+    }));
+    const { sync, store } = makeSync({ saveDraft });
+    await sync.observeGeneration(GENERATION_A);
+    await sync.enqueueDraftSave("d1", 1, { markdown: "One" });
+    await sync.enqueueDraftSave("d2", 1, { markdown: "Two" });
+
+    const report = await sync.sync();
+    // The pass paused at the first refusal; the second item never attempted.
+    expect(report.pausedForSignIn).toBe(true);
+    expect(report.attempted).toBe(1);
+    expect(saveDraft).toHaveBeenCalledTimes(1);
+
+    const snapshot = await sync.snapshot();
+    expect(snapshot.signInRequired).toBe(true);
+    expect(snapshot.pendingActions).toBe(2);
+    expect(snapshot.failedActions).toHaveLength(0);
+    expect((await store.allActions()).every((entry) => entry.state === "pending")).toBe(true);
+  });
+
+  it("clears the sign-in request once a later pass replays the queue", async () => {
+    let expired = true;
+    const port: OfflinePort = {
+      saveDraft: async (payload) => {
+        if (expired) {
+          return { state: "retry", reason: "The session ended.", signInRequired: true };
+        }
+        return { state: "synced", revision: payload.baseRevision + 1 };
+      },
+    };
+    const { sync } = makeSync(port);
+    await sync.observeGeneration(GENERATION_A);
+    await sync.enqueueDraftSave("d1", 1, { markdown: "One" });
+
+    await sync.sync();
+    expect((await sync.snapshot()).signInRequired).toBe(true);
+
+    expired = false;
+    const report = await sync.sync();
+    expect(report.pausedForSignIn).toBe(false);
+    expect(report.synced).toBe(1);
+    const snapshot = await sync.snapshot();
+    expect(snapshot.signInRequired).toBe(false);
+    expect(snapshot.pendingActions).toBe(0);
+  });
+});
+
+describe("orphaned uploads", () => {
+  /** One upload record, as a crash left it: persisted without its action. */
+  async function orphanedUpload(store: OfflineStore, filename: string) {
+    return store.putPendingUpload({
+      draftId: "d1",
+      accountId: "a1",
+      filename,
+      contentType: "application/pdf",
+      sizeBytes: 3,
+      bytes: new Blob([new Uint8Array([1, 2, 3])]),
+      serverId: null,
+      recoveryGeneration: GENERATION_A,
+    });
+  }
+
+  it("requeues and drains an upload whose action a crash never wrote", async () => {
+    const uploaded: string[] = [];
+    const port: OfflinePort = {
+      uploadBytes: async (upload) => {
+        uploaded.push(upload.filename);
+        return { state: "synced", serverUploadId: "upload-9" };
+      },
+    };
+    const { sync, store } = makeSync(port);
+    await sync.observeGeneration(GENERATION_A);
+    const orphan = await orphanedUpload(store, "orphan.pdf");
+
+    const report = await sync.sync();
+    expect(report.synced).toBe(1);
+    expect(uploaded).toEqual(["orphan.pdf"]);
+    expect((await store.getUpload(orphan.localId))?.serverId).toBe("upload-9");
+
+    // The drained upload no longer blocks a send for its draft.
+    const send = await sync.enqueueSend("d1", "key-1", 2);
+    expect(send.payload).toMatchObject({ kind: "send", draftId: "d1" });
+  });
+
+  it("does not duplicate the action of an upload that already holds one", async () => {
+    const uploadBytes = vi.fn(async (): Promise<ReplayOutcome> => ({
+      state: "retry",
+      reason: "offline",
+    }));
+    const { sync, store } = makeSync({ uploadBytes });
+    await sync.observeGeneration(GENERATION_A);
+    const { action } = await sync.enqueueUpload({
+      draftId: "d1",
+      accountId: "a1",
+      filename: "kept.pdf",
+      contentType: "application/pdf",
+      sizeBytes: 3,
+      bytes: new Blob([new Uint8Array([1, 2, 3])]),
+      serverId: null,
+      recoveryGeneration: GENERATION_A,
+    });
+
+    await sync.sync();
+    await sync.sync();
+    // One action exists per upload, so exactly one replay happens per pass.
+    expect(uploadBytes).toHaveBeenCalledTimes(2);
+    expect(
+      (await store.allActions()).filter(
+        (entry) => entry.payload.kind === "upload" && entry.localId !== action.localId,
+      ),
+    ).toHaveLength(0);
+  });
+
+  it("does not resurrect an upload a review deliberately discarded", async () => {
+    const uploadBytes = vi.fn(async (): Promise<ReplayOutcome> => ({ state: "synced" }));
+    const { sync, store } = makeSync({ uploadBytes });
+    await sync.observeGeneration(GENERATION_A);
+    const { action, upload } = await sync.enqueueUpload({
+      draftId: "d1",
+      accountId: "a1",
+      filename: "given-up.pdf",
+      contentType: "application/pdf",
+      sizeBytes: 3,
+      bytes: new Blob([new Uint8Array([1, 2, 3])]),
+      serverId: null,
+      recoveryGeneration: GENERATION_A,
+    });
+    await store.updateAction(action.localId, {
+      state: "review",
+      reviewReason: "server_restored",
+    });
+
+    const snapshot = await sync.resolveReview(action.localId, { choice: "discard" });
+    expect(snapshot.reviewActions).toHaveLength(0);
+    expect(snapshot.pendingUploads).toBe(0);
+    expect(await store.getUpload(upload.localId)).toBeNull();
+
+    await sync.sync();
+    expect(uploadBytes).not.toHaveBeenCalled();
+    expect((await sync.snapshot()).pendingActions).toBe(0);
+  });
+});
+
+describe("failed actions", () => {
+  it("discards a failed upload with its bytes so the draft can send", async () => {
+    const port: OfflinePort = {
+      uploadBytes: async () => ({ state: "failed", reason: "413 too large" }),
+    };
+    const { sync, store } = makeSync(port);
+    await sync.observeGeneration(GENERATION_A);
+    const { action, upload } = await sync.enqueueUpload({
+      draftId: "d1",
+      accountId: "a1",
+      filename: "big.bin",
+      contentType: "application/octet-stream",
+      sizeBytes: 5,
+      bytes: new Blob([new Uint8Array([9, 9, 9, 9, 9])]),
+      serverId: null,
+      recoveryGeneration: GENERATION_A,
+    });
+    await sync.sync();
+    expect((await sync.snapshot()).failedActions).toHaveLength(1);
+    await expect(sync.enqueueSend("d1", "key-1", 2)).rejects.toBeInstanceOf(
+      UploadsUnverifiedError,
+    );
+
+    const snapshot = await sync.discardFailure(action.localId);
+    expect(snapshot.failedActions).toHaveLength(0);
+    expect(snapshot.pendingUploads).toBe(0);
+    expect(await store.getUpload(upload.localId)).toBeNull();
+
+    // The bytes are gone, so a later pass cannot resurrect the failure.
+    await sync.sync();
+    expect((await sync.snapshot()).failedActions).toHaveLength(0);
+    await expect(sync.enqueueSend("d1", "key-1", 2)).resolves.toMatchObject({
+      payload: { kind: "send", draftId: "d1" },
+    });
+  });
+
+  it("discards a failed edit while its local draft stays", async () => {
+    const { sync, store } = makeSync({});
+    await sync.observeGeneration(GENERATION_A);
+    await store.putLocalDraft(draftRecord({ markdown: "Local text stays." }));
+    const action = await sync.enqueueDraftSave("d1", 1, { markdown: "Local text stays." });
+    await store.updateAction(action.localId, {
+      state: "failed",
+      failure: "400 invalid_request",
+    });
+
+    const snapshot = await sync.discardFailure(action.localId);
+    expect(snapshot.failedActions).toHaveLength(0);
+    expect((await sync.localDraft("d1"))?.markdown).toBe("Local text stays.");
+  });
+
+  it("retries a failed action back into the queue", async () => {
+    const { sync, store } = makeSync({});
+    await sync.observeGeneration(GENERATION_A);
+    const action = await sync.enqueueDraftSave("d1", 1, { markdown: "Hi." });
+    await store.updateAction(action.localId, { state: "failed", failure: "400 bad" });
+
+    const snapshot = await sync.retryFailure(action.localId);
+    expect(snapshot.pendingActions).toBe(1);
+    expect(snapshot.failedActions).toHaveLength(0);
+    expect(
+      (await store.allActions()).find((entry) => entry.localId === action.localId)?.failure,
+    ).toBeNull();
   });
 });

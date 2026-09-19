@@ -1427,45 +1427,53 @@
         "ingestion",
         "reliability"
       ],
-      "updated_at": "2026-09-19T21:20:00Z",
+      "updated_at": "2026-09-19T21:17:11Z",
       "files": [
+        "SPEC.md",
         "packages/contracts/src/index.ts",
+        "packages/database/src/storage/fs-object-store.ts",
+        "packages/database/test/storage.test.ts",
+        "packages/harness/src/imap-server.ts",
         "packages/ingestion/src/errors.ts",
+        "packages/ingestion/src/index.ts",
         "packages/ingestion/src/parse.ts",
         "packages/ingestion/src/service.ts",
-        "packages/ingestion/src/index.ts",
-        "packages/database/src/storage/fs-object-store.ts",
-        "packages/sync/src/mailbox.ts",
-        "packages/sync/src/imap-session.ts",
+        "packages/ingestion/test/service.test.ts",
         "packages/sync/src/bodies.ts",
-        "packages/sync/src/store.ts",
+        "packages/sync/src/imap-session.ts",
+        "packages/sync/src/mailbox.ts",
         "packages/sync/src/steady.ts",
-        "packages/harness/src/imap-server.ts",
+        "packages/sync/src/store.ts",
         "packages/sync/test/fake-mailbox.ts",
         "packages/sync/test/steady.test.ts",
-        "packages/ingestion/test/service.test.ts",
-        "packages/database/test/storage.test.ts",
-        "SPEC.md"
+        "to-do.json"
       ]
     },
     {
       "id": "T043",
       "title": "Handle offline replay failures and orphaned uploads",
       "priority": 2,
-      "status": "todo",
+      "status": "done",
       "details": "classifyReplayFailure treats a 401 as a definitive failure (apps/web/src/offline/port.ts:48-54 with packages/offline/src/sync.ts:210-214), the sync status never renders failed actions, and the retry entry point has no caller in apps/web, so a session that expires overnight permanently kills a queued draft edit with no screen ever showing it. Treat 401 as retryable after sign-in (pause the replay pass, offer sign-in, resume), surface failed items with a retry and discard path, and give the settings screen the same session-expiry handling the list and reader already have. Also make enqueueUpload atomic or reconcile it: the upload record and its queue action are two separate IndexedDB writes (packages/offline/src/sync.ts:314-320), so a crash between them leaves a pending upload that never drains and makes every later enqueueSend for that draft throw UploadsUnverifiedError, even after re-adding the file.",
       "tags": [
         "offline",
         "pwa",
         "compose"
       ],
-      "updated_at": "2026-09-19T17:39:46Z",
+      "updated_at": "2026-09-19T21:29:55Z",
       "files": [
-        "apps/web/src/offline/port.ts",
+        "apps/web/src/components/mail/app-shell.tsx",
         "apps/web/src/components/mail/sync-status.tsx",
-        "apps/web/src/settings/settings-context.tsx",
+        "apps/web/src/components/settings/settings-screen.tsx",
+        "apps/web/src/offline/port.ts",
+        "apps/web/src/offline/sync-context.tsx",
+        "apps/web/test/offline.test.ts",
+        "packages/offline/src/index.ts",
+        "packages/offline/src/records.ts",
+        "packages/offline/src/store.ts",
         "packages/offline/src/sync.ts",
-        "packages/offline/test"
+        "packages/offline/test/sync.test.ts",
+        "to-do.json"
       ]
     },
     {

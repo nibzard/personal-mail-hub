@@ -29,6 +29,10 @@ export interface OfflineSyncState {
   observe: (generation: string | null) => Promise<void>;
   /** Resolve one review item after its explicit step (SPEC F9). */
   resolve: (localId: string, choice: ReviewChoice) => Promise<void>;
+  /** Move one definitively failed action back to the queue, then drain it. */
+  retry: (localId: string) => Promise<void>;
+  /** Drop one definitively failed action. Local text stays on this device. */
+  discard: (localId: string) => Promise<void>;
 }
 
 const OfflineSyncContext = createContext<OfflineSyncState | null>(null);
@@ -105,9 +109,28 @@ export function OfflineSyncProvider({
     [],
   );
 
+  const retry = useCallback(async (localId: string) => {
+    const controller = offlineSync();
+    if (controller === null) {
+      return;
+    }
+    setSnapshot(await controller.retryFailure(localId));
+    // The retried item is pending again; drain it now.
+    const report = await controller.sync();
+    setSnapshot(report.snapshot);
+  }, []);
+
+  const discard = useCallback(async (localId: string) => {
+    const controller = offlineSync();
+    if (controller === null) {
+      return;
+    }
+    setSnapshot(await controller.discardFailure(localId));
+  }, []);
+
   const value = useMemo<OfflineSyncState>(
-    () => ({ snapshot, online, syncing, observe, resolve }),
-    [snapshot, online, syncing, observe, resolve],
+    () => ({ snapshot, online, syncing, observe, resolve, retry, discard }),
+    [snapshot, online, syncing, observe, resolve, retry, discard],
   );
 
   return <OfflineSyncContext.Provider value={value}>{children}</OfflineSyncContext.Provider>;

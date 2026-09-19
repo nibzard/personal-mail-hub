@@ -31,7 +31,7 @@ export const RESTORE_REVIEW_MESSAGE = "Server restored; review pending changes";
 /** How one replay attempt ended, reported by the transport port. */
 export type ReplayOutcome =
   | { state: "synced"; revision?: number; serverUploadId?: string }
-  | { state: "retry"; reason: string }
+  | { state: "retry"; reason: string; signInRequired?: boolean }
   | { state: "failed"; reason: string }
   | { state: "review"; reason: ReviewReason };
 
@@ -59,6 +59,17 @@ export interface ReviewItem {
   draftId: string | null;
 }
 
+/** One definitively failed action as the interface shows it. */
+export interface FailedItem {
+  localId: string;
+  kind: QueuedKind;
+  /** The refusal the server gave, in the words the interface shows. */
+  failure: string;
+  queuedAt: number;
+  /** The draft involved, when the action names one. */
+  draftId: string | null;
+}
+
 /** What the interface always shows about unsynchronized work (SPEC F9). */
 export interface SyncSnapshot {
   /** The generation the server last issued, when this device knows one. */
@@ -66,6 +77,8 @@ export interface SyncSnapshot {
   /** A restore happened and local work still holds the earlier generation. */
   reviewRequired: boolean;
   restore: RestoreMarker | null;
+  /** The last replay pass paused because the session had ended. */
+  signInRequired: boolean;
   /** Queued actions still waiting to leave this device. */
   pendingActions: number;
   /** Pending actions this port cannot replay yet. */
@@ -73,7 +86,7 @@ export interface SyncSnapshot {
   /** Queued sends shown as waiting on this device (SPEC F9). */
   waitingSends: number;
   reviewActions: ReviewItem[];
-  failedActions: number;
+  failedActions: FailedItem[];
   /** Local drafts with edits no server has acknowledged. */
   dirtyDrafts: number;
   /** Uploads whose bytes stay in Dexie (SPEC F6). */
@@ -87,6 +100,8 @@ export interface SyncReport {
   synced: number;
   /** True when a generation mismatch stopped the pass (SPEC F9). */
   stoppedForRestore: boolean;
+  /** True when an ended session paused the pass (SPEC F9). */
+  pausedForSignIn: boolean;
   snapshot: SyncSnapshot;
 }
 
@@ -177,17 +192,31 @@ export class OfflineSync {
 
   /**
    * Replay pending actions oldest first (SPEC F9). A generation mismatch
-   * marks the item for review and stops the whole pass.
+   * marks the item for review and stops the whole pass. An ended session
+   * pauses the pass the same way: the items stay pending, and the pass after
+   * sign-in resumes them.
    */
   async sync(): Promise<SyncReport> {
     const serverGeneration = await this.store.serverGeneration();
     if (serverGeneration === null) {
-      return { attempted: 0, synced: 0, stoppedForRestore: false, snapshot: await this.snapshot() };
+      return {
+        attempted: 0,
+        synced: 0,
+        stoppedForRestore: false,
+        pausedForSignIn: false,
+        snapshot: await this.snapshot(),
+      };
     }
+
+    // A pass that starts speaks for the session it found; any upload a past
+    // crash left without its action joins the queue before replay reads it.
+    await this.store.writeMeta(META_KEYS.signInRequired, false);
+    await this.reconcileOrphanedUploads();
 
     let attempted = 0;
     let synced = 0;
     let stoppedForRestore = false;
+    let pausedForSignIn = false;
     for (const action of await this.store.pendingActions()) {
       if (action.recoveryGeneration !== serverGeneration) {
         await this.store.updateAction(action.localId, {
@@ -217,8 +246,12 @@ export class OfflineSync {
           state: "review",
           reviewReason: outcome.reason,
         });
+      } else if (outcome.signInRequired === true) {
+        await this.store.writeMeta(META_KEYS.signInRequired, true);
+        pausedForSignIn = true;
+        break;
       }
-      // "retry" keeps the item pending for the next pass.
+      // An ordinary retry keeps the item pending for the next pass.
     }
 
     if (synced > 0) {
@@ -229,6 +262,7 @@ export class OfflineSync {
       attempted,
       synced,
       stoppedForRestore,
+      pausedForSignIn,
       snapshot: await this.snapshot(),
     };
   }
@@ -250,6 +284,12 @@ export class OfflineSync {
     }
 
     if (choice.choice === "discard") {
+      if (action.payload.kind === "upload") {
+        // The file's only purpose here is to reach the server; a record the
+        // user gave up on could never drain and would block the draft's
+        // send, and reconciliation would resurrect the discarded action.
+        await this.store.deleteUpload(action.payload.localUploadId);
+      }
       await this.store.deleteAction(localId);
       return this.snapshot();
     }
@@ -294,6 +334,20 @@ export class OfflineSync {
     return this.snapshot();
   }
 
+  /**
+   * Drop one definitively failed action. Local drafts stay; the bytes of a
+   * failed upload go with their action, because the server refused them and
+   * they would block their draft's send forever (SPEC F6).
+   */
+  async discardFailure(localId: string): Promise<SyncSnapshot> {
+    const action = (await this.store.allActions()).find((entry) => entry.localId === localId);
+    if (action !== undefined && action.payload.kind === "upload") {
+      await this.store.deleteUpload(action.payload.localUploadId);
+    }
+    await this.store.deleteAction(localId);
+    return this.snapshot();
+  }
+
   //
   // Enqueueing, with the current generation stamped on creation (SPEC F9)
   //
@@ -308,15 +362,17 @@ export class OfflineSync {
   }
 
   /**
-   * Persist one file before queueing its upload (SPEC F6). A quota error
-   * propagates without queueing anything.
+   * Persist one file and queue its upload in one write (SPEC F6). A quota
+   * error propagates without queueing anything.
    */
   async enqueueUpload(
     upload: Omit<LocalUpload, "localId" | "createdAt">,
   ): Promise<{ action: QueuedAction; upload: LocalUpload }> {
-    const record = await this.store.putPendingUpload(upload);
-    const action = await this.enqueue({ kind: "upload", localUploadId: record.localId });
-    return { action, upload: record };
+    const serverGeneration = await this.store.serverGeneration();
+    if (serverGeneration === null) {
+      throw new GenerationUnknownError();
+    }
+    return this.store.putPendingUploadWithAction(upload, serverGeneration);
   }
 
   /**
@@ -346,14 +402,16 @@ export class OfflineSync {
 
   /** Everything the interface shows about unsynchronized work. */
   async snapshot(): Promise<SyncSnapshot> {
-    const [serverGeneration, restore, actions, drafts, uploads, lastSyncedAt] = await Promise.all([
-      this.store.serverGeneration(),
-      this.store.readMeta<RestoreMarker>(META_KEYS.restore),
-      this.store.allActions(),
-      this.store.localDrafts(),
-      this.store.pendingUploads(),
-      this.store.readMeta<number>(META_KEYS.lastSyncedAt),
-    ]);
+    const [serverGeneration, restore, actions, drafts, uploads, lastSyncedAt, signInRequired] =
+      await Promise.all([
+        this.store.serverGeneration(),
+        this.store.readMeta<RestoreMarker>(META_KEYS.restore),
+        this.store.allActions(),
+        this.store.localDrafts(),
+        this.store.pendingUploads(),
+        this.store.readMeta<number>(META_KEYS.lastSyncedAt),
+        this.store.readMeta<boolean>(META_KEYS.signInRequired),
+      ]);
 
     const pending = actions.filter((action) => action.state === "pending");
     const review = actions.filter((action) => action.state === "review");
@@ -374,6 +432,7 @@ export class OfflineSync {
       serverGeneration,
       reviewRequired,
       restore: reviewRequired ? restore : null,
+      signInRequired: signInRequired === true,
       pendingActions: pending.length,
       unsupportedActions: pending.filter((action) => this.handlerFor(action.payload) === null)
         .length,
@@ -381,7 +440,13 @@ export class OfflineSync {
         (action) => action.payload.kind === "send",
       ).length,
       reviewActions: review.map((action) => toReviewItem(action, uploadDraftIds)),
-      failedActions: failed.length,
+      failedActions: failed.map((action) => ({
+        localId: action.localId,
+        kind: action.payload.kind,
+        failure: action.failure ?? "",
+        queuedAt: action.queuedAt,
+        draftId: actionDraftId(action.payload, uploadDraftIds),
+      })),
       dirtyDrafts: dirtyDrafts.length,
       pendingUploads: uploads.length,
       lastSyncedAt,
@@ -511,6 +576,30 @@ export class OfflineSync {
       }
     }
   }
+
+  /**
+   * Give every waiting upload a replay action. An enqueue from before the
+   * atomic write could crash between its two records and leave bytes that
+   * never drain and block their draft's send (SPEC F6).
+   */
+  private async reconcileOrphanedUploads(): Promise<void> {
+    const covered = new Set<string>();
+    for (const action of await this.store.allActions()) {
+      if (action.state !== "synced" && action.payload.kind === "upload") {
+        covered.add(action.payload.localUploadId);
+      }
+    }
+    for (const upload of await this.store.pendingUploads()) {
+      if (!covered.has(upload.localId)) {
+        // The action keeps the generation the upload was created under, so a
+        // restore still routes it through review (SPEC section 10).
+        await this.store.enqueue(
+          { kind: "upload", localUploadId: upload.localId },
+          upload.recoveryGeneration,
+        );
+      }
+    }
+  }
 }
 
 /** Normalize one generation the way the server's gate does. */
@@ -533,17 +622,22 @@ function draftIdOf(payload: QueuedPayload): string | null {
   }
 }
 
+/** The draft one action names, directly or through its upload record. */
+function actionDraftId(payload: QueuedPayload, uploadDraftIds: Map<string, string>): string | null {
+  const direct = draftIdOf(payload);
+  if (direct !== null) {
+    return direct;
+  }
+  return payload.kind === "upload" ? (uploadDraftIds.get(payload.localUploadId) ?? null) : null;
+}
+
 /** One review-facing summary of a queued action. */
 function toReviewItem(action: QueuedAction, uploadDraftIds: Map<string, string>): ReviewItem {
-  const payload = action.payload;
-  const direct = draftIdOf(payload);
   return {
     localId: action.localId,
-    kind: payload.kind,
+    kind: action.payload.kind,
     reason: action.reviewReason ?? "server_restored",
     queuedAt: action.queuedAt,
-    draftId:
-      direct ??
-      (payload.kind === "upload" ? (uploadDraftIds.get(payload.localUploadId) ?? null) : null),
+    draftId: actionDraftId(action.payload, uploadDraftIds),
   };
 }

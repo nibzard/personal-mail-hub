@@ -154,4 +154,6 @@ export const META_KEYS = {
   serverGeneration: "serverGeneration",
   restore: "restore",
   lastSyncedAt: "lastSyncedAt",
+  /** Set while a replay pass paused because the session had ended. */
+  signInRequired: "signInRequired",
 } as const;

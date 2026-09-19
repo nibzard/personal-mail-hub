@@ -198,6 +198,11 @@ export class OfflineStore {
     await this.db.uploads.update(localId, { serverId, bytes: new Blob([]) });
   }
 
+  /** Drop one upload record and its bytes, with the action that named them. */
+  async deleteUpload(localId: string): Promise<void> {
+    await this.db.uploads.delete(localId);
+  }
+
   //
   // The action queue
   //
@@ -207,19 +212,30 @@ export class OfflineStore {
    * to the caller's object never change what replay sends (SPEC F9).
    */
   async enqueue(payload: QueuedPayload, recoveryGeneration: string): Promise<QueuedAction> {
-    const action: QueuedAction = {
-      localId: this.newId(),
-      payload: structuredClone(payload),
-      state: "pending",
-      reviewReason: null,
-      failure: null,
-      attempts: 0,
-      recoveryGeneration,
-      queuedAt: this.now(),
-      syncedAt: null,
-    };
+    const action = this.buildAction(payload, recoveryGeneration);
     await this.db.queue.put(action);
     return { ...action, payload: structuredClone(action.payload) };
+  }
+
+  /**
+   * Persist one upload and its queue action in one IndexedDB transaction, so
+   * a crash between the two writes can never leave bytes that wait forever
+   * (SPEC F6 and F9).
+   */
+  async putPendingUploadWithAction(
+    upload: Omit<LocalUpload, "localId" | "createdAt">,
+    recoveryGeneration: string,
+  ): Promise<{ action: QueuedAction; upload: LocalUpload }> {
+    const record: LocalUpload = { ...upload, localId: this.newId(), createdAt: this.now() };
+    const action = this.buildAction(
+      { kind: "upload", localUploadId: record.localId },
+      recoveryGeneration,
+    );
+    await this.db.transaction("rw", [this.db.uploads, this.db.queue], async () => {
+      await this.db.uploads.put(record);
+      await this.db.queue.put(action);
+    });
+    return { action: { ...action, payload: structuredClone(action.payload) }, upload: record };
   }
 
   /** Every queued action, oldest first. */
@@ -281,6 +297,21 @@ export class OfflineStore {
   /** The generation the server last issued, when this device knows one. */
   async serverGeneration(): Promise<string | null> {
     return this.readMeta<string>(META_KEYS.serverGeneration);
+  }
+
+  /** One queue entry, built with its own local id and a cloned payload. */
+  private buildAction(payload: QueuedPayload, recoveryGeneration: string): QueuedAction {
+    return {
+      localId: this.newId(),
+      payload: structuredClone(payload),
+      state: "pending",
+      reviewReason: null,
+      failure: null,
+      attempts: 0,
+      recoveryGeneration,
+      queuedAt: this.now(),
+      syncedAt: null,
+    };
   }
 }
 

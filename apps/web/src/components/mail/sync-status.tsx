@@ -1,8 +1,9 @@
-import { AlertTriangle, CloudOff, History } from "lucide-react";
+import { AlertTriangle, CloudOff, History, LogIn } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { DraftView } from "@mail-hub/contracts";
 import {
   RESTORE_REVIEW_MESSAGE,
+  type FailedItem,
   type ReviewChoice,
   type ReviewItem,
   type SyncSnapshot,
@@ -31,7 +32,7 @@ import { cn } from "@/lib/utils";
 
 /** How the header presents the device's sync state. */
 export interface SyncStatusView {
-  tone: "hidden" | "offline" | "review" | "pending" | "syncing";
+  tone: "hidden" | "offline" | "review" | "sign-in" | "failed" | "pending" | "syncing";
   label: string;
   /** Longer text for tooltips and screen-reader announcements. */
   description: string;
@@ -44,6 +45,7 @@ export function describeSyncStatus(
   syncing: boolean,
 ): SyncStatusView {
   const waiting = snapshot?.pendingActions ?? 0;
+  const failed = snapshot?.failedActions.length ?? 0;
   const waitingText = `${waiting} waiting on this device`;
   if (snapshot?.reviewRequired === true) {
     return {
@@ -61,6 +63,24 @@ export function describeSyncStatus(
         waiting > 0
           ? `Offline. ${waitingText}. Drafts and files stay on this device.`
           : "Offline. Downloaded mail still reads, and drafting continues.",
+    };
+  }
+  if (snapshot?.signInRequired === true) {
+    return {
+      tone: "sign-in",
+      label: waiting > 0 ? `Sign in to sync · ${waitingText}` : "Sign in to sync",
+      description:
+        waiting > 0
+          ? "Your session ended. Sign in again so the queued changes can sync."
+          : "Your session ended. Sign in again to sync this device.",
+    };
+  }
+  if (failed > 0) {
+    return {
+      tone: "failed",
+      label: `${failed} failed to sync`,
+      description:
+        "The server refused these queued changes. Review each one, then retry or discard it.",
     };
   }
   if (waiting > 0) {
@@ -82,11 +102,12 @@ export function describeSyncStatus(
 }
 
 /** The header control for sync state; it opens the review when needed. */
-export function SyncStatusChip() {
+export function SyncStatusChip({ onSessionLost }: { onSessionLost: () => void }) {
   const { snapshot, online, syncing } = useOfflineSync();
   const [reviewOpen, setReviewOpen] = useState(false);
   const view = describeSyncStatus(snapshot, online, syncing);
   const reviewCount = snapshot?.reviewActions.length ?? 0;
+  const failedCount = snapshot?.failedActions.length ?? 0;
 
   useEffect(() => {
     if (snapshot?.reviewRequired === true && reviewCount > 0) {
@@ -104,6 +125,8 @@ export function SyncStatusChip() {
       <CloudOff aria-hidden="true" className="size-4" />
     ) : view.tone === "review" ? (
       <History aria-hidden="true" className="size-4" />
+    ) : view.tone === "sign-in" ? (
+      <LogIn aria-hidden="true" className="size-4" />
     ) : view.tone === "syncing" ? (
       <Spinner aria-hidden="true" className="size-4" />
     ) : (
@@ -113,11 +136,11 @@ export function SyncStatusChip() {
   return (
     <>
       <Button
-        variant={view.tone === "review" ? "default" : "ghost"}
+        variant={view.tone === "review" || view.tone === "sign-in" ? "default" : "ghost"}
         size="sm"
         className={cn("gap-1.5 max-md:size-11 max-md:px-0")}
         onClick={() => setReviewOpen(true)}
-        disabled={reviewCount === 0}
+        disabled={reviewCount === 0 && failedCount === 0 && snapshot?.signInRequired !== true}
         aria-label={view.description}
       >
         {icon}
@@ -126,7 +149,11 @@ export function SyncStatusChip() {
       <p role="status" aria-live="polite" className="sr-only">
         {view.description}
       </p>
-      <RestoreReviewDialog open={reviewOpen} onOpenChange={setReviewOpen} />
+      <RestoreReviewDialog
+        open={reviewOpen}
+        onOpenChange={setReviewOpen}
+        onSessionLost={onSessionLost}
+      />
     </>
   );
 }
@@ -163,12 +190,15 @@ export function reviewReasonLabel(reason: ReviewItem["reason"]): string {
 function RestoreReviewDialog({
   open,
   onOpenChange,
+  onSessionLost,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onSessionLost: () => void;
 }) {
-  const { snapshot, resolve } = useOfflineSync();
+  const { snapshot, resolve, retry, discard } = useOfflineSync();
   const items = snapshot?.reviewActions ?? [];
+  const failed = snapshot?.failedActions ?? [];
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -179,20 +209,81 @@ function RestoreReviewDialog({
             {snapshot?.reviewRequired === true
               ? RESTORE_REVIEW_MESSAGE
               : "These changes need a decision before they can sync."}
-            {" Local text and files stay on this device."}
+            {" Local text stays on this device."}
           </DialogDescription>
         </DialogHeader>
-        {items.length === 0 ? (
+        {snapshot?.signInRequired === true && (
+          <div className="flex flex-wrap items-center gap-2 rounded bg-destructive-muted px-2 py-1.5">
+            <p className="min-w-0 flex-1 text-destructive-muted-foreground">
+              Your session ended. Sign in again so the queued changes can sync.
+            </p>
+            <Button size="sm" onClick={onSessionLost}>
+              Sign in again
+            </Button>
+          </div>
+        )}
+        {items.length === 0 && failed.length === 0 ? (
           <p className="text-muted-foreground">Nothing waits for review.</p>
         ) : (
           <ul className="flex flex-col gap-4">
             {items.map((item) => (
               <ReviewItemRow key={item.localId} item={item} onResolve={resolve} />
             ))}
+            {failed.map((item) => (
+              <FailedItemRow key={item.localId} item={item} onRetry={retry} onDiscard={discard} />
+            ))}
           </ul>
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** One definitively refused action, with its retry and discard path. */
+function FailedItemRow({
+  item,
+  onRetry,
+  onDiscard,
+}: {
+  item: FailedItem;
+  onRetry: (localId: string) => Promise<void>;
+  onDiscard: (localId: string) => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+
+  const run = async (action: () => Promise<void>) => {
+    setBusy(true);
+    try {
+      await action();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <li className="rounded-md border p-3">
+      <p className="font-medium">{reviewKindLabel(item.kind)}</p>
+      <p className="text-muted-foreground">{item.failure}</p>
+      <div className="mt-2 flex flex-wrap gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={busy}
+          onClick={() => void run(() => onRetry(item.localId))}
+        >
+          Try again
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={busy}
+          onClick={() => void run(() => onDiscard(item.localId))}
+        >
+          Discard
+        </Button>
+      </div>
+      <Separator className="mt-3" />
+    </li>
   );
 }
 

@@ -534,7 +534,7 @@ export function AppShell({
         <h1 className="font-semibold">Mail</h1>
         <span className="truncate text-muted-foreground">{title}</span>
         <div className="ms-auto flex items-center gap-1">
-          <SyncStatusChip />
+          <SyncStatusChip onSessionLost={onSessionLost} />
           <Button
             ref={commandsButtonRef}
             variant="ghost"
@@ -633,6 +633,7 @@ export function AppShell({
         recoveryGeneration={recoveryGeneration}
         onAccountsChanged={onAccountsChanged}
         onFoldersChanged={folders.reload}
+        onSessionLost={onSessionLost}
       />
 
       <ComposeScreen

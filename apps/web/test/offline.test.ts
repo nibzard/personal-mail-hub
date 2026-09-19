@@ -8,7 +8,7 @@ import {
 } from "../src/components/mail/sync-status.tsx";
 import { classifyReplayFailure, webOfflinePort } from "../src/offline/port.ts";
 import { uploadFits, UPLOAD_MAX_BYTES } from "../src/offline/store.ts";
-import type { FrozenTarget, OfflineStore, SyncSnapshot } from "@mail-hub/offline";
+import type { FailedItem, FrozenTarget, OfflineStore, SyncSnapshot } from "@mail-hub/offline";
 
 /*
  * The offline wiring's decisions (SPEC F9): how one failed replay attempt
@@ -21,14 +21,27 @@ function snapshot(overrides: Partial<SyncSnapshot> = {}): SyncSnapshot {
     serverGeneration: "11111111-1111-4111-8111-111111111111",
     reviewRequired: false,
     restore: null,
+    signInRequired: false,
     pendingActions: 0,
     unsupportedActions: 0,
     waitingSends: 0,
     reviewActions: [],
-    failedActions: 0,
+    failedActions: [],
     dirtyDrafts: 0,
     pendingUploads: 0,
     lastSyncedAt: null,
+    ...overrides,
+  };
+}
+
+/** One refused queue item, as the fixture shows it. */
+function failedItem(overrides: Partial<FailedItem> = {}): FailedItem {
+  return {
+    localId: "failed-1",
+    kind: "upload",
+    failure: "413 too large",
+    queuedAt: 1,
+    draftId: "d1",
     ...overrides,
   };
 }
@@ -82,6 +95,14 @@ describe("replay failure classification", () => {
       reason: "Malformed.",
     });
   });
+
+  it("pauses for sign-in on an ended session instead of failing the item", () => {
+    expect(classifyReplayFailure(new ApiError(401, "http_401", "The session ended."))).toEqual({
+      state: "retry",
+      reason: "The session ended.",
+      signInRequired: true,
+    });
+  });
 });
 
 describe("the sync status line", () => {
@@ -116,6 +137,39 @@ describe("the sync status line", () => {
     expect(describeSyncStatus(snapshot(), true, true)).toMatchObject({
       tone: "syncing",
       label: "Syncing",
+    });
+  });
+
+  it("asks for sign-in when a pass paused on the ended session", () => {
+    expect(
+      describeSyncStatus(snapshot({ signInRequired: true, pendingActions: 2 }), true, false),
+    ).toMatchObject({
+      tone: "sign-in",
+      label: "Sign in to sync · 2 waiting on this device",
+    });
+    // Offline stays the visible condition; sign-in returns with the network.
+    expect(
+      describeSyncStatus(snapshot({ signInRequired: true, pendingActions: 2 }), false, false),
+    ).toMatchObject({
+      tone: "offline",
+    });
+  });
+
+  it("counts definitively refused changes below the sign-in request", () => {
+    expect(describeSyncStatus(snapshot({ failedActions: [failedItem()] }), true, false)).toMatchObject(
+      {
+        tone: "failed",
+        label: "1 failed to sync",
+      },
+    );
+    expect(
+      describeSyncStatus(
+        snapshot({ signInRequired: true, failedActions: [failedItem()] }),
+        true,
+        false,
+      ),
+    ).toMatchObject({
+      tone: "sign-in",
     });
   });
 });

@@ -41,6 +41,11 @@ export function classifyReplayFailure(
       ? { state: "review", reason: "uncertain_send" }
       : { state: "retry", reason: failure.message };
   }
+  if (failure.unauthorized) {
+    // A session that ended overnight is retryable after sign-in: the pass
+    // pauses, the interface offers sign-in, and the next pass resumes.
+    return { state: "retry", reason: failure.message, signInRequired: true };
+  }
   if (failure.code === "draft_stale") {
     return { state: "review", reason: "draft_conflict" };
   }

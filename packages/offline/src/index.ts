@@ -22,6 +22,7 @@ export {
   ReviewChoiceError,
   UploadsUnverifiedError,
   isQuotaRejection,
+  type FailedItem,
   type OfflinePort,
   type ReplayOutcome,
   type ReviewChoice,

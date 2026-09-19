@@ -46,6 +46,7 @@ export function SettingsScreen({
   recoveryGeneration,
   onAccountsChanged,
   onFoldersChanged,
+  onSessionLost,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -55,6 +56,8 @@ export function SettingsScreen({
   recoveryGeneration: string | null;
   onAccountsChanged: () => void;
   onFoldersChanged: () => void;
+  /** Re-probes the session after it ended, opening sign-in when needed. */
+  onSessionLost: () => void;
 }) {
   const settings = useAppSettings();
   const sync = useSyncStatus(open);
@@ -76,10 +79,20 @@ export function SettingsScreen({
           </p>
         ) : settings.phase === "error" ? (
           <div className="flex flex-wrap items-center gap-2">
-            <p className="min-w-0 flex-1">{settings.error?.message ?? "Settings cannot be loaded."}</p>
-            <Button variant="outline" size="sm" onClick={settings.reload}>
-              Try again
-            </Button>
+            <p className="min-w-0 flex-1">
+              {settings.error?.unauthorized === true
+                ? "Your session ended."
+                : (settings.error?.message ?? "Settings cannot be loaded.")}
+            </p>
+            {settings.error?.unauthorized === true ? (
+              <Button size="sm" onClick={onSessionLost}>
+                Sign in again
+              </Button>
+            ) : (
+              <Button variant="outline" size="sm" onClick={settings.reload}>
+                Try again
+              </Button>
+            )}
           </div>
         ) : (
           <>
