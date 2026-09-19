@@ -233,12 +233,13 @@
         "mime",
         "storage"
       ],
-      "updated_at": "2026-09-19T00:41:31Z",
+      "updated_at": "2026-09-19T00:42:03Z",
       "files": [
+        "AGENTS.md",
+        "packages/contracts/src/index.ts",
         "packages/ingestion/package.json",
-        "packages/ingestion/tsconfig.json",
-        "packages/ingestion/src/index.ts",
         "packages/ingestion/src/errors.ts",
+        "packages/ingestion/src/index.ts",
         "packages/ingestion/src/parse.ts",
         "packages/ingestion/src/sanitize.ts",
         "packages/ingestion/src/service.ts",
@@ -247,16 +248,16 @@
         "packages/ingestion/test/parse.test.ts",
         "packages/ingestion/test/sanitize.test.ts",
         "packages/ingestion/test/service.test.ts",
-        "packages/contracts/src/index.ts",
-        "AGENTS.md"
+        "packages/ingestion/tsconfig.json",
+        "to-do.json"
       ]
     },
     {
       "id": "T008",
       "title": "Build resumable IMAP backfill",
       "priority": 1,
-      "status": "todo",
-      "details": "Import header ranges newest first with transactional checkpoints, UIDVALIDITY checks, bounded batches, and background body jobs.",
+      "status": "done",
+      "details": "Import header ranges newest first with transactional checkpoints, UIDVALIDITY checks, bounded batches, and background body jobs. Done: new packages/sync (ImapFlow session factory with verified implicit TLS and BODY.PEEK only, header-block import mirroring ingestion normalization, BackfillService with one-transaction window commits, BodyFetchService over the durable fetched_body=false pending set, SyncRunner bounded per-account cycles) wired into the worker as a generation-gated sync.cycle cron; PostgreSQL-backed acceptance suite included.",
       "depends_on": [
         "T005",
         "T007"
@@ -264,6 +265,25 @@
       "tags": [
         "sync",
         "imap"
+      ],
+      "updated_at": "2026-09-19T01:09:38Z",
+      "files": [
+        "packages/sync/package.json",
+        "packages/sync/tsconfig.json",
+        "packages/sync/src/errors.ts",
+        "packages/sync/src/mailbox.ts",
+        "packages/sync/src/imap-session.ts",
+        "packages/sync/src/headers.ts",
+        "packages/sync/src/backfill.ts",
+        "packages/sync/src/bodies.ts",
+        "packages/sync/src/runner.ts",
+        "packages/sync/src/index.ts",
+        "packages/sync/test/fake-mailbox.ts",
+        "packages/sync/test/headers.test.ts",
+        "packages/sync/test/backfill.test.ts",
+        "apps/worker/src/main.ts",
+        "apps/worker/package.json",
+        "AGENTS.md"
       ]
     },
     {

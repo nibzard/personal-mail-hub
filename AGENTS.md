@@ -20,6 +20,9 @@
 - `packages/ingestion` contains durable MIME ingestion: original-byte storage
   before processing, header and body parsing, HTML sanitizing, index text,
   and verified attachment locators with hash-checked regeneration.
+- `packages/sync` contains the resumable IMAP backfill and background body
+  fetching: checkpointed UID windows newest first, UIDVALIDITY checks on
+  every selection and commit, and one bounded cycle per account per cron run.
 - `packages/database` contains the Drizzle schema, SQL migrations, object
   storage, and pg-boss integration. Run `npm run db:generate` there after
   changing `src/schema.ts`; apply migrations with `npm run db:migrate`.
