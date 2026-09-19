@@ -537,30 +537,31 @@
         "compose",
         "drafts"
       ],
-      "updated_at": "2026-09-19T04:59:16Z",
+      "updated_at": "2026-09-19T04:59:55Z",
       "files": [
-        "packages/compose/package.json",
-        "packages/compose/tsconfig.json",
-        "packages/compose/src/errors.ts",
-        "packages/compose/src/validation.ts",
-        "packages/compose/src/service.ts",
-        "packages/compose/src/autosave.ts",
-        "packages/compose/src/index.ts",
-        "packages/compose/test/service.test.ts",
-        "packages/compose/test/autosave.test.ts",
-        "packages/contracts/src/index.ts",
+        "AGENTS.md",
         "apps/api/src/compose-routes.ts",
         "apps/api/src/main.ts",
         "apps/api/test/compose-routes.test.ts",
-        "AGENTS.md"
+        "packages/compose/package.json",
+        "packages/compose/src/autosave.ts",
+        "packages/compose/src/errors.ts",
+        "packages/compose/src/index.ts",
+        "packages/compose/src/service.ts",
+        "packages/compose/src/validation.ts",
+        "packages/compose/test/autosave.test.ts",
+        "packages/compose/test/service.test.ts",
+        "packages/compose/tsconfig.json",
+        "packages/contracts/src/index.ts",
+        "to-do.json"
       ]
     },
     {
       "id": "T020",
       "title": "Implement reply addressing and frozen reply headers",
       "priority": 1,
-      "status": "todo",
-      "details": "Derive reply and reply-all recipients safely, require account and identity choices when needed, remove duplicates and identities, and freeze References headers.",
+      "status": "done",
+      "details": "Reply addressing and frozen reply headers per SPEC F6. New createReplyDraft service method and POST /drafts/reply route derive one draft from a single selected parent: reply targets the parent's valid Reply-To addresses or its From, reply-all adds the parent's visible To and Cc to Cc, duplicates, configured identities, and Bcc addresses never survive, your own sent message reuses its visible recipients and sender identity, and a malformed or empty Reply-To, an empty result, a grouped copy in several accounts, or an ambiguous identity match rejects with recipients_required, account_choice_required, or identity_choice_required so the request repeats with an explicit choice. In-Reply-To becomes the parent's single valid Message-ID and References its valid References (else its single valid In-Reply-To) followed by that identifier, omitted when unavailable, frozen on the draft together with the parent and thread so later relinks and edits leave them unchanged. Verified 2026-09-19: all workspaces type-check clean and the full suite passes with TEST_DATABASE_URL set (11 workspaces, 301 tests, nothing skipped).",
       "depends_on": [
         "T010",
         "T019"
@@ -568,6 +569,20 @@
       "tags": [
         "compose",
         "email"
+      ],
+      "updated_at": "2026-09-19T05:16:44Z",
+      "files": [
+        "AGENTS.md",
+        "apps/api/src/compose-routes.ts",
+        "apps/api/test/compose-routes.test.ts",
+        "packages/compose/src/errors.ts",
+        "packages/compose/src/index.ts",
+        "packages/compose/src/reply.ts",
+        "packages/compose/src/service.ts",
+        "packages/compose/src/validation.ts",
+        "packages/compose/test/reply.test.ts",
+        "packages/contracts/src/index.ts",
+        "to-do.json"
       ]
     },
     {

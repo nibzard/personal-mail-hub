@@ -8,6 +8,7 @@ import type {
   DraftView,
   IdentitySelection,
   MessageRecipients,
+  ReplyMode,
   UploadResponse,
   UploadView,
 } from "@mail-hub/contracts";
@@ -30,6 +31,7 @@ import { SESSION_COOKIE } from "./auth-routes.ts";
 export type ComposeServiceForRoutes = Pick<
   ComposeService,
   | "createDraft"
+  | "createReplyDraft"
   | "updateDraft"
   | "readDraft"
   | "listDrafts"
@@ -179,6 +181,40 @@ export async function registerComposeRoutes(
       "/drafts/:id",
       { schema: { params: draftParams }, preHandler: [requireSession] },
       async (request) => ({ draft: toDraftView(await service.readDraft(request.params.id)) }),
+    );
+
+    scope.post<{ Body: ReplyDraftCreateBody; Reply: DraftResponse }>(
+      "/drafts/reply",
+      {
+        schema: {
+          body: {
+            type: "object",
+            required: ["messageId", "mode"],
+            properties: {
+              messageId: { type: "string", pattern: UUID_PATTERN },
+              accountId: { type: "string", pattern: UUID_PATTERN },
+              mode: { type: "string", enum: ["reply", "reply_all"] },
+              identity: identitySchema,
+              recipients: recipientsSchema,
+              markdown: { type: ["string", "null"], maxLength: 2_000_000 },
+            },
+            additionalProperties: false,
+          },
+        },
+        preHandler: [requireOrigin, requireSession],
+      },
+      async (request, reply) => {
+        const body = request.body;
+        const draft = await service.createReplyDraft(readContext(request), {
+          messageId: body.messageId,
+          accountId: body.accountId,
+          mode: body.mode,
+          identity: body.identity,
+          recipients: body.recipients,
+          markdown: body.markdown ?? undefined,
+        });
+        return reply.code(201).send({ draft: toDraftView(draft) });
+      },
     );
 
     scope.patch<{ Params: { id: string }; Body: DraftEditBody; Reply: DraftResponse }>(
@@ -352,6 +388,16 @@ interface DraftCreateBody {
   markdown?: string | null;
 }
 
+/** The body of `POST /drafts/reply` (SPEC F6). */
+interface ReplyDraftCreateBody {
+  messageId: string;
+  accountId?: string;
+  mode: ReplyMode;
+  identity?: IdentitySelection;
+  recipients?: MessageRecipients;
+  markdown?: string | null;
+}
+
 /** The body of `PATCH /drafts/:id`. */
 interface DraftEditBody {
   baseRevision: number;
@@ -376,6 +422,10 @@ function toDraftView(draft: DraftRecord): DraftView {
     markdown: draft.markdown,
     revision: draft.revision,
     lockedBySend: draft.lockedBySend,
+    replyParentId: draft.replyParentId,
+    threadId: draft.threadId,
+    inReplyTo: draft.inReplyTo,
+    referenceIds: draft.referenceIds,
     updatedAt: draft.updatedAt.toISOString(),
   };
 }

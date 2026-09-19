@@ -34,6 +34,8 @@ const GENERATION = "11111111-1111-4111-8111-111111111111";
 const ACCOUNT_ID = "9d0a6d15-2a6e-4bb5-9f5e-0f0a9a1b2c3d";
 const DRAFT_ID = "c65d4ac2-1b6e-45f0-9be4-7ac1a89be9a0";
 const UPLOAD_ID = "5f2d51f3-9f0b-4c8e-a4e1-2f0e1e9a1b52";
+const MESSAGE_ID = "3f0c8a21-77aa-4d5b-9e64-1c2b3a4d5e6f";
+const THREAD_ID = "0aa5b6c4-2211-4c8d-8f22-9b6c5d4e3f2a";
 const NOW = new Date("2026-09-18T10:00:00.000Z");
 
 const DRAFT: DraftRecord = {
@@ -45,7 +47,22 @@ const DRAFT: DraftRecord = {
   markdown: "**Hi**",
   revision: 1,
   lockedBySend: null,
+  replyParentId: null,
+  threadId: null,
+  inReplyTo: null,
+  referenceIds: [],
   updatedAt: NOW,
+};
+
+/** A reply draft as the service returns it: frozen parent and references. */
+const REPLY_DRAFT: DraftRecord = {
+  ...DRAFT,
+  recipients: { to: [{ address: "sender@example.com", name: null }] },
+  subject: "Re: Hello",
+  replyParentId: MESSAGE_ID,
+  threadId: THREAD_ID,
+  inReplyTo: "<parent@example.com>",
+  referenceIds: ["<parent@example.com>"],
 };
 
 const UPLOAD: UploadRecord = {
@@ -64,6 +81,8 @@ const ATTACHMENT: DraftAttachmentRecord = { ...UPLOAD, ordinal: 0 };
 interface ServiceCalls {
   generations: (string | null | undefined)[];
   createdAccounts: string[];
+  replyParents: string[];
+  replyModes: string[];
   updatedIds: string[];
   deletedIds: string[];
   uploadedAccounts: (string | null)[];
@@ -79,6 +98,8 @@ function fakeService(
   const calls: ServiceCalls = {
     generations: [],
     createdAccounts: [],
+    replyParents: [],
+    replyModes: [],
     updatedIds: [],
     deletedIds: [],
     uploadedAccounts: [],
@@ -103,6 +124,19 @@ function fakeService(
       track(context);
       calls.createdAccounts.push(input.accountId);
       return { ...DRAFT, accountId: input.accountId };
+    },
+    async createReplyDraft(
+      context: MutationContext,
+      input: { messageId: string; mode: string; accountId?: string },
+    ) {
+      track(context);
+      calls.replyParents.push(input.messageId);
+      calls.replyModes.push(input.mode);
+      if (input.accountId === undefined) {
+        // A grouped copy in several accounts: the choice is required.
+        throw new ComposeError("account_choice_required", "Choose the account to reply from.");
+      }
+      return { ...REPLY_DRAFT, accountId: input.accountId };
     },
     async updateDraft(context: MutationContext, id: string, input: { baseRevision: number; markdown?: string }) {
       track(context);
@@ -204,6 +238,10 @@ describe("compose routes", () => {
       markdown: "**Hi**",
       revision: 1,
       lockedBySend: null,
+      replyParentId: null,
+      threadId: null,
+      inReplyTo: null,
+      referenceIds: [],
       updatedAt: NOW.toISOString(),
     });
   });
@@ -252,6 +290,56 @@ describe("compose routes", () => {
       payload: { accountId: "not-a-uuid" },
     });
     expect(invalid.statusCode).toBe(400);
+  });
+
+  it("creates a reply draft and maps its choice rejections", async () => {
+    const service = fakeService();
+    const app = await makeApp(service);
+
+    const choiceRequired = await app.inject({
+      method: "POST",
+      url: "/drafts/reply",
+      headers: { ...originHeaders, "content-type": "application/json", "x-recovery-generation": GENERATION },
+      payload: { messageId: MESSAGE_ID, mode: "reply" },
+    });
+    expect(choiceRequired.statusCode).toBe(409);
+    expect(choiceRequired.json<ComposeErrorBody>().error.code).toBe("account_choice_required");
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/drafts/reply",
+      headers: { ...originHeaders, "content-type": "application/json", "x-recovery-generation": GENERATION },
+      payload: {
+        messageId: MESSAGE_ID,
+        accountId: ACCOUNT_ID,
+        mode: "reply_all",
+        identity: { address: "alias@example.com" },
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const draft = created.json<DraftResponse>().draft;
+    expect(draft.replyParentId).toBe(MESSAGE_ID);
+    expect(draft.inReplyTo).toBe("<parent@example.com>");
+    expect(draft.referenceIds).toEqual(["<parent@example.com>"]);
+    expect(service.calls.replyParents).toEqual([MESSAGE_ID, MESSAGE_ID]);
+    expect(service.calls.replyModes).toEqual(["reply", "reply_all"]);
+    expect(service.calls.generations).toEqual([GENERATION, GENERATION]);
+
+    const invalidMode = await app.inject({
+      method: "POST",
+      url: "/drafts/reply",
+      headers: { ...originHeaders, "content-type": "application/json" },
+      payload: { messageId: MESSAGE_ID, mode: "forward" },
+    });
+    expect(invalidMode.statusCode).toBe(400);
+
+    const anonymous = await app.inject({
+      method: "POST",
+      url: "/drafts/reply",
+      headers: { origin: ORIGIN, "content-type": "application/json" },
+      payload: { messageId: MESSAGE_ID, mode: "reply" },
+    });
+    expect(anonymous.statusCode).toBe(401);
   });
 
   it("maps stale revisions to 409 with the current revision", async () => {

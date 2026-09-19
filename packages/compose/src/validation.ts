@@ -102,8 +102,8 @@ export function normalizeEmailAddress(input: string): string {
   return trimmed;
 }
 
-/** Normalize an optional display name. */
-function normalizeAddressName(input: string | null | undefined): string | null {
+/** Normalize an optional display name. Derived names fall back to `null` when invalid. */
+export function normalizeAddressName(input: string | null | undefined): string | null {
   if (input === null || input === undefined) {
     return null;
   }

@@ -188,14 +188,17 @@ export interface FolderImportResponse extends FolderImportResult {
   pendingRoleChoices: RequiredFolderRole[];
 }
 
-/** Compose rejection codes: draft editing and durable uploads (SPEC F6, F9). */
+/** Compose rejection codes: draft editing, durable uploads, and replies (SPEC F6, F9). */
 export type ComposeErrorCode =
   | "invalid_request"
   | "not_found"
   | "draft_stale"
   | "draft_locked"
   | "identity_invalid"
-  | "upload_unverified";
+  | "upload_unverified"
+  | "account_choice_required"
+  | "identity_choice_required"
+  | "recipients_required";
 
 /** The body of a compose route rejection. */
 export interface ComposeErrorBody {
@@ -225,6 +228,9 @@ export interface IdentitySelection {
   address: string;
 }
 
+/** Which recipient derivation one reply draft opens with (SPEC F6). */
+export type ReplyMode = "reply" | "reply_all";
+
 /** One editable draft in its wire form. */
 export interface DraftView {
   id: string;
@@ -236,6 +242,14 @@ export interface DraftView {
   revision: number;
   /** The outbound attempt that locked this draft, when one has (SPEC F7). */
   lockedBySend: string | null;
+  /** The selected parent of a reply draft; `null` for new messages (SPEC F6). */
+  replyParentId: string | null;
+  /** The parent's thread as frozen with the draft. */
+  threadId: string | null;
+  /** The frozen `In-Reply-To` identifier; `null` when the parent has none usable. */
+  inReplyTo: string | null;
+  /** The frozen `References` identifiers, oldest first. */
+  referenceIds: string[];
   updatedAt: string;
 }
 

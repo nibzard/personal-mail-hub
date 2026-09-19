@@ -1,8 +1,10 @@
 import type { ComposeErrorCode } from "@mail-hub/contracts";
 
 /**
- * Compose rejections: draft editing, uploads, and draft locking. Each code
- * maps to one HTTP status so routes and workers report the same way.
+ * Compose rejections: draft editing, uploads, draft locking, and reply
+ * addressing. Each code maps to one HTTP status so routes and workers report
+ * the same way. The three choice codes report `409`: the stored parent, not
+ * the request, is what leaves the choice open.
  */
 
 const HTTP_STATUS_BY_CODE: Record<ComposeErrorCode, number> = {
@@ -12,6 +14,9 @@ const HTTP_STATUS_BY_CODE: Record<ComposeErrorCode, number> = {
   draft_locked: 423,
   identity_invalid: 400,
   upload_unverified: 409,
+  account_choice_required: 409,
+  identity_choice_required: 409,
+  recipients_required: 409,
 };
 
 /** A compose rejection with its HTTP status. */

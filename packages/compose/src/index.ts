@@ -1,6 +1,6 @@
 /**
- * Compose support: draft editing, durable uploads, and the client autosave
- * contract (SPEC F6 and F9).
+ * Compose support: draft editing, durable uploads, reply addressing with
+ * frozen reply headers, and the client autosave contract (SPEC F6 and F9).
  */
 
 export { ComposeError } from "./errors.ts";
@@ -16,10 +16,20 @@ export {
   validateUploadBytes,
 } from "./validation.ts";
 export {
+  deriveReplyRecipients,
+  extractValidMessageIds,
+  freezeReplyReferences,
+  preselectReplyIdentity,
+  replySubject,
+  type FrozenReplyReferences,
+  type ReplyParentHeaders,
+} from "./reply.ts";
+export {
   ComposeService,
   lockDraftForSend,
   unlockDraftAfterFailure,
   type CreateDraftInput,
+  type CreateReplyDraftInput,
   type CreateUploadInput,
   type DraftAttachmentRecord,
   type DraftRecord,

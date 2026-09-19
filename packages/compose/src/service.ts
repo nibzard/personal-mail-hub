@@ -1,23 +1,31 @@
-import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
 import {
   accounts,
   draftUploads,
   drafts,
   events,
+  messages,
   outboundMessages,
   uploads,
   uploadKey,
   type AccountIdentity,
   type EmailAddress,
+  type Message,
   type Recipients,
   type Storage,
   type Upload,
 } from "@mail-hub/database";
 import type { MailHubDatabase } from "@mail-hub/database";
-import type { MessageRecipients } from "@mail-hub/contracts";
+import type { MessageRecipients, ReplyMode } from "@mail-hub/contracts";
 import type { MailHubTransaction, MutationGate } from "@mail-hub/recovery";
 import { createHash, randomUUID } from "node:crypto";
 import { ComposeError } from "./errors.ts";
+import {
+  deriveReplyRecipients,
+  freezeReplyReferences,
+  preselectReplyIdentity,
+  replySubject,
+} from "./reply.ts";
 import {
   normalizeContentType,
   normalizeFilename,
@@ -66,6 +74,27 @@ export interface CreateDraftInput {
   markdown?: string | null;
 }
 
+/**
+ * Input for one reply draft (SPEC F6). The parent decides the account, the
+ * recipients, the From identity, and the frozen wire references. An explicit
+ * choice or recipient list overrides a derivation that cannot be made safely.
+ */
+export interface CreateReplyDraftInput {
+  /** The selected parent message. */
+  messageId: string;
+  /**
+   * The holding account. Required when a grouped row has copies in several
+   * accounts; otherwise the parent's own account is used.
+   */
+  accountId?: string;
+  mode: ReplyMode;
+  /** An explicit From choice for ambiguous or blind-copy parents. */
+  identity?: { address: string } | null;
+  /** An explicit recipient list, for parents whose headers need correction. */
+  recipients?: MessageRecipients | null;
+  markdown?: string | null;
+}
+
 /** Editable draft fields. `undefined` leaves a field unchanged. */
 export interface UpdateDraftInput {
   /** The revision the caller basing this edit on. */
@@ -97,6 +126,14 @@ export interface DraftRecord {
   markdown: string;
   revision: number;
   lockedBySend: string | null;
+  /** The selected parent of a reply draft; `null` for new messages (SPEC F6). */
+  replyParentId: string | null;
+  /** The parent's thread as frozen with the draft. */
+  threadId: string | null;
+  /** The frozen `In-Reply-To` identifier. */
+  inReplyTo: string | null;
+  /** The frozen `References` identifiers, oldest first. */
+  referenceIds: string[];
   updatedAt: Date;
 }
 
@@ -156,6 +193,79 @@ export class ComposeService {
         recipientCount:
           recipients.to.length + (recipients.cc?.length ?? 0) + (recipients.bcc?.length ?? 0),
         hasSubject: subject !== null,
+      });
+      return toDraftRecord(row);
+    });
+  }
+
+  /**
+   * Create one reply draft from a single selected parent (SPEC F6). The
+   * context freezes with the draft: the holding account, the selected parent,
+   * its thread, and the wire references derived from its identifiers. Nothing
+   * is inferred from the rest of the thread, so a later relink changes
+   * neither the stored headers nor the snapshot a queued send takes.
+   *
+   * Derivations that cannot be made safely reject with a choice code:
+   * `account_choice_required` when a grouped row has copies in several
+   * accounts, `identity_choice_required` when no single configured identity
+   * matches the parent, and `recipients_required` when its `Reply-To` is
+   * malformed or no recipients remain. Each rejects request repeats with the
+   * matching explicit choice.
+   */
+  async createReplyDraft(context: MutationContext, input: CreateReplyDraftInput): Promise<DraftRecord> {
+    await this.gate.gateMutation(context.requestGeneration);
+    requireUuid("message id", input.messageId);
+    if (input.accountId !== undefined) {
+      requireUuid("account id", input.accountId);
+    }
+    if (input.mode !== "reply" && input.mode !== "reply_all") {
+      throw new ComposeError("invalid_request", "The reply mode must be 'reply' or 'reply_all'.");
+    }
+
+    return this.db.transaction(async (tx) => {
+      const parent = await resolveReplyParent(tx, input);
+      const account = await this.requireAccount(parent.accountId, tx);
+
+      const identity =
+        input.identity !== undefined && input.identity !== null
+          ? resolveIdentity(account.identities, input.identity)
+          : preselectReplyIdentity(parent, account.identities);
+      if (identity === null) {
+        throw new ComposeError(
+          "identity_choice_required",
+          "No single identity of this account matches the parent message; choose the From identity.",
+        );
+      }
+
+      const recipients =
+        input.recipients !== undefined && input.recipients !== null
+          ? normalizeRecipients(input.recipients)
+          : deriveReplyRecipients(parent, account.identities, input.mode);
+      const references = freezeReplyReferences(parent);
+
+      const inserted = await tx
+        .insert(drafts)
+        .values({
+          accountId: account.id,
+          identity: { address: identity.address, name: identity.name },
+          threadId: parent.threadId,
+          replyParentId: parent.id,
+          inReplyTo: references.inReplyTo,
+          referenceIds: references.referenceIds,
+          recipients,
+          subject: replySubject(parent.subject),
+          markdown: normalizeMarkdown(input.markdown),
+        })
+        .returning();
+      const row = inserted[0]!;
+      await recordComposeEvent(tx, "user", "draft.reply_created", "draft", row.id, {
+        account: account.id,
+        parent: parent.id,
+        mode: input.mode,
+        identity: identity.address,
+        recipientCount:
+          recipients.to.length + (recipients.cc?.length ?? 0) + (recipients.bcc?.length ?? 0),
+        explicitRecipients: input.recipients !== undefined && input.recipients !== null,
       });
       return toDraftRecord(row);
     });
@@ -498,6 +608,62 @@ async function verifyStoredUpload(storage: Storage, row: Upload): Promise<boolea
 
 type DraftRow = typeof drafts.$inferSelect;
 
+/**
+ * Resolve the parent one reply targets, together with its holding account
+ * (SPEC F6). A grouped row with copies in several accounts requires an
+ * explicit account choice before the draft exists. A chosen account other
+ * than the selected row's own must hold the byte-identical copy, and the
+ * reply then targets that copy.
+ */
+async function resolveReplyParent(
+  tx: MailHubTransaction,
+  input: { messageId: string; accountId?: string },
+): Promise<Message> {
+  const rows = await tx.select().from(messages).where(eq(messages.id, input.messageId)).limit(1);
+  const selected = rows[0];
+  if (selected === undefined) {
+    throw new ComposeError("not_found", "No message exists with this identifier.");
+  }
+
+  const chosen = input.accountId ?? selected.accountId;
+  if (chosen === selected.accountId) {
+    if (input.accountId === undefined && (await hasGroupedCopies(tx, selected))) {
+      throw new ComposeError(
+        "account_choice_required",
+        "This message has copies in several accounts; choose the account to reply from.",
+      );
+    }
+    return selected;
+  }
+
+  if (selected.originalSha256 === null) {
+    throw new ComposeError("invalid_request", "The chosen account does not hold a copy of this message.");
+  }
+  const copies = await tx
+    .select()
+    .from(messages)
+    .where(and(eq(messages.accountId, chosen), eq(messages.originalSha256, selected.originalSha256)))
+    .limit(1);
+  const copy = copies[0];
+  if (copy === undefined) {
+    throw new ComposeError("invalid_request", "The chosen account does not hold a copy of this message.");
+  }
+  return copy;
+}
+
+/** Whether the same original bytes also exist under another account. */
+async function hasGroupedCopies(tx: MailHubTransaction, row: Message): Promise<boolean> {
+  if (row.originalSha256 === null) {
+    return false;
+  }
+  const others = await tx
+    .select({ accountId: messages.accountId })
+    .from(messages)
+    .where(and(eq(messages.originalSha256, row.originalSha256), ne(messages.accountId, row.accountId)))
+    .limit(1);
+  return others.length > 0;
+}
+
 /** Lock one live draft for edit checks. Deleted and unknown drafts are gone. */
 async function lockEditableDraft(tx: MailHubTransaction, draftId: string): Promise<DraftRow> {
   const row = await lockDraftRow(tx, draftId);
@@ -551,6 +717,10 @@ function toDraftRecord(row: DraftRow): DraftRecord {
     markdown: row.markdown,
     revision: row.revision,
     lockedBySend: row.lockedBySend,
+    replyParentId: row.replyParentId,
+    threadId: row.threadId,
+    inReplyTo: row.inReplyTo,
+    referenceIds: row.referenceIds,
     updatedAt: row.updatedAt,
   };
 }
