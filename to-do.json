@@ -602,8 +602,8 @@
       "id": "T017",
       "title": "Implement clean view and reply quote extraction",
       "priority": 3,
-      "status": "todo",
-      "details": "Integrate pinned Defuddle and DOMPurify with safe fallback paths, redacted diagnostics, snapshot fixtures, and no implicit remote extraction.",
+      "status": "done",
+      "details": "Done: new @mail-hub/content package wraps the pinned defuddle 0.19.4 (linkedom 0.18.13, turndown 7.2.4) behind one ContentExtractor with two derived views. Clean view: Defuddle extraction of the sanitized body, then DOMPurify again through the ingestion sanitizer, then the reader's sandboxed frame; an empty or failed extraction falls back to the sanitized original. Reply quote: Defuddle with markdown:true over the sanitized HTML becomes a Markdown blockquote; fallbacks are the plain-text part, then text read from the sanitized HTML, and raw HTML never enters the Markdown source (tag-like leftovers reroute to a fallback); a derived quote respects the Markdown ceiling with a bracketed marker. Every pass runs useAsync:false plus a refusing fetch override, so no implicit remote extraction survives an upgrade that ignores the flag; diagnostics are opt-in and reduced to removal counts and reasons, never removed text or raw HTML; EXTRACTION_VERSION pins the config for deliberate upgrades. Redacted corpus (Gmail and Outlook reply chains, newsletter, calendar invite, table-wrapped one-liner, nested chain, signature footer, short note, empty HTML with text, plain-only) pins Markdown and clean-view output in snapshots, with hostile-input, fallback, redaction, and no-fetch guards. ReadingService.readCleanView and the session-gated GET /messages/:id/clean-view route (CleanViewResponse contract) compute the derived view on request and store nothing; the reader gains a per-message Clean view toggle that keeps the sanitized original one click away, applies the remote-image policy to both views, and states the fallback. ComposeService.createReplyDraft seeds the parent quote through Defuddle when the caller passes no markdown; the audit event records quoteSource, never quoted text. Verified: npm run check clean across workspaces; full npm test with TEST_DATABASE_URL set ran 19 workspace suites, 0 failed, 0 skipped (content 16, reading 10, compose 39, api 70); the web browser suites pass against the production build, flows 14 including two new clean-view cases and interface 11.",
       "depends_on": [
         "T007",
         "T016"
@@ -611,6 +611,30 @@
       "tags": [
         "reading",
         "content"
+      ],
+      "updated_at": "2026-09-19T15:34:00Z",
+      "files": [
+        "AGENTS.md",
+        "apps/api/src/message-routes.ts",
+        "apps/api/test/message-routes.test.ts",
+        "apps/web/e2e/fixture-data.mjs",
+        "apps/web/e2e/fixture-server.mjs",
+        "apps/web/e2e/flows.browser.ts",
+        "apps/web/src/components/mail/reader-pane.tsx",
+        "apps/web/src/mail/data.ts",
+        "package-lock.json",
+        "packages/compose/package.json",
+        "packages/compose/src/index.ts",
+        "packages/compose/src/service.ts",
+        "packages/compose/src/validation.ts",
+        "packages/compose/test/reply.test.ts",
+        "packages/contracts/src/index.ts",
+        "packages/content",
+        "packages/ingestion/package.json",
+        "packages/reading/package.json",
+        "packages/reading/src/index.ts",
+        "packages/reading/src/service.ts",
+        "packages/reading/test/service.test.ts"
       ]
     },
     {

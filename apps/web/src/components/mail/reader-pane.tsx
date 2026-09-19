@@ -1,4 +1,4 @@
-import { ArrowLeft, Download, Paperclip, Star } from "lucide-react";
+import { ArrowLeft, Download, Paperclip, Sparkles, Star } from "lucide-react";
 import { useMemo, useState } from "react";
 import type {
   MessageAttachmentView,
@@ -12,15 +12,15 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { apiUrl } from "@/lib/api";
 import { formatBytes, formatCount, formatFullTime, senderLabel } from "@/lib/format";
-import { useInlineImages, useMessageDetail } from "@/mail/data";
+import { useCleanView, useInlineImages, useMessageDetail } from "@/mail/data";
 import { prepareMessageDocument } from "@/mail/render";
 import { SanitizedMessageFrame, useReaderColors } from "./message-body";
 
 /*
  * The reader pane (SPEC F3). The list row carries the header; this pane adds
- * the sanitized body, quote collapsing, the remote-image decision, and
- * verified attachment downloads. Every body byte is a server-sanitized
- * derivative; the frame adds its own sandbox on top.
+ * the sanitized body, quote collapsing, the optional clean view, the
+ * remote-image decision, and verified attachment downloads. Every body byte
+ * is a server-sanitized derivative; the frame adds its own sandbox on top.
  */
 
 export interface ReaderPaneProps {
@@ -42,17 +42,33 @@ export function ReaderPane({ message, onBack, onSessionLost, className }: Reader
   const [imagesLoadedFor, setImagesLoadedFor] = useState<string | null>(null);
   const allowRemoteImages = messageId !== null && imagesLoadedFor === messageId;
 
+  // Clean view is one toggle per message (SPEC F3): Defuddle extraction,
+  // then DOMPurify, then this same frame. The sanitized original stays one
+  // click away, and the remote-image policy applies to both views.
+  const [cleanViewFor, setCleanViewFor] = useState<string | null>(null);
+  const cleanEnabled = messageId !== null && cleanViewFor === messageId;
+  const cleanResource = useCleanView(messageId, cleanEnabled);
+  const cleanView = cleanEnabled && cleanResource.phase === "ready" ? cleanResource.data : null;
+  const activeHtml = cleanView?.html ?? body?.htmlSanitized ?? null;
+
+  const cleanNote =
+    cleanEnabled && cleanResource.phase === "error"
+      ? "Clean view cannot be loaded. Showing the sanitized original."
+      : cleanView?.source === "original_fallback"
+        ? "Extraction found nothing to clean. Showing the sanitized original."
+        : null;
+
   const prepared = useMemo(
     () =>
-      body?.htmlSanitized !== undefined && body?.htmlSanitized !== null
+      activeHtml !== null
         ? prepareMessageDocument({
-            html: body.htmlSanitized,
+            html: activeHtml,
             inlineImages: inline.map,
             allowRemoteImages,
             colors,
           })
         : null,
-    [body?.htmlSanitized, inline.map, allowRemoteImages, colors],
+    [activeHtml, inline.map, allowRemoteImages, colors],
   );
 
   return (
@@ -150,13 +166,32 @@ export function ReaderPane({ message, onBack, onSessionLost, className }: Reader
                 ) : detail === null ? (
                   <BodySkeleton />
                 ) : detail.fetchedBody ? (
-                  <BodyContent
-                    detail={detail}
-                    prepared={prepared}
-                    inlineMap={inline.map}
-                    allowRemoteImages={allowRemoteImages}
-                    onLoadImages={() => setImagesLoadedFor(messageId)}
-                  />
+                  <>
+                    {detail.htmlSanitized !== null && (
+                      <div className="mb-3 flex min-h-9 flex-wrap items-center justify-end gap-2">
+                        {cleanNote !== null && (
+                          <p className="min-w-0 flex-1 text-muted-foreground">{cleanNote}</p>
+                        )}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          aria-pressed={cleanEnabled}
+                          disabled={cleanEnabled && cleanView === null && cleanResource.phase === "loading"}
+                          onClick={() => setCleanViewFor(cleanEnabled ? null : messageId)}
+                        >
+                          <Sparkles aria-hidden="true" className="size-3.5" />
+                          Clean view
+                        </Button>
+                      </div>
+                    )}
+                    <BodyContent
+                      detail={detail}
+                      prepared={prepared}
+                      inlineMap={inline.map}
+                      allowRemoteImages={allowRemoteImages}
+                      onLoadImages={() => setImagesLoadedFor(messageId)}
+                    />
+                  </>
                 ) : (
                   <p className="rounded-lg border bg-surface p-4 text-muted-foreground">
                     The body has not been fetched from the server yet. It
@@ -173,7 +208,7 @@ export function ReaderPane({ message, onBack, onSessionLost, className }: Reader
           </div>
 
           <p role="status" aria-live="polite" className="sr-only">
-            {readerStatus(detailResource.phase, detail?.fetchedBody ?? null, inline.map)}
+            {readerStatus(detailResource.phase, detail?.fetchedBody ?? null, inline.map, cleanEnabled)}
           </p>
         </>
       )}
@@ -341,6 +376,7 @@ function readerStatus(
   phase: "loading" | "ready" | "error",
   fetchedBody: boolean | null,
   inlineMap: Map<string, string> | null,
+  cleanView: boolean,
 ): string {
   if (phase === "error") {
     return "The message could not be loaded.";
@@ -354,5 +390,5 @@ function readerStatus(
   if (inlineMap === null) {
     return "Loading the message with its inline images.";
   }
-  return "Message loaded.";
+  return cleanView ? "Message loaded in clean view." : "Message loaded.";
 }

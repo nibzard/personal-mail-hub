@@ -3,6 +3,7 @@ import type {
   AccountSummary,
   AccountsResponse,
   AuthStatusResponse,
+  CleanViewResponse,
   FolderSummary,
   MessageDetailView,
   MessageDetailResponse,
@@ -209,6 +210,17 @@ function blobToDataUrl(blob: Blob): Promise<string> {
     reader.addEventListener("error", () => reject(new Error("The image could not be decoded.")));
     reader.readAsDataURL(blob);
   });
+}
+
+/** The clean view of the open message, fetched only while it is on (SPEC F3). */
+export function useCleanView(messageId: string | null, enabled: boolean): Resource<CleanViewResponse | null> {
+  return useResource<CleanViewResponse | null>(
+    (signal) =>
+      messageId === null || !enabled
+        ? Promise.resolve(null)
+        : apiGet<CleanViewResponse>(`/messages/${messageId}/clean-view`, signal),
+    [messageId, enabled],
+  );
 }
 
 /** Folder lists for every account, keyed by account id. */

@@ -1,0 +1,155 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`clean view extraction > pins the clean view of every corpus entry with HTML > calendar-invite clean view 1`] = `"<div><p>Hello team,</p><p>This is a reminder for our scheduled meeting.</p><table><tbody><tr><td>Event:</td><td>Weekly storage review</td></tr> <tr><td>When:</td><td>Thursday, September 24, 2026 from 10:00 to 10:30 (UTC)</td></tr> <tr><td>Where:</td><td>Video call at meet.example.org/storage-weekly</td></tr> <tr><td>Organizer:</td><td><a href="mailto:cal@example.org">cal@example.org</a></td></tr></tbody></table> <p>Description: Backfill progress, restore drill results, and the index bloat question from last week.</p><p><a href="https://cal.example.org/event/41/accept">Accept</a> · <a href="https://cal.example.org/event/41/decline">Decline</a></p> <p>-- Example Calendar</p></div>"`;
+
+exports[`clean view extraction > pins the clean view of every corpus entry with HTML > empty-body clean view 1`] = `"<div><br></div>"`;
+
+exports[`clean view extraction > pins the clean view of every corpus entry with HTML > empty-html-with-text clean view 1`] = `"<div><br></div>"`;
+
+exports[`clean view extraction > pins the clean view of every corpus entry with HTML > gmail-reply-chain clean view 1`] = `"Thanks for the quick review. I pushed the patch to branch fix-leaf this morning and restarted the CI run. The leaf module failure was a missing fixture, not a regression. Two more checks should finish before noon and I will tag the release after that.<div><p>On Mon, Sep 15, 2026 at 9:12 AM Ana Silk &lt; <a href="mailto:ana@example.org">ana@example.org</a> &gt; wrote:</p><blockquote><p>Please rebase before the merge.</p><p>The CI run failed on the leaf module, so the tag cannot go out yet.</p></blockquote></div>"`;
+
+exports[`clean view extraction > pins the clean view of every corpus entry with HTML > nested-chain clean view 1`] = `"<div><p>Third note: the fix landed and the flaky test is gone. Thanks both.</p><blockquote><p>Second note: the flaky test comes from a shared fixture; I will isolate it today.</p><blockquote><p>First note: the test suite fails about once in ten runs on the shared runner. Someone with a faster machine should look.</p></blockquote></blockquote></div>"`;
+
+exports[`clean view extraction > pins the clean view of every corpus entry with HTML > newsletter clean view 1`] = `"<h2>Postgres 18 beta notes</h2> <p>The beta adds async I/O for sequential scans. Early runs show a lower p99 on large table scans, with the usual caveat about beta planners.</p><p><a href="https://www.postgresql.org/about/news/">Read the announcement</a></p> <h2>One-liner: tail the write-ahead log</h2> <p>A short recipe for streaming the write-ahead log to a warm standby without a full base backup first.</p><p>You receive this because you subscribed at example.org.</p><p><a href="https://example.org/unsubscribe">Unsubscribe</a> · <a href="https://example.org/prefs">Preferences</a></p> <p>Example Newsletter, 100 Example Street, Exampleton</p>"`;
+
+exports[`clean view extraction > pins the clean view of every corpus entry with HTML > outlook-reply-chain clean view 1`] = `"<p>The deploy finished. Both replicas answer on the new build and the error rate is back to the baseline. I left the old build tagged in case we need a comparison run tonight.</p><p><b>From:</b> Rob Teller &lt;rob@example.net&gt; <br> <b>Sent:</b> Monday, September 14, 2026 4:02 PM <br> <b>To:</b> Dana Marsh <br> <b>Subject:</b> Replica restart</p> <p>Can you restart replica two during the window? It holds a stale connection cache and the health checks flap because of it.</p><p>Dana Marsh · Platform team · <a href="mailto:dana@example.net">dana@example.net</a></p>"`;
+
+exports[`clean view extraction > pins the clean view of every corpus entry with HTML > short-note clean view 1`] = `"<p>Lunch at noon?</p>"`;
+
+exports[`clean view extraction > pins the clean view of every corpus entry with HTML > signature-footer clean view 1`] = `"<p>The contract renewal is signed and countersigned. Scanned copy is attached; the paper original goes to the filing cabinet on floor two.</p><p>Best regards,</p><p>Marta Vell <br> Operations · Example GmbH <br> Tel +49 30 0000000 · <a href="mailto:marta.vell@example.de">marta.vell@example.de</a> <br> Examplestraße 12, 10115 Berlin <br> <a href="https://example.de/">example.de</a></p> <p>This message contains confidential information intended solely for the addressee. If you are not the addressee, please delete it and notify the sender.</p>"`;
+
+exports[`clean view extraction > pins the clean view of every corpus entry with HTML > table-wrapped-one-liner clean view 1`] = `"Approved. Ship it."`;
+
+exports[`reply quote extraction > pins the Markdown blockquote of every corpus entry > calendar-invite quote 1`] = `
+{
+  "markdown": "> Hello team,
+>
+> This is a reminder for our scheduled meeting.
+>
+> | Event: | Weekly storage review |
+> | --- | --- |
+> | When: | Thursday, September 24, 2026 from 10:00 to 10:30 (UTC) |
+> | Where: | Video call at meet.example.org/storage-weekly |
+> | Organizer: | [cal@example.org](mailto:cal@example.org) |
+>
+> Description: Backfill progress, restore drill results, and the index bloat question from last week.
+>
+> [Accept](https://cal.example.org/event/41/accept) · [Decline](https://cal.example.org/event/41/decline)
+>
+> \\-- Example Calendar",
+  "source": "extracted",
+}
+`;
+
+exports[`reply quote extraction > pins the Markdown blockquote of every corpus entry > empty-body quote 1`] = `
+{
+  "markdown": "",
+  "source": "none",
+}
+`;
+
+exports[`reply quote extraction > pins the Markdown blockquote of every corpus entry > empty-html-with-text quote 1`] = `
+{
+  "markdown": "> Approved from the plain part.",
+  "source": "plain_text",
+}
+`;
+
+exports[`reply quote extraction > pins the Markdown blockquote of every corpus entry > gmail-reply-chain quote 1`] = `
+{
+  "markdown": "> Thanks for the quick review. I pushed the patch to branch fix-leaf this morning and restarted the CI run. The leaf module failure was a missing fixture, not a regression. Two more checks should finish before noon and I will tag the release after that.
+>
+> On Mon, Sep 15, 2026 at 9:12 AM Ana Silk < [ana@example.org](mailto:ana@example.org) > wrote:
+>
+> > Please rebase before the merge.
+> > 
+> > The CI run failed on the leaf module, so the tag cannot go out yet.",
+  "source": "extracted",
+}
+`;
+
+exports[`reply quote extraction > pins the Markdown blockquote of every corpus entry > nested-chain quote 1`] = `
+{
+  "markdown": "> Third note: the fix landed and the flaky test is gone. Thanks both.
+>
+> > Second note: the flaky test comes from a shared fixture; I will isolate it today.
+> > 
+> > > First note: the test suite fails about once in ten runs on the shared runner. Someone with a faster machine should look.",
+  "source": "extracted",
+}
+`;
+
+exports[`reply quote extraction > pins the Markdown blockquote of every corpus entry > newsletter quote 1`] = `
+{
+  "markdown": "> ## Postgres 18 beta notes
+>
+> The beta adds async I/O for sequential scans. Early runs show a lower p99 on large table scans, with the usual caveat about beta planners.
+>
+> [Read the announcement](https://www.postgresql.org/about/news/)
+>
+> ## One-liner: tail the write-ahead log
+>
+> A short recipe for streaming the write-ahead log to a warm standby without a full base backup first.
+>
+> You receive this because you subscribed at example.org.
+>
+> [Unsubscribe](https://example.org/unsubscribe) · [Preferences](https://example.org/prefs)
+>
+> Example Newsletter, 100 Example Street, Exampleton",
+  "source": "extracted",
+}
+`;
+
+exports[`reply quote extraction > pins the Markdown blockquote of every corpus entry > outlook-reply-chain quote 1`] = `
+{
+  "markdown": "> The deploy finished. Both replicas answer on the new build and the error rate is back to the baseline. I left the old build tagged in case we need a comparison run tonight.
+>
+> **From:** Rob Teller <rob@example.net>  
+> **Sent:** Monday, September 14, 2026 4:02 PM  
+> **To:** Dana Marsh  
+> **Subject:** Replica restart
+>
+> Can you restart replica two during the window? It holds a stale connection cache and the health checks flap because of it.
+>
+> Dana Marsh · Platform team · [dana@example.net](mailto:dana@example.net)",
+  "source": "extracted",
+}
+`;
+
+exports[`reply quote extraction > pins the Markdown blockquote of every corpus entry > short-note quote 1`] = `
+{
+  "markdown": "> Lunch at noon?",
+  "source": "extracted",
+}
+`;
+
+exports[`reply quote extraction > pins the Markdown blockquote of every corpus entry > signature-footer quote 1`] = `
+{
+  "markdown": "> The contract renewal is signed and countersigned. Scanned copy is attached; the paper original goes to the filing cabinet on floor two.
+>
+> Best regards,
+>
+> Marta Vell  
+> Operations · Example GmbH  
+> Tel +49 30 0000000 · [marta.vell@example.de](mailto:marta.vell@example.de)  
+> Examplestraße 12, 10115 Berlin  
+> [example.de](https://example.de/)
+>
+> This message contains confidential information intended solely for the addressee. If you are not the addressee, please delete it and notify the sender.",
+  "source": "extracted",
+}
+`;
+
+exports[`reply quote extraction > pins the Markdown blockquote of every corpus entry > table-wrapped-one-liner quote 1`] = `
+{
+  "markdown": "> Approved. Ship it.",
+  "source": "extracted",
+}
+`;
+
+exports[`reply quote extraction > pins the Markdown blockquote of every corpus entry > text-only quote 1`] = `
+{
+  "markdown": "> The backup window moved to 02:00 UTC on Sunday. Nothing for you to do; this is a heads-up for the runbook.",
+  "source": "plain_text",
+}
+`;

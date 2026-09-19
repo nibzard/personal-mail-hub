@@ -1,6 +1,7 @@
 import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
 import {
   accounts,
+  bodies,
   draftUploads,
   drafts,
   events,
@@ -17,6 +18,7 @@ import {
 } from "@mail-hub/database";
 import type { MailHubDatabase } from "@mail-hub/database";
 import type { MessageRecipients, ReplyMode } from "@mail-hub/contracts";
+import { ContentExtractor } from "@mail-hub/content";
 import type { MailHubTransaction, MutationGate } from "@mail-hub/recovery";
 import { createHash, randomUUID } from "node:crypto";
 import { ComposeError } from "./errors.ts";
@@ -27,6 +29,7 @@ import {
   replySubject,
 } from "./reply.ts";
 import {
+  MARKDOWN_MAX,
   normalizeContentType,
   normalizeFilename,
   normalizeMarkdown,
@@ -58,6 +61,12 @@ import {
  */
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+
+/**
+ * The extraction surface the reply path needs. `ContentExtractor` satisfies
+ * it; the type keeps tests free to substitute their own.
+ */
+export type ReplyQuoteExtractor = Pick<ContentExtractor, "extractReplyQuote">;
 
 /** Context for one durable mutation: the generation the client captured. */
 export interface MutationContext {
@@ -165,6 +174,7 @@ export class ComposeService {
     private readonly db: MailHubDatabase,
     private readonly storage: Storage,
     private readonly gate: MutationGate,
+    private readonly quoteExtractor: ReplyQuoteExtractor = new ContentExtractor(),
   ) {}
 
   /**
@@ -243,6 +253,16 @@ export class ComposeService {
           : deriveReplyRecipients(parent, account.identities, input.mode);
       const references = freezeReplyReferences(parent);
 
+      // Without explicit Markdown the draft starts from the parent's quote:
+      // Defuddle turns the sanitized body into a Markdown blockquote the
+      // user trims before sending (SPEC F6). An empty string stays empty.
+      const quote =
+        input.markdown === undefined || input.markdown === null
+          ? await this.quoteExtractor.extractReplyQuote(await replyParentBody(tx, parent))
+          : null;
+      const markdown =
+        quote === null ? normalizeMarkdown(input.markdown) : capDerivedQuote(quote.markdown);
+
       const inserted = await tx
         .insert(drafts)
         .values({
@@ -254,7 +274,7 @@ export class ComposeService {
           referenceIds: references.referenceIds,
           recipients,
           subject: replySubject(parent.subject),
-          markdown: normalizeMarkdown(input.markdown),
+          markdown,
         })
         .returning();
       const row = inserted[0]!;
@@ -266,6 +286,7 @@ export class ComposeService {
         recipientCount:
           recipients.to.length + (recipients.cc?.length ?? 0) + (recipients.bcc?.length ?? 0),
         explicitRecipients: input.recipients !== undefined && input.recipients !== null,
+        quoteSource: quote?.source ?? "explicit",
       });
       return toDraftRecord(row);
     });
@@ -649,6 +670,39 @@ async function resolveReplyParent(
     throw new ComposeError("invalid_request", "The chosen account does not hold a copy of this message.");
   }
   return copy;
+}
+
+/**
+ * The body derivatives of the resolved parent copy, for quote extraction.
+ * A message without a fetched body has nothing to quote.
+ */
+async function replyParentBody(
+  tx: MailHubTransaction,
+  parent: Message,
+): Promise<{ htmlSanitized: string | null; textPlain: string | null }> {
+  const rows = await tx
+    .select({ htmlSanitized: bodies.htmlSanitized, textPlain: bodies.textPlain })
+    .from(bodies)
+    .where(eq(bodies.messageId, parent.id))
+    .limit(1);
+  const row = rows[0];
+  return row === undefined
+    ? { htmlSanitized: null, textPlain: null }
+    : { htmlSanitized: row.htmlSanitized, textPlain: row.textPlain };
+}
+
+/**
+ * A derived quote respects the Markdown ceiling an explicit draft obeys. A
+ * pathological parent would otherwise refuse the reply outright; a trimmed
+ * quote with a marker stays editable, and the user trims anyway (SPEC F6).
+ */
+function capDerivedQuote(markdown: string): string {
+  if (markdown.length <= MARKDOWN_MAX) {
+    return markdown;
+  }
+  const kept = markdown.slice(0, MARKDOWN_MAX);
+  const lastLine = kept.lastIndexOf("\n");
+  return `${lastLine === -1 ? kept : kept.slice(0, lastLine)}\n> […]`;
 }
 
 /** Whether the same original bytes also exist under another account. */

@@ -254,6 +254,44 @@ test.describe("offline", () => {
   });
 });
 
+test.describe("clean view", () => {
+  test("the toggle swaps the extracted view and back", async ({ page }) => {
+    await openInbox(page);
+    await page.locator("[data-message-row='m-005']").click();
+    const reader = page.getByRole("region", { name: "Message reader" });
+    await expect(reader.getByRole("heading", { level: 2 })).toHaveText(
+      "Weekly report with chart",
+    );
+
+    // The sanitized original renders first, nested quotes and all.
+    const frame = page.frameLocator("iframe[title='Message body']");
+    await expect(frame.locator("body")).toContainText("The oldest message of the chain.");
+
+    // One toggle costs exactly one server round trip, and the extracted
+    // view keeps the quoted chain as one collapsed block (SPEC F3).
+    const requests = trackApiRequests(page);
+    await reader.getByRole("button", { name: "Clean view" }).click();
+    await expect(frame.locator("body")).toContainText("The latest answer sits on top");
+    await expect(frame.locator("body")).toContainText("An older reply quoted here.");
+    expect(requests.count()).toBe(1);
+
+    // The sanitized original stays one click away.
+    await reader.getByRole("button", { name: "Clean view" }).click();
+    await expect(frame.locator("body")).toContainText("Meeting notes");
+    expect(requests.count()).toBe(1);
+  });
+
+  test("a text-only message offers no clean view", async ({ page }) => {
+    await openInbox(page);
+    await page.locator("[data-message-row='m-003']").click();
+    const reader = page.getByRole("region", { name: "Message reader" });
+    await expect(reader.getByRole("heading", { level: 2 })).toHaveText(
+      "Contract draft for review",
+    );
+    await expect(reader.getByRole("button", { name: "Clean view" })).toBeHidden();
+  });
+});
+
 test.describe("performance", () => {
   test("the virtualized list mounts a bounded window of a large scope", async ({
     page,

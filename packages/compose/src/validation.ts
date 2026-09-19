@@ -10,7 +10,8 @@ import { ComposeError } from "./errors.ts";
 
 const NAME_MAX = 128;
 const SUBJECT_MAX = 998;
-const MARKDOWN_MAX = 1_000_000;
+/** Shared so the derived reply quote can respect the same ceiling. */
+export const MARKDOWN_MAX = 1_000_000;
 const FILENAME_MAX = 255;
 const CONTENT_TYPE_MAX = 255;
 const LIST_MAX = 100;

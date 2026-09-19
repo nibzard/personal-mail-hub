@@ -702,6 +702,16 @@ export interface MessageDetailResponse {
   message: MessageDetailView;
 }
 
+/** Which path produced a clean view (SPEC F3). */
+export type CleanViewSource = "extracted" | "original_fallback";
+
+/** Response of `GET /messages/:id/clean-view`. */
+export interface CleanViewResponse {
+  /** Extracted and sanitized HTML, or the sanitized original on fallback. */
+  html: string;
+  source: CleanViewSource;
+}
+
 /** MIME ingestion and attachment recovery rejection codes, from `SPEC.md` section 8. */
 export type IngestionErrorCode =
   | "invalid_request"

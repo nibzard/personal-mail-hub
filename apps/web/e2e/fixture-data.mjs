@@ -488,3 +488,28 @@ export const attachmentBytes = new Map([
 
 /** The session-independent availability probe. */
 export const authStatus = { ownerRegistered: true, login: "available", control: "ready" };
+
+/**
+ * Clean views the reader serves, keyed by message id. `m-005` shows a real
+ * extraction with the quoted chain collapsed; `m-002` shows the
+ * sanitized-original fallback; messages without an HTML body have no entry,
+ * because the reader offers no toggle for them.
+ */
+export const cleanViews = new Map([
+  [
+    "m-005",
+    {
+      html:
+        "<p>The latest answer sits on top, and the quoted chain below is collapsed.</p>" +
+        '<blockquote><p>An older reply quoted here.</p><p>The oldest message of the chain.</p></blockquote>',
+      source: "extracted",
+    },
+  ],
+  [
+    "m-002",
+    {
+      html: "<p>Summary of the reconciliation and the three open questions.</p>",
+      source: "original_fallback",
+    },
+  ],
+]);

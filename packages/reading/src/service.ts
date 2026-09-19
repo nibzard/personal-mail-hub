@@ -9,6 +9,7 @@ import {
   type MailHubDatabase,
   type Storage,
 } from "@mail-hub/database";
+import { ContentExtractor, type CleanView } from "@mail-hub/content";
 import { ReadingError } from "./errors.ts";
 
 /**
@@ -19,6 +20,12 @@ import { ReadingError } from "./errors.ts";
  */
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The extraction surface the reader needs for clean view. `ContentExtractor`
+ * satisfies it; the type keeps tests free to substitute their own.
+ */
+export type CleanViewExtractor = Pick<ContentExtractor, "extractCleanView">;
 
 /**
  * Rebuilds one attachment's disposable copy from the verified original
@@ -67,11 +74,20 @@ export interface OpenedAttachment {
   bytes: Uint8Array;
 }
 
+/** The derived clean view of one message (SPEC F3). */
+export interface CleanViewDetail {
+  /** The extracted, sanitized HTML, or the sanitized original on fallback. */
+  html: string;
+  /** Which path produced the HTML. */
+  source: CleanView["source"];
+}
+
 export class ReadingService {
   constructor(
     private readonly db: MailHubDatabase,
     private readonly storage: Storage,
     private readonly regenerate: AttachmentRegenerator,
+    private readonly extractor: CleanViewExtractor = new ContentExtractor(),
   ) {}
 
   /** The full detail of one message, with sanitized body derivatives. */
@@ -109,6 +125,35 @@ export class ReadingService {
       textPlain: row.body?.textPlain ?? null,
       attachments: withInlineResolution(parts),
     };
+  }
+
+  /**
+   * The derived clean view of one message (SPEC F3): Defuddle extraction of
+   * the sanitized body, sanitized again before it leaves. The result is a
+   * derived rendering computed on request; nothing is stored, and the
+   * sanitized original stays available one toggle away. A message without a
+   * sanitized HTML body has nothing to extract from.
+   */
+  async readCleanView(messageId: string): Promise<CleanViewDetail> {
+    requireUuid("message id", messageId);
+    const rows = await this.db
+      .select({ htmlSanitized: bodies.htmlSanitized })
+      .from(messages)
+      .leftJoin(bodies, eq(bodies.messageId, messages.id))
+      .where(eq(messages.id, messageId))
+      .limit(1);
+    const row = rows[0];
+    if (row === undefined) {
+      throw new ReadingError("not_found", "No message exists with this identifier.");
+    }
+    if (row.htmlSanitized === null) {
+      throw new ReadingError(
+        "invalid_request",
+        "This message has no sanitized HTML body to extract a clean view from.",
+      );
+    }
+    const view = await this.extractor.extractCleanView(row.htmlSanitized);
+    return { html: view.html, source: view.source };
   }
 
   /**

@@ -35,6 +35,7 @@ export {
   type DraftRecord,
   type DraftUploadVerification,
   type MutationContext,
+  type ReplyQuoteExtractor,
   type UpdateDraftInput,
   type UploadRecord,
 } from "./service.ts";

@@ -116,6 +116,26 @@ suite("ReadingService", () => {
     expect(detail.htmlSanitized).toContain('src="cid:chart@reports"');
   });
 
+  it("derives the clean view from the sanitized body on request", async () => {
+    const messageId = await ingestedMessage(readerMessage());
+    const view = await reading.readCleanView(messageId);
+
+    // Extraction is derived, never stored: the same call answers again with
+    // the same shape, and both HTML paths are sanitized derivatives.
+    expect(view.source).toBe("extracted");
+    expect(view.html).not.toContain("script");
+    expect(view.html).toContain("cid:chart@reports");
+    const again = await reading.readCleanView(messageId);
+    expect(again).toEqual(view);
+  });
+
+  it("rejects clean view for a message without a sanitized HTML body", async () => {
+    const messageId = await ingestedMessage(textOnlyMessage());
+    await expect(reading.readCleanView(messageId)).rejects.toMatchObject({
+      code: "invalid_request",
+    });
+  });
+
   it("marks only unique image Content-IDs as inline-resolvable", async () => {
     const messageId = await ingestedMessage(readerMessage());
     const detail = await reading.readMessage(messageId);

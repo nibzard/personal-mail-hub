@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import type { MessageDetailResponse, ReadingErrorBody } from "@mail-hub/contracts";
+import type { CleanViewResponse, MessageDetailResponse, ReadingErrorBody } from "@mail-hub/contracts";
 import { AuthError } from "@mail-hub/auth";
-import { ReadingError, type MessageAttachment, type MessageDetail, type OpenedAttachment } from "@mail-hub/reading";
+import {
+  ReadingError,
+  type CleanViewDetail,
+  type MessageAttachment,
+  type MessageDetail,
+  type OpenedAttachment,
+} from "@mail-hub/reading";
 import { buildApp } from "../src/app.ts";
 import { registerMessageRoutes, type ReadingServiceForRoutes } from "../src/message-routes.ts";
 import { SESSION_COOKIE } from "../src/auth-routes.ts";
@@ -52,6 +58,7 @@ const DETAIL: MessageDetail = {
 /** What the fake service recorded, for call assertions. */
 interface ServiceCalls {
   readIds: string[];
+  cleanViewIds: string[];
   opened: { messageId: string; attachmentId: string }[];
 }
 
@@ -59,7 +66,7 @@ interface ServiceCalls {
 function fakeService(
   overrides: Partial<ReadingServiceForRoutes> = {},
 ): ReadingServiceForRoutes & { calls: ServiceCalls } {
-  const calls: ServiceCalls = { readIds: [], opened: [] };
+  const calls: ServiceCalls = { readIds: [], cleanViewIds: [], opened: [] };
   const base = {
     async readMessage(messageId: string): Promise<MessageDetail> {
       calls.readIds.push(messageId);
@@ -67,6 +74,16 @@ function fakeService(
         throw new ReadingError("not_found", "No message exists with this identifier.");
       }
       return DETAIL;
+    },
+    async readCleanView(messageId: string): Promise<CleanViewDetail> {
+      calls.cleanViewIds.push(messageId);
+      if (messageId !== MESSAGE_ID) {
+        throw new ReadingError(
+          "invalid_request",
+          "This message has no sanitized HTML body to extract a clean view from.",
+        );
+      }
+      return { html: DETAIL.htmlSanitized!, source: "original_fallback" };
     },
     async openAttachment(messageId: string, attachmentId: string): Promise<OpenedAttachment> {
       calls.opened.push({ messageId, attachmentId });
@@ -173,6 +190,37 @@ describe("message routes", () => {
         ],
       },
     });
+  });
+
+  it("serves the derived clean view for a live session only", async () => {
+    const service = fakeService();
+    const app = await makeApp(service);
+
+    const anonymous = await app.inject({ method: "GET", url: `/messages/${MESSAGE_ID}/clean-view` });
+    expect(anonymous.statusCode).toBe(401);
+
+    // The view is derived on request: extraction output or the sanitized
+    // original fallback, never the stored original bytes (SPEC F3).
+    const view = await app.inject({
+      method: "GET",
+      url: `/messages/${MESSAGE_ID}/clean-view`,
+      headers: sessionHeaders,
+    });
+    expect(view.statusCode).toBe(200);
+    expect(view.json<CleanViewResponse>()).toEqual({
+      html: "<p>Numbers look <b>great</b>.</p>",
+      source: "original_fallback",
+    });
+    expect(service.calls.cleanViewIds).toEqual([MESSAGE_ID]);
+
+    // A message with no sanitized HTML body reports why, as a reader error.
+    const refusal = await app.inject({
+      method: "GET",
+      url: `/messages/${MISSING_ID}/clean-view`,
+      headers: sessionHeaders,
+    });
+    expect(refusal.statusCode).toBe(400);
+    expect(refusal.json<ReadingErrorBody>().error.code).toBe("invalid_request");
   });
 
   it("downloads verified bytes with neutralized headers", async () => {

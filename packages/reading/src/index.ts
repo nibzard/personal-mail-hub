@@ -9,6 +9,8 @@ export { ReadingError } from "./errors.ts";
 export {
   ReadingService,
   type AttachmentRegenerator,
+  type CleanViewDetail,
+  type CleanViewExtractor,
   type MessageAttachment,
   type MessageDetail,
   type OpenedAttachment,

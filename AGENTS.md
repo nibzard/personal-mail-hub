@@ -42,6 +42,14 @@
   before processing, header and body parsing, HTML sanitizing, index text,
   verified attachment locators with hash-checked regeneration, and the
   thread-job marks that identity changes leave for reconciliation.
+- `packages/content` contains derived content extraction over sanitized
+  bodies: the pinned Defuddle pass behind the clean view the reader renders
+  and the Markdown blockquote a reply draft starts from, each sanitized
+  again through the ingestion sanitizer, with plain-text and
+  sanitized-original fallbacks, diagnostics reduced to removal counts and
+  reasons, and remote extraction refused (`useAsync: false` plus a refusing
+  fetch override). The redacted corpus under `test` pins the Markdown and
+  clean-view output in snapshots, so a version bump is a deliberate review.
 - `packages/sync` contains the IMAP synchronization engine: resumable
   backfill in checkpointed UID windows newest first, background body
   fetching, steady-state polls with arrival bounds, flag refreshes, and

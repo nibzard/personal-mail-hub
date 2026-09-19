@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type {
+  CleanViewResponse,
   MessageAttachmentView,
   MessageDetailView,
   MessageDetailResponse,
@@ -16,7 +17,10 @@ import { SESSION_COOKIE } from "./auth-routes.ts";
  */
 
 /** The service surface the routes need. `ReadingService` satisfies it. */
-export type ReadingServiceForRoutes = Pick<ReadingService, "readMessage" | "openAttachment">;
+export type ReadingServiceForRoutes = Pick<
+  ReadingService,
+  "readMessage" | "readCleanView" | "openAttachment"
+>;
 
 export interface MessageRoutesOptions {
   service: ReadingServiceForRoutes;
@@ -67,6 +71,24 @@ export async function registerMessageRoutes(
         preHandler: [requireSession],
       },
       async (request) => ({ message: toMessageDetailView(await service.readMessage(request.params.id)) }),
+    );
+
+    // The derived clean view (SPEC F3): extraction of the sanitized body,
+    // sanitized again, computed on request and never stored. Reads carry no
+    // recovery gate, like every other reader route.
+    scope.get<{ Params: { id: string }; Reply: CleanViewResponse }>(
+      "/messages/:id/clean-view",
+      {
+        schema: {
+          params: {
+            type: "object",
+            required: ["id"],
+            properties: { id: { type: "string", pattern: UUID_PATTERN } },
+          },
+        },
+        preHandler: [requireSession],
+      },
+      async (request) => await service.readCleanView(request.params.id),
     );
 
     scope.get<{ Params: { id: string; attachmentId: string } }>(

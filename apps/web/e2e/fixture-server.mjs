@@ -12,6 +12,7 @@
  * - `GET /api/accounts/:id/folders`,
  * - `GET /api/search`         filtered, paged rows for one scope,
  * - `GET /api/messages/:id`   one sanitized detail,
+ * - `GET /api/messages/:id/clean-view`,
  * - `GET /api/messages/:id/attachments/:attachmentId`.
  *
  * Usage: `node e2e/fixture-server.mjs [port]` (default 4180, `PORT` also
@@ -27,6 +28,7 @@ import {
   accounts,
   attachmentBytes,
   authStatus,
+  cleanViews,
   foldersByAccount,
   messageDetails,
   messageRows,
@@ -183,6 +185,22 @@ const server = createServer(async (request, response) => {
         return;
       }
       sendJson(response, 200, { message: detail });
+      return;
+    }
+
+    match = /^\/api\/messages\/([^/]+)\/clean-view$/.exec(pathname);
+    if (match !== null) {
+      const cleanView = cleanViews.get(match[1]);
+      if (cleanView === undefined) {
+        sendError(
+          response,
+          400,
+          "invalid_request",
+          "This message has no sanitized HTML body to extract a clean view from.",
+        );
+        return;
+      }
+      sendJson(response, 200, cleanView);
       return;
     }
 

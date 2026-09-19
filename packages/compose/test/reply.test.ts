@@ -7,6 +7,7 @@ import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   accounts as accountsTable,
+  bodies as bodiesTable,
   createDatabase,
   createStorage,
   drafts as draftsTable,
@@ -357,6 +358,66 @@ suite("reply drafts against PostgreSQL", () => {
       .returning();
     return inserted[0]!;
   }
+
+  it("seeds the quote from the parent body when no Markdown is given", async () => {
+    const parent = await insertMessage({
+      accountId,
+      messageId: "<quoted@example.com>",
+      sender: ALICE,
+      replyTo: null,
+      recipients: { to: [USER] },
+      subject: "Quote me",
+      threadId,
+    });
+    await db.insert(bodiesTable).values({
+      messageId: parent.id,
+      htmlSanitized:
+        "<div><p>The meter reading is 4021 on Thursday.</p>" +
+        '<blockquote><p>Earlier reading was 3900.</p></blockquote></div>',
+      textPlain: "The meter reading is 4021 on Thursday.",
+      sanitizerVersion: "dompurify@3.4.15/config-1",
+    });
+
+    const draft = await service.createReplyDraft(readyContext, { messageId: parent.id, mode: "reply" });
+    // The draft starts from the parent's Markdown blockquote, quoted chain
+    // nested inside (SPEC F6). An explicit empty string stays empty.
+    expect(draft.markdown).toBe(
+      "> The meter reading is 4021 on Thursday.\n>\n> > Earlier reading was 3900.",
+    );
+
+    const explicit = await service.createReplyDraft(readyContext, {
+      messageId: parent.id,
+      mode: "reply",
+      markdown: "",
+    });
+    expect(explicit.markdown).toBe("");
+
+    // The audit event names the quote source, never the quoted text.
+    const recorded = await db.select().from(events).where(eq(events.entityId, draft.id));
+    expect(JSON.stringify(recorded)).toContain('"quoteSource":"extracted"');
+    expect(JSON.stringify(recorded)).not.toContain("meter reading");
+  });
+
+  it("seeds the plain-text fallback for a parent without HTML", async () => {
+    const parent = await insertMessage({
+      accountId,
+      messageId: "<plain-parent@example.com>",
+      sender: ALICE,
+      replyTo: null,
+      recipients: { to: [USER] },
+      subject: "Plain parent",
+      threadId,
+    });
+    await db.insert(bodiesTable).values({
+      messageId: parent.id,
+      htmlSanitized: null,
+      textPlain: "Only a plain part exists.",
+      sanitizerVersion: "dompurify@3.4.15/config-1",
+    });
+
+    const draft = await service.createReplyDraft(readyContext, { messageId: parent.id, mode: "reply" });
+    expect(draft.markdown).toBe("> Only a plain part exists.");
+  });
 
   it("addresses a reply from Reply-To and records an audit event", async () => {
     const parent = await insertMessage({
