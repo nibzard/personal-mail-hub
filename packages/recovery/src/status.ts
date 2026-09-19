@@ -78,6 +78,26 @@ export type MutationGateDecision =
   | { decision: "invalid_generation" };
 
 /**
+ * The generation an authenticated session exposes for new client work
+ * (SPEC section 10). It is the deployed generation whatever the database
+ * row says, because that is the value the gate compares requests against.
+ * `null` means deployment configuration carries no generation, so no value
+ * can be trusted yet.
+ */
+export function clientGeneration(status: ControlStatus): string | null {
+  switch (status.state) {
+    case "config_missing":
+      return null;
+    case "uninitialized":
+    case "generation_mismatch":
+      return status.deploymentGeneration;
+    case "ready":
+    case "reconciling":
+      return status.generation;
+  }
+}
+
+/**
  * Apply the recovery gate to one durable client mutation (SPEC sections 7
  * and 10). Call this before the idempotency lookup, even when the key is
  * absent from the database.

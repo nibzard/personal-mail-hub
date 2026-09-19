@@ -15,6 +15,7 @@ export {
   RecoveryBlockedError,
   assessJob,
   classifyControlState,
+  clientGeneration,
   decideMutationGate,
   describeControlStatus,
   mutationGateError,

@@ -627,21 +627,22 @@
         "ui",
         "accessibility"
       ],
-      "updated_at": "2026-09-19T12:28:25Z",
+      "updated_at": "2026-09-19T12:29:05Z",
       "files": [
         "apps/web/package.json",
-        "apps/web/src/lib/platform.ts",
-        "apps/web/src/lib/keyboard.ts",
-        "apps/web/src/lib/focus.ts",
-        "apps/web/src/shortcuts.ts",
-        "apps/web/src/mail/commands.ts",
-        "apps/web/src/components/ui/command.tsx",
-        "apps/web/src/components/mail/command-palette.tsx",
         "apps/web/src/components/mail/app-shell.tsx",
+        "apps/web/src/components/mail/command-palette.tsx",
         "apps/web/src/components/mail/message-list.tsx",
         "apps/web/src/components/mail/message-row.tsx",
         "apps/web/src/components/mail/reader-pane.tsx",
-        "apps/web/test/commands.test.ts"
+        "apps/web/src/components/ui/command.tsx",
+        "apps/web/src/lib/focus.ts",
+        "apps/web/src/lib/keyboard.ts",
+        "apps/web/src/lib/platform.ts",
+        "apps/web/src/mail/commands.ts",
+        "apps/web/src/shortcuts.ts",
+        "apps/web/test/commands.test.ts",
+        "to-do.json"
       ]
     },
     {
@@ -784,8 +785,8 @@
       "id": "T023",
       "title": "Implement PWA offline data and replay controls",
       "priority": 2,
-      "status": "todo",
-      "details": "Use Dexie for recent mail, drafts, uploads, and queued actions. Preserve target revisions and recovery generations. Show sync state and require review after a restore.",
+      "status": "done",
+      "details": "PWA offline data and replay controls per SPEC F9 and section 10. New @mail-hub/offline package: a Dexie store for recent mail (rows plus sanitized details, pruned to the newest 500), local drafts with their base revision, upload bytes held until the server acknowledges them, and a queue that deep-freezes every payload — occurrence targets, modseq conditions, and idempotency keys never expand on replay. The replay controller stamps each record with the recovery generation observed at creation, replays pending actions oldest first through an injected port, and stops the pass when an item predates the stored generation. The session probe now exposes the current generation (GET /accounts returns recoveryGeneration from the control status), so a restore is detected at sign-in: earlier-generation work moves to review with the SPEC message, local text and files are retained, a draft rebases only after an explicit comparison onto the shown server revision, and an uncertain send replays only after the acknowledged duplicate warning, with a new idempotency key. The web app caches downloaded rows and details and serves them with an offline notice when the service is unreachable; the header shows one sync line (offline, N waiting on this device, syncing) and the review dialog resolves each item. Verified 2026-09-19: release gate PASS — every workspace type-checks, 7 migrations re-run clean on a scratch database, 552 workspace tests and 100 action/api permission tests, none failed or skipped (the two known T033 deferrals aside).",
       "depends_on": [
         "T003",
         "T012",
@@ -794,6 +795,31 @@
       "tags": [
         "pwa",
         "offline"
+      ],
+      "updated_at": "2026-09-19T12:56:49Z",
+      "files": [
+        "AGENTS.md",
+        "apps/api/src/account-routes.ts",
+        "apps/api/src/main.ts",
+        "apps/api/test/account-routes.test.ts",
+        "apps/web/package.json",
+        "apps/web/src/components/mail/app-shell.tsx",
+        "apps/web/src/components/mail/message-list.tsx",
+        "apps/web/src/components/mail/reader-pane.tsx",
+        "apps/web/src/components/mail/sync-status.tsx",
+        "apps/web/src/lib/api.ts",
+        "apps/web/src/mail/data.ts",
+        "apps/web/src/main.tsx",
+        "apps/web/src/offline/port.ts",
+        "apps/web/src/offline/store.ts",
+        "apps/web/src/offline/sync-context.tsx",
+        "apps/web/test/offline.test.ts",
+        "package-lock.json",
+        "packages/contracts/src/index.ts",
+        "packages/offline",
+        "packages/recovery/src/index.ts",
+        "packages/recovery/src/status.ts",
+        "to-do.json"
       ]
     },
     {

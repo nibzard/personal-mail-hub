@@ -5,6 +5,7 @@ import { SignInScreen } from "@/components/mail/sign-in";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { OfflineSyncProvider } from "@/offline/sync-context.tsx";
 import { useAuthStatus, useSession } from "@/mail/data";
 import "./styles.css";
 
@@ -21,7 +22,11 @@ function App() {
     return <SplashScreen />;
   }
   if (session.state.phase === "signed-in") {
-    return <AppShell accounts={session.state.accounts} onSessionLost={session.refresh} />;
+    return (
+      <OfflineSyncProvider probeGeneration={session.state.recoveryGeneration}>
+        <AppShell accounts={session.state.accounts} onSessionLost={session.refresh} />
+      </OfflineSyncProvider>
+    );
   }
   if (session.state.phase === "signed-out") {
     return (

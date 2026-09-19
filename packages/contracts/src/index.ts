@@ -133,6 +133,13 @@ export interface AccountSummary {
 /** Response of `GET /accounts`. */
 export interface AccountsResponse {
   accounts: AccountSummary[];
+  /**
+   * The recovery generation the server accepts for new client work (SPEC
+   * section 10). Authenticated sessions expose it so devices can stamp
+   * drafts, uploads, and queued actions, and notice a restore. `null` when
+   * deployment configuration carries no generation yet.
+   */
+  recoveryGeneration: string | null;
 }
 
 /** Response of `GET /accounts/:id`. */

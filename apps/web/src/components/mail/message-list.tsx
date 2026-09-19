@@ -114,9 +114,15 @@ export function MessageListPane({
         </div>
       </form>
 
-      {state.error !== null && state.rows.length > 0 && (
+      {state.error !== null && state.rows.length > 0 && !state.offlineFromCache && (
         <p role="alert" className="shrink-0 bg-destructive-muted px-3 py-1.5 text-destructive-muted-foreground">
           {state.error.message}
+        </p>
+      )}
+
+      {state.offlineFromCache && (
+        <p role="status" className="shrink-0 bg-surface px-3 py-1.5 text-muted-foreground">
+          Offline. Showing downloaded mail.
         </p>
       )}
 

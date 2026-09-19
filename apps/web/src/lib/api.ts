@@ -16,18 +16,31 @@ function readBase(): string {
 
 /** One API rejection: the HTTP status plus the error code from the body. */
 export class ApiError extends Error {
+  /**
+   * The recovery generation the server accepts now, when the rejection was
+   * a recovery gate refusal (SPEC section 10).
+   */
+  readonly currentGeneration?: string;
+
   constructor(
     readonly status: number,
     readonly code: string,
     message: string,
+    currentGeneration?: string,
   ) {
     super(message);
     this.name = "ApiError";
+    this.currentGeneration = currentGeneration;
   }
 
   /** True when the session is missing, expired, or revoked. */
   get unauthorized(): boolean {
     return this.status === 401;
+  }
+
+  /** True when the request never reached the service. */
+  get network(): boolean {
+    return this.status === 0;
   }
 }
 
@@ -80,7 +93,12 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
       typeof body?.error?.message === "string"
         ? body.error.message
         : `The request failed with status ${response.status}.`;
-    throw new ApiError(response.status, code, message);
+    const currentGeneration =
+      typeof (body?.error as { currentGeneration?: unknown } | undefined)?.currentGeneration ===
+      "string"
+        ? (body!.error as { currentGeneration: string }).currentGeneration
+        : undefined;
+    throw new ApiError(response.status, code, message, currentGeneration);
   }
 
   return payload as T;
@@ -119,11 +137,46 @@ export async function apiGetBlob(path: string, signal?: AbortSignal): Promise<Bl
 }
 
 /** One authenticated mutation or ceremony step. */
-export function apiPost<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+export function apiPost<T>(
+  path: string,
+  body?: unknown,
+  options?: { signal?: AbortSignal; headers?: Record<string, string> },
+): Promise<T> {
   return request<T>(path, {
     method: "POST",
-    signal,
-    headers: body === undefined ? {} : { "content-type": "application/json" },
+    signal: options?.signal,
+    headers: {
+      ...(body === undefined ? {} : { "content-type": "application/json" }),
+      ...(options?.headers ?? {}),
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
+  });
+}
+
+/** One authenticated patch, for revision-aware draft edits (SPEC F6). */
+export function apiPatch<T>(
+  path: string,
+  body: unknown,
+  options?: { signal?: AbortSignal; headers?: Record<string, string> },
+): Promise<T> {
+  return request<T>(path, {
+    method: "PATCH",
+    signal: options?.signal,
+    headers: { "content-type": "application/json", ...(options?.headers ?? {}) },
+    body: JSON.stringify(body),
+  });
+}
+
+/** One authenticated byte upload, sent verbatim (SPEC F6). */
+export function apiPostBytes<T>(
+  path: string,
+  bytes: Blob,
+  contentType: string,
+  headers?: Record<string, string>,
+): Promise<T> {
+  return request<T>(path, {
+    method: "POST",
+    headers: { "content-type": contentType, ...(headers ?? {}) },
+    body: bytes,
   });
 }

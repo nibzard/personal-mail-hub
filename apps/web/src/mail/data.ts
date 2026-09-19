@@ -11,7 +11,8 @@ import type {
 } from "@mail-hub/contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiGet, apiGetBlob, toApiError, type ApiError } from "@/lib/api";
-import { useResource } from "./use-resource";
+import { offlineStore } from "@/offline/store.ts";
+import { useResource, type Resource } from "./use-resource";
 import { folderForRole, scopeKey, type MailScope } from "./view";
 
 /*
@@ -37,20 +38,26 @@ export function useAuthStatus() {
 
 export type SessionState =
   | { phase: "loading" }
-  | { phase: "signed-in"; accounts: AccountSummary[] }
+  | { phase: "signed-in"; accounts: AccountSummary[]; recoveryGeneration: string | null }
   | { phase: "signed-out" }
   | { phase: "error"; message: string };
 
 /**
  * The session probe. The account list loads only with a live session, so one
- * request answers both "is there a session" and "which accounts exist".
+ * request answers both "is there a session" and "which accounts exist". Its
+ * response also carries the recovery generation the server issues for new
+ * client work (SPEC section 10).
  */
 export function useSession(): { state: SessionState; refresh: () => void } {
   const resource = useResource((signal) => apiGet<AccountsResponse>("/accounts", signal), []);
   switch (resource.phase) {
     case "ready":
       return {
-        state: { phase: "signed-in", accounts: resource.data?.accounts ?? [] },
+        state: {
+          phase: "signed-in",
+          accounts: resource.data?.accounts ?? [],
+          recoveryGeneration: resource.data?.recoveryGeneration ?? null,
+        },
         refresh: resource.reload,
       };
     case "error":
@@ -71,16 +78,68 @@ export function useSession(): { state: SessionState; refresh: () => void } {
 
 /**
  * The full detail of one message, sanitized body included (SPEC F3). A null
- * id reads as null data, so an empty selection stays an empty pane.
+ * id reads as null data, so an empty selection stays an empty pane. Downloaded
+ * details cache in Dexie, so an offline reader still opens what it fetched
+ * before (SPEC F9).
  */
-export function useMessageDetail(messageId: string | null) {
-  return useResource<MessageDetailResponse | null>(
+export function useMessageDetail(
+  messageId: string | null,
+): Resource<MessageDetailResponse | null> & { offlineFromCache: boolean } {
+  const resource = useResource<MessageDetailResponse | null>(
     (signal) =>
       messageId === null
         ? Promise.resolve(null)
         : apiGet<MessageDetailResponse>(`/messages/${messageId}`, signal),
     [messageId],
   );
+  const [fallback, setFallback] = useState<MessageDetailView | null>(null);
+  const offline =
+    resource.phase === "error" && resource.error?.network === true && messageId !== null;
+
+  useEffect(() => {
+    if (resource.phase === "ready" && resource.data?.message !== undefined) {
+      cacheDetail(resource.data.message);
+    }
+  }, [resource.phase, resource.data]);
+
+  useEffect(() => {
+    setFallback(null);
+    if (!offline) {
+      return;
+    }
+    const id = messageId;
+    let live = true;
+    void (async () => {
+      const store = offlineStore();
+      const detail = store === null || id === null ? null : await store.cachedDetail(id);
+      if (live) {
+        setFallback(detail);
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [offline, messageId]);
+
+  if (offline && fallback !== null) {
+    return {
+      phase: "ready",
+      data: { message: fallback },
+      error: null,
+      reload: resource.reload,
+      offlineFromCache: true,
+    };
+  }
+  return { ...resource, offlineFromCache: false };
+}
+
+/** Cache one downloaded detail; quota problems just skip the copy. */
+function cacheDetail(message: MessageDetailView): void {
+  const store = offlineStore();
+  if (store === null) {
+    return;
+  }
+  void store.cacheMessageDetail(message).catch(() => {});
 }
 
 /** Verified inline images of one message, keyed by Content-ID. */
@@ -242,6 +301,8 @@ export interface MessageListState {
   error: ApiError | null;
   loadingMore: boolean;
   canLoadMore: boolean;
+  /** True when the rows come from the offline cache, not the server. */
+  offlineFromCache: boolean;
 }
 
 export interface MessageList {
@@ -283,7 +344,8 @@ export function useMessageList(
     indexing: MessageListState["indexing"];
     error: ApiError | null;
     loadingMore: boolean;
-  }>({ phase: "loading", rows: [], total: 0, indexing: null, error: null, loadingMore: false });
+    offlineFromCache: boolean;
+  }>({ phase: "loading", rows: [], total: 0, indexing: null, error: null, loadingMore: false, offlineFromCache: false });
 
   // A new scope or query restarts the list from its first page. The reset
   // happens during render so the fetch effect never sees a stale page count.
@@ -312,6 +374,7 @@ export function useMessageList(
           indexing: null,
           error: null,
           loadingMore: false,
+          offlineFromCache: false,
         });
       }
 
@@ -354,8 +417,10 @@ export function useMessageList(
                 },
                 error: null,
                 loadingMore: false,
+                offlineFromCache: false,
               });
             }
+            cacheRowsLive(merged);
             return;
           }
 
@@ -380,14 +445,17 @@ export function useMessageList(
               indexing: response.indexing,
               error: null,
               loadingMore: false,
+              offlineFromCache: false,
             }));
           }
+          cacheRowsLive(response.results);
         } catch (error: unknown) {
           if (!live || (error instanceof DOMException && error.name === "AbortError")) {
             return;
           }
           const failure = toApiError(error);
           if (live) {
+            const hadRows = entry.rows.length > 0;
             setEntry((current) => ({
               ...current,
               // Keep the rows already on screen; the failure stays inspectable
@@ -396,6 +464,23 @@ export function useMessageList(
               error: failure,
               loadingMore: false,
             }));
+            // With nothing on screen and no service, downloaded mail still
+            // reads (SPEC F9).
+            if (failure.network && !hadRows && pages === 1) {
+              void readCachedRows().then((cached) => {
+                if (live && cached.length > 0) {
+                  setEntry({
+                    phase: "ready",
+                    rows: cached,
+                    total: cached.length,
+                    indexing: null,
+                    error: failure,
+                    loadingMore: false,
+                    offlineFromCache: true,
+                  });
+                }
+              });
+            }
           }
         }
       };
@@ -430,4 +515,38 @@ export function useMessageList(
     loadMore,
     reload,
   };
+}
+
+/**
+ * Cache downloaded rows for offline reading (SPEC F9). Quota problems skip
+ * the copy; they never fail the view that fetched the rows.
+ */
+function cacheRowsLive(rows: SearchResultItem[]): void {
+  const store = offlineStore();
+  if (store === null || rows.length === 0) {
+    return;
+  }
+  void (async () => {
+    try {
+      for (const row of rows) {
+        await store.cacheMessageRow(row);
+      }
+      await store.pruneRecentMail();
+    } catch {
+      // The cache is best effort; reading stays possible without it.
+    }
+  })();
+}
+
+/** The downloaded rows, when this window keeps an offline store. */
+async function readCachedRows(): Promise<SearchResultItem[]> {
+  const store = offlineStore();
+  if (store === null) {
+    return [];
+  }
+  try {
+    return await store.cachedRows();
+  } catch {
+    return [];
+  }
 }

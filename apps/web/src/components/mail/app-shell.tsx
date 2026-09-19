@@ -27,6 +27,7 @@ import { CommandPalette } from "./command-palette";
 import { MessageListPane } from "./message-list";
 import { NavPane } from "./nav-pane";
 import { ReaderPane } from "./reader-pane";
+import { SyncStatusChip } from "./sync-status";
 
 /*
  * The application shell (SPEC F3 and F12): three panes at wide widths, one
@@ -272,6 +273,7 @@ export function AppShell({
         <h1 className="font-semibold">Mail</h1>
         <span className="truncate text-muted-foreground">{title}</span>
         <div className="ms-auto flex items-center gap-1">
+          <SyncStatusChip />
           <Button
             ref={commandsButtonRef}
             variant="ghost"

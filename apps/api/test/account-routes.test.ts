@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import type { AccountErrorBody, AccountsResponse } from "@mail-hub/contracts";
 import { AuthError } from "@mail-hub/auth";
-import { RecoveryBlockedError } from "@mail-hub/recovery";
+import { RecoveryBlockedError, type ControlStatus } from "@mail-hub/recovery";
 import {
   AccountError,
   type AccountFolders,
@@ -136,7 +136,10 @@ function fakeService(
 
 const apps: FastifyInstance[] = [];
 
-function appWith(service: AccountServiceForRoutes): FastifyInstance {
+function appWith(
+  service: AccountServiceForRoutes,
+  status: ControlStatus = { state: "ready", generation: GENERATION },
+): FastifyInstance {
   const app = buildApp();
   apps.push(app);
   void registerAccountRoutes(app, {
@@ -148,6 +151,7 @@ function appWith(service: AccountServiceForRoutes): FastifyInstance {
       }
       return null;
     },
+    controls: { readStatus: async () => status },
   });
   return app;
 }
@@ -182,6 +186,38 @@ describe("the account routes", () => {
       createdAt: NOW.toISOString(),
     });
     expect(response.body).not.toContain("password");
+  });
+
+  it("exposes the current recovery generation on the session probe", async () => {
+    const app = appWith(fakeService());
+    const response = await app.inject({ method: "GET", url: "/accounts", headers: { cookie: `${SESSION_COOKIE}=${TOKEN}` } });
+    expect((response.json() as AccountsResponse).recoveryGeneration).toBe(GENERATION);
+  });
+
+  it("exposes the deployed generation during a mismatch, and null without configuration", async () => {
+    const mismatched: ControlStatus = {
+      state: "generation_mismatch",
+      deploymentGeneration: CURRENT_GENERATION,
+      databaseGeneration: GENERATION,
+      mode: "ready",
+    };
+    const mismatchApp = appWith(fakeService(), mismatched);
+    const mismatchResponse = await mismatchApp.inject({
+      method: "GET",
+      url: "/accounts",
+      headers: { cookie: `${SESSION_COOKIE}=${TOKEN}` },
+    });
+    expect((mismatchResponse.json() as AccountsResponse).recoveryGeneration).toBe(
+      CURRENT_GENERATION,
+    );
+
+    const unconfiguredApp = appWith(fakeService(), { state: "config_missing" });
+    const unconfiguredResponse = await unconfiguredApp.inject({
+      method: "GET",
+      url: "/accounts",
+      headers: { cookie: `${SESSION_COOKIE}=${TOKEN}` },
+    });
+    expect((unconfiguredResponse.json() as AccountsResponse).recoveryGeneration).toBeNull();
   });
 
   it("rejects reads without a session", async () => {

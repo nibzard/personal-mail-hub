@@ -126,6 +126,7 @@ if (authConfig === null) {
       service: accountService,
       origin: authConfig.origin,
       verifySession: (token) => authService.verifySession(token),
+      controls,
     });
     await registerConnectionTestRoutes(app, {
       service: accountService,

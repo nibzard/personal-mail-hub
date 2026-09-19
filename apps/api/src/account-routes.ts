@@ -11,7 +11,7 @@ import type {
   FolderSummary,
   SmtpSecurityMode,
 } from "@mail-hub/contracts";
-import { RecoveryBlockedError } from "@mail-hub/recovery";
+import { RecoveryBlockedError, clientGeneration, type ControlStatus } from "@mail-hub/recovery";
 import { AccountError, type AccountService, type AccountSummary as StoredAccountSummary } from "@mail-hub/accounts";
 import { AuthError } from "@mail-hub/auth";
 import { readRequestGeneration } from "./recovery.ts";
@@ -45,6 +45,8 @@ export interface AccountRoutesOptions {
   origin: string;
   /** Resolves for a live session and throws when the token fails. */
   verifySession(token: string): Promise<unknown>;
+  /** Reads the recovery control state, so reads can expose the generation. */
+  controls: { readStatus(): Promise<ControlStatus> };
 }
 
 const UUID_PATTERN = "^[0-9a-fA-F-]{36}$";
@@ -80,7 +82,7 @@ export async function registerAccountRoutes(
   app: FastifyInstance,
   options: AccountRoutesOptions,
 ): Promise<void> {
-  const { service, origin } = options;
+  const { service, origin, controls } = options;
 
   await app.register(async function accountRoutes(scope) {
     scope.setErrorHandler((error, _request, reply) => {
@@ -108,7 +110,12 @@ export async function registerAccountRoutes(
 
     scope.get<{ Reply: AccountsResponse }>("/accounts", { preHandler: [requireSession] }, async () => {
       const accounts = await service.listAccounts();
-      return { accounts: accounts.map(toAccountView) };
+      // The session probe doubles as the generation read: authenticated
+      // sessions expose the generation for new client work (SPEC section 10).
+      return {
+        accounts: accounts.map(toAccountView),
+        recoveryGeneration: clientGeneration(await controls.readStatus()),
+      };
     });
 
     scope.post<{ Body: AccountCreateBody; Reply: AccountResponse }>(

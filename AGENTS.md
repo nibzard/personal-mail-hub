@@ -73,6 +73,14 @@
   effective send date that falls back to the earliest server internal date,
   body-indexing progress, and saved searches that store query state behind
   the recovery generation gate.
+- `packages/offline` contains the PWA's offline data and replay controls:
+  the Dexie store for recent mail, local drafts, upload bytes, and the
+  queued-action freezer, plus the replay controller that stamps every record
+  with the recovery generation the server issued, replays the queue oldest
+  first, stops on a generation change after a restore, and resolves the
+  review that follows only through explicit choices — a resend needs the
+  acknowledged duplicate warning and a new idempotency key, and a draft
+  rebase needs the comparison with the server copy.
 - `packages/reading` contains the safe message reader service: message
   detail over sanitized derivatives only, the inline-image decision that
   resolves a `cid:` reference only for a unique image Content-ID inside the

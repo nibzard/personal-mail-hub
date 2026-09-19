@@ -135,6 +135,11 @@ export function ReaderPane({ message, onBack, onSessionLost, className }: Reader
               </div>
 
               <div className="mt-4">
+                {detailResource.offlineFromCache && (
+                  <p role="status" className="mb-3 rounded-lg border bg-surface px-3 py-1.5 text-muted-foreground">
+                    Offline. Showing the copy downloaded earlier.
+                  </p>
+                )}
                 {detailResource.phase === "error" ? (
                   <BodyError
                     unauthorized={detailResource.error?.unauthorized === true}
