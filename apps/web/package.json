@@ -8,7 +8,8 @@
     "check": "tsc --noEmit --pretty false",
     "dev": "vite",
     "preview": "vite preview",
-    "check:tokens": "node scripts/check-tokens.mjs"
+    "check:tokens": "node scripts/check-tokens.mjs",
+    "test": "vitest run"
   },
   "dependencies": {
     "@mail-hub/contracts": "0.1.0",
@@ -37,6 +38,8 @@
   "devDependencies": {
     "@types/react": "19.2.13",
     "@types/react-dom": "19.2.3",
-    "typescript": "5.9.3"
+    "jsdom": "30.1.0",
+    "typescript": "5.9.3",
+    "vitest": "5.0.1"
   }
 }

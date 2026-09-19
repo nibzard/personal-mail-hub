@@ -70,11 +70,18 @@ export interface ParsedMessage {
  */
 type ParsedAttachment = Attachment & { partId?: string | null };
 
-/** Parse complete MIME bytes into the normalized message shape. */
+/**
+ * Parse complete MIME bytes into the normalized message shape.
+ *
+ * `skipImageLinks` keeps `cid:` references in the HTML as they are. The
+ * parser's own inlining would pick the first part of a duplicated Content-ID,
+ * which SPEC section 8 forbids; the reader resolves inline images against the
+ * attachment list instead.
+ */
 export async function parseMime(bytes: Uint8Array): Promise<ParsedMessage> {
   let parsed: ParsedMail;
   try {
-    parsed = await simpleParser(toBuffer(bytes));
+    parsed = await simpleParser(toBuffer(bytes), { skipImageLinks: true });
   } catch (cause) {
     throw new IngestionError(
       "parse_failed",

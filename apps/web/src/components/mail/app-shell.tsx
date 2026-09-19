@@ -134,6 +134,7 @@ export function AppShell({
             className="min-h-0 flex-1"
             message={selected}
             onBack={() => setPane("list")}
+            onSessionLost={onSessionLost}
           />
         </div>
       </div>

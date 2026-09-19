@@ -521,6 +521,59 @@ export interface CreateSavedSearchRequestBody {
   scope?: SearchScopeWire | null;
 }
 
+/** Safe-reader rejection codes, from `SPEC.md` F3 and section 8. */
+export type ReadingErrorCode = "invalid_request" | "not_found";
+
+/** The body of a message-reader route rejection. */
+export interface ReadingErrorBody {
+  error: {
+    code: ReadingErrorCode;
+    message: string;
+  };
+}
+
+/** One received attachment in its wire form (SPEC F3). */
+export interface MessageAttachmentView {
+  id: string;
+  filename: string | null;
+  contentType: string | null;
+  /** Decoded size, which is what a download delivers. */
+  sizeBytes: number;
+  /** MIME Content-ID without angle brackets; not a unique key. */
+  contentId: string | null;
+  /** `attachment` or `inline` when the part declared one. */
+  disposition: string | null;
+  /**
+   * True when exactly one part of this message holds this Content-ID and the
+   * part is an image, so a `cid:` reference may resolve to it (SPEC F3).
+   * Ambiguous identifiers stay download items.
+   */
+  inlineResolvable: boolean;
+}
+
+/** One message in full, as the reader shows it (SPEC F3). */
+export interface MessageDetailView {
+  id: string;
+  accountId: string;
+  threadId: string | null;
+  subject: string | null;
+  sender: MessageAddress | null;
+  /** Visible recipients; blind copies never appear here. */
+  recipients: { to: MessageAddress[]; cc: MessageAddress[] } | null;
+  sentAt: string | null;
+  /** False while only headers exist; the reader says so instead of guessing. */
+  fetchedBody: boolean;
+  /** Sanitized HTML derivative; the original bytes are never sent (SPEC section 8). */
+  htmlSanitized: string | null;
+  textPlain: string | null;
+  attachments: MessageAttachmentView[];
+}
+
+/** Response of `GET /messages/:id`. */
+export interface MessageDetailResponse {
+  message: MessageDetailView;
+}
+
 /** MIME ingestion and attachment recovery rejection codes, from `SPEC.md` section 8. */
 export type IngestionErrorCode =
   | "invalid_request"

@@ -73,6 +73,12 @@
   effective send date that falls back to the earliest server internal date,
   body-indexing progress, and saved searches that store query state behind
   the recovery generation gate.
+- `packages/reading` contains the safe message reader service: message
+  detail over sanitized derivatives only, the inline-image decision that
+  resolves a `cid:` reference only for a unique image Content-ID inside the
+  same message, and attachment downloads that serve the disposable cache
+  only after its decoded hash and size verify, else regenerate from the
+  verified original without changing the attachment id.
 - `packages/database` contains the Drizzle schema, SQL migrations, object
   storage, and pg-boss integration, plus the retrying scratch-database cleanup
   (`dropTestDatabase`) the PostgreSQL suites share. Run `npm run db:generate`

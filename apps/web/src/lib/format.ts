@@ -12,6 +12,7 @@ const WITH_YEAR = new Intl.DateTimeFormat(undefined, {
 });
 const FULL = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
 const COUNTS = new Intl.NumberFormat();
+const SIZES = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
 
 function parse(iso: string | null): Date | null {
   if (iso === null) {
@@ -52,6 +53,24 @@ export function formatFullTime(iso: string | null): string {
 /** Counts with locale separators, for example 1,234. */
 export function formatCount(value: number): string {
   return COUNTS.format(value);
+}
+
+/** Byte sizes with binary units, for example 1.4 MB. */
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) {
+    return "";
+  }
+  if (bytes < 1024) {
+    return `${COUNTS.format(bytes)} B`;
+  }
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unit = -1;
+  do {
+    value /= 1024;
+    unit += 1;
+  } while (value >= 1024 && unit < units.length - 1);
+  return `${SIZES.format(value)} ${units[unit]}`;
 }
 
 /** The display name of one address: the name, else the bare address. */

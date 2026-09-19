@@ -4,11 +4,13 @@ import type {
   AccountsResponse,
   AuthStatusResponse,
   FolderSummary,
+  MessageDetailView,
+  MessageDetailResponse,
   SearchResultsResponse,
   SearchResultItem,
 } from "@mail-hub/contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { apiGet, toApiError, type ApiError } from "@/lib/api";
+import { apiGet, apiGetBlob, toApiError, type ApiError } from "@/lib/api";
 import { useResource } from "./use-resource";
 import { folderForRole, scopeKey, type MailScope } from "./view";
 
@@ -65,6 +67,89 @@ export function useSession(): { state: SessionState; refresh: () => void } {
     default:
       return { state: { phase: "loading" }, refresh: resource.reload };
   }
+}
+
+/**
+ * The full detail of one message, sanitized body included (SPEC F3). A null
+ * id reads as null data, so an empty selection stays an empty pane.
+ */
+export function useMessageDetail(messageId: string | null) {
+  return useResource<MessageDetailResponse | null>(
+    (signal) =>
+      messageId === null
+        ? Promise.resolve(null)
+        : apiGet<MessageDetailResponse>(`/messages/${messageId}`, signal),
+    [messageId],
+  );
+}
+
+/** Verified inline images of one message, keyed by Content-ID. */
+export interface InlineImages {
+  /** `null` while the verified set is still loading. */
+  map: Map<string, string> | null;
+}
+
+/**
+ * Fetches the reader's inline images (SPEC F3). Only attachments the server
+ * marked resolvable are fetched, and each becomes a data URL, because the
+ * sandboxed frame cannot read cookies or blob URLs. A failed image stays a
+ * labeled placeholder; it never blocks the others.
+ */
+export function useInlineImages(message: MessageDetailView | null): InlineImages {
+  const [map, setMap] = useState<Map<string, string> | null>(null);
+
+  useEffect(() => {
+    if (message === null) {
+      setMap(null);
+      return;
+    }
+    const resolvable = message.attachments.filter(
+      (attachment) => attachment.inlineResolvable && attachment.contentId !== null,
+    );
+    if (resolvable.length === 0) {
+      setMap(new Map<string, string>());
+      return;
+    }
+
+    const controller = new AbortController();
+    let live = true;
+    setMap(null);
+    void (async () => {
+      const loaded = new Map<string, string>();
+      await Promise.all(
+        resolvable.map(async (attachment) => {
+          try {
+            const blob = await apiGetBlob(
+              `/messages/${message.id}/attachments/${attachment.id}`,
+              controller.signal,
+            );
+            loaded.set(attachment.contentId!, await blobToDataUrl(blob));
+          } catch {
+            // One failed image stays a placeholder; the rest still render.
+          }
+        }),
+      );
+      if (live) {
+        setMap(loaded);
+      }
+    })();
+    return () => {
+      live = false;
+      controller.abort();
+    };
+  }, [message?.id, message?.attachments]);
+
+  return { map };
+}
+
+/** Reads one blob as a data URL, the only URL the sandboxed frame can load. */
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => resolve(reader.result as string));
+    reader.addEventListener("error", () => reject(new Error("The image could not be decoded.")));
+    reader.readAsDataURL(blob);
+  });
 }
 
 /** Folder lists for every account, keyed by account id. */

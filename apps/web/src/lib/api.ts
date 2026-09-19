@@ -91,6 +91,33 @@ export function apiGet<T>(path: string, signal?: AbortSignal): Promise<T> {
   return request<T>(path, { method: "GET", signal });
 }
 
+/** The URL of one API path, for links the browser navigates by itself. */
+export function apiUrl(path: string): string {
+  return `${readBase()}${path}`;
+}
+
+/** One authenticated binary read, as a blob. */
+export async function apiGetBlob(path: string, signal?: AbortSignal): Promise<Blob> {
+  let response: Response;
+  try {
+    response = await fetch(apiUrl(path), {
+      method: "GET",
+      credentials: "same-origin",
+      headers: { accept: "*/*" },
+      signal,
+    });
+  } catch (error) {
+    if (isAbort(error)) {
+      throw error;
+    }
+    throw new ApiError(0, "network_error", "The mail service cannot be reached.");
+  }
+  if (!response.ok) {
+    throw new ApiError(response.status, `http_${response.status}`, `The download failed with status ${response.status}.`);
+  }
+  return response.blob();
+}
+
 /** One authenticated mutation or ceremony step. */
 export function apiPost<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   return request<T>(path, {

@@ -5,11 +5,14 @@ import { AccountService, createCredentialCipher, parseCredentialsKey } from "@ma
 import { ComposeService } from "@mail-hub/compose";
 import { OutboundService } from "@mail-hub/send";
 import { SearchService } from "@mail-hub/search";
+import { IngestionService } from "@mail-hub/ingestion";
+import { ReadingService } from "@mail-hub/reading";
 import { runConnectionTest } from "@mail-hub/transport";
 import { registerAccountRoutes } from "./account-routes.ts";
 import { registerAuthRoutes } from "./auth-routes.ts";
 import { registerComposeRoutes } from "./compose-routes.ts";
 import { registerConnectionTestRoutes } from "./connection-test-routes.ts";
+import { registerMessageRoutes } from "./message-routes.ts";
 import { registerSearchRoutes } from "./search-routes.ts";
 import { registerSendRoutes } from "./send-routes.ts";
 import { buildApp } from "./app.ts";
@@ -94,6 +97,20 @@ if (authConfig === null) {
     verifySession: (token) => authService.verifySession(token),
   });
   app.log.info("Search ready: cross-account queries and saved searches.");
+
+  // The reader serves sanitized derivatives only; a download regenerates its
+  // disposable copy from the verified original when the cache misses (SPEC
+  // F3 and section 8). Reads carry no recovery gate.
+  const readingService = new ReadingService(
+    db,
+    storage,
+    (attachmentId) => new IngestionService(db, storage).regenerateAttachment(attachmentId),
+  );
+  await registerMessageRoutes(app, {
+    service: readingService,
+    verifySession: (token) => authService.verifySession(token),
+  });
+  app.log.info("Reading ready: message detail and attachment downloads.");
 
   // Account management seals mailbox passwords with CREDENTIALS_KEY (SPEC
   // section 9). Without a usable key the routes stay closed: storing plaintext
