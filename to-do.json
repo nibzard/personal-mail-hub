@@ -1271,13 +1271,13 @@
       "title": "Build the compose and send interface",
       "priority": 1,
       "status": "done",
-      "details": "No compose surface exists in the web app: no CodeMirror editor, no Markdown preview, no draft autosave UI, no attachment upload UI, and no send flow (apps/web/src/mail/commands.ts:85 states the compose editor is not part of this build). Nothing in apps/web calls enqueueDraftSave, enqueueUpload, enqueueSend, or enqueueMailAction, so the offline queue and the review dialog in sync-status.tsx are unreachable code. Build the F6 and F7 surface on the existing @mail-hub/compose and @mail-hub/send APIs: the CodeMirror 6 Markdown editor with preview, identity and recipient pickers, attachments with upload state, the 2-second autosave state machine with the stale-revision choice, send with queued, sending, sent, partial, failed, and unknown states kept separate from Sent-copy status, a draft list, and the duplicate-warning path before any deliberate resend.",
+      "details": "Done in 60a09c5: the SPEC F6 and F7 surface on the existing @mail-hub/compose and @mail-hub/send APIs. The draft editor (apps/web/src/components/mail/draft-editor.tsx) holds a CodeMirror 6 Markdown source (markdown-editor.tsx) with a sanitized preview through mail/markdown.ts, the identity and recipient pickers, attachments with their upload state, and the two-second autosave state machine imported from @mail-hub/compose/autosave through a new subpath export, so server modules stay out of the browser bundle; a stale revision shows both copies and asks which one to keep. Sends queue with the frozen base revision and a fresh idempotency key (requestDraftSend in mail/compose-data.ts); the send panel keeps queued, sending, sent, partially accepted, failed, and unknown outcomes apart from the Sent-copy status (mail/send-state.ts); a lost queue response stays uncertain and only an acknowledged duplicate warning with a new key may send again. The palette reaches the surface through new-message, reply, and send commands, and the draft list doubles as the outbox. The offline queue is now reachable: compose-data calls enqueueDraftSave, enqueueUpload, and enqueueSend, so the review dialog path in sync-status.tsx is live. The fixture API serves drafts, uploads, sends, and outbound states; browser flows cover each send outcome, autosave with preview, attachments, reply derivation, and the duplicate warning. Re-verified 2026-09-19 after the loop reset the status to doing: npm run check passes in every workspace, the full suite with TEST_DATABASE_URL passes 706 tests across 68 test files in 21 workspaces with nothing failed or skipped, and the browser suites pass (28 flows including the seven compose-and-send cases, plus 13 interface checks), so the implementation needed no changes and this pass made no code commit.",
       "tags": [
         "ui",
         "compose",
         "send"
       ],
-      "updated_at": "2026-09-19T19:03:32Z",
+      "updated_at": "2026-09-19T19:12:07Z",
       "files": [
         "apps/web/src/components/mail/compose-screen.tsx",
         "apps/web/src/components/mail/draft-editor.tsx",
