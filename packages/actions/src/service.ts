@@ -1,4 +1,4 @@
-import { and, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import {
   accounts,
   actionItems,
@@ -474,9 +474,21 @@ export class ActionService<M extends ActionMailbox = ActionMailbox> {
       if (outcome.outcome === "confirmed") {
         await this.commitDisposition(action, item, {
           status: "confirmed",
-          outcome: { observed: observedFlags(outcome.observed) },
+          outcome: {
+            observed: observedFlags(outcome.observed),
+            ...(outcome.movedTo === undefined ? {} : { movedTo: outcome.movedTo }),
+          },
           observed: outcome.observed,
           applied: true,
+          // A confirmed move emptied the source occurrence; the destination
+          // copy arrives through synchronization (SPEC F4).
+          expunge: outcome.movedTo !== undefined,
+        });
+      } else if (outcome.outcome === "conflicted") {
+        await this.commitDisposition(action, item, {
+          status: "conflicted",
+          outcome: { reason: outcome.reason, observed: observedFlags(outcome.observed) },
+          observed: outcome.observed,
         });
       } else if (outcome.outcome === "unknown") {
         await this.commitDisposition(action, item, { status: "unknown", outcome: { reason: outcome.reason } });
@@ -519,7 +531,12 @@ export class ActionService<M extends ActionMailbox = ActionMailbox> {
     };
   }
 
-  /** The disposition write of one item, committed with its observed state and event (step 5). */
+  /**
+   * The disposition write of one item, committed with its observed state and
+   * event (step 5). A confirmed move also expunges the source occurrence, and
+   * an observation that carried a server modification sequence records it, so
+   * the next queued action captures a fresher condition (SPEC F2).
+   */
   private async commitDisposition(
     action: ActionRow,
     item: ItemRow,
@@ -528,6 +545,7 @@ export class ActionService<M extends ActionMailbox = ActionMailbox> {
       outcome: Record<string, unknown> | null;
       observed?: ActionMailboxFlags;
       applied?: boolean;
+      expunge?: boolean;
     },
   ): Promise<void> {
     await this.db.transaction(async (tx) => {
@@ -548,29 +566,40 @@ export class ActionService<M extends ActionMailbox = ActionMailbox> {
         return;
       }
 
-      if (write.observed !== undefined) {
+      if (write.observed !== undefined || write.expunge === true) {
         // Commit what the mailbox answered with the receipt. The revision
-        // only moves when the observation changed, so a stable target stays
-        // fresh for other queued actions (SPEC F2).
+        // only moves when the flags changed, so a stable target stays fresh
+        // for other queued actions; a modseq-only observation refreshes the
+        // captured condition without inventing a change (SPEC F2).
         const rows = await tx
           .select({ unread: messageOccurrences.unread, flagged: messageOccurrences.flagged })
           .from(messageOccurrences)
           .where(eq(messageOccurrences.id, item.target.occurrenceId))
           .limit(1);
         const current = rows[0];
-        if (
+        const observed = write.observed;
+        const flagsChanged =
           current !== undefined &&
-          (current.unread !== write.observed.unread || current.flagged !== write.observed.flagged)
-        ) {
+          observed !== undefined &&
+          (current.unread !== observed.unread || current.flagged !== observed.flagged);
+        const modseq = observed?.modseq ?? null;
+        const modseqFresh = modseq !== null;
+        if (current !== undefined && (flagsChanged || modseqFresh || write.expunge === true)) {
           await tx
             .update(messageOccurrences)
             .set({
-              unread: write.observed.unread,
-              flagged: write.observed.flagged,
-              revision: sql`${messageOccurrences.revision} + 1`,
+              ...(observed !== undefined ? { unread: observed.unread, flagged: observed.flagged } : {}),
+              ...(modseqFresh ? { modseq } : {}),
+              ...(flagsChanged ? { revision: sql`${messageOccurrences.revision} + 1` } : {}),
+              ...(write.expunge === true ? { expungedAt: new Date() } : {}),
               observedAt: new Date(),
             })
-            .where(eq(messageOccurrences.id, item.target.occurrenceId));
+            .where(
+              and(
+                eq(messageOccurrences.id, item.target.occurrenceId),
+                isNull(messageOccurrences.expungedAt),
+              ),
+            );
         }
       }
 
@@ -828,8 +857,12 @@ export class ActionService<M extends ActionMailbox = ActionMailbox> {
 }
 
 /** The observed flags of one remote answer, as receipts record them. */
-function observedFlags(flags: ActionMailboxFlags): { unread: boolean; flagged: boolean } {
-  return { unread: flags.unread, flagged: flags.flagged };
+function observedFlags(flags: ActionMailboxFlags): { unread: boolean; flagged: boolean; modseq?: string | null } {
+  return {
+    unread: flags.unread,
+    flagged: flags.flagged,
+    ...(flags.modseq === undefined ? {} : { modseq: flags.modseq }),
+  };
 }
 
 /** The immutable scope one action row froze at queue time. */

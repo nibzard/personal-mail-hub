@@ -1,4 +1,12 @@
 import { ImapFlow } from "imapflow";
+import type {
+  ActionMailboxCapabilities,
+  FlagWriteRequest,
+  FlagWriteResult,
+  MoveWriteRequest,
+  MoveWriteResult,
+  WritableActionMailbox,
+} from "@mail-hub/actions";
 import { resolveTimeouts, verifiedTlsOptions } from "@mail-hub/transport";
 import { SyncError } from "./errors.ts";
 import {
@@ -19,11 +27,27 @@ import {
  * that cannot prove its certificate never sees the username or password.
  * Every fetch uses `BODY.PEEK`, so importing a mailbox never sets `\Seen`.
  * Failures surface as `SyncError` messages without credentials or content.
+ *
+ * The session also carries the two-way writes of the action path (SPEC F2
+ * and F4). They run only through the action executor, on a session opened
+ * with `condstoreWrites` so conditional `UNCHANGEDSINCE` stores are possible;
+ * synchronization itself keeps reading and never writes.
  */
+
+/** Options that shape the session one `open` call returns. */
+export interface MailboxSessionOptions {
+  /**
+   * Let ImapFlow enable advertised extensions after login. The action path
+   * needs this so the server turns CONDSTORE on for the session, which every
+   * conditional write and modseq-bearing fetch depends on. Synchronization
+   * sessions keep it off; their reads never consult modification sequences.
+   */
+  condstoreWrites?: boolean;
+}
 
 /** Opens one ImapFlow connection per call. */
 export class ImapMailboxSessionFactory implements MailboxSessionFactory {
-  async open(connection: MailboxConnection): Promise<MailboxSession> {
+  async open(connection: MailboxConnection, options: MailboxSessionOptions = {}): Promise<MailboxSession> {
     const timeouts = resolveTimeouts(connection.timeouts);
     const client = new ImapFlow({
       host: connection.host,
@@ -33,9 +57,10 @@ export class ImapMailboxSessionFactory implements MailboxSessionFactory {
       auth: { user: connection.username, pass: connection.password },
       tls: verifiedTlsOptions(connection.trustedCaPem),
       // Sync drives its own command cadence; no automatic IDLE and no
-      // transparent extension enablement between batches.
+      // transparent extension enablement between batches. A write session
+      // lets the one post-login ENABLE through, and nothing else changes.
       disableAutoIdle: true,
-      disableAutoEnable: true,
+      disableAutoEnable: options.condstoreWrites !== true,
       connectionTimeout: timeouts.connectMs,
       greetingTimeout: timeouts.greetingMs,
       socketTimeout: timeouts.socketMs,
@@ -59,7 +84,7 @@ export class ImapMailboxSessionFactory implements MailboxSessionFactory {
 }
 
 /** One mailbox session over one open ImapFlow connection. */
-export class ImapMailboxSession implements MailboxSession {
+export class ImapMailboxSession implements MailboxSession, WritableActionMailbox {
   private currentPath: string | null = null;
 
   constructor(private readonly client: ImapFlow) {}
@@ -123,6 +148,9 @@ export class ImapMailboxSession implements MailboxSession {
         uid: message.uid,
         unread: !(message.flags ?? new Set()).has("\\Seen"),
         flagged: (message.flags ?? new Set()).has("\\Flagged"),
+        // A CONDSTORE session answers every fetch with a modification
+        // sequence; without one the field stays absent (SPEC F2).
+        ...(message.modseq === undefined ? {} : { modseq: message.modseq.toString() }),
       });
     }
     return records;
@@ -150,6 +178,74 @@ export class ImapMailboxSession implements MailboxSession {
     return this.select(this.currentPath);
   }
 
+  async capabilities(): Promise<ActionMailboxCapabilities> {
+    const mailbox = this.client.mailbox;
+    return {
+      // Conditional stores need the extension enabled on the session and a
+      // selected folder that reports modification sequences at all.
+      condstore:
+        this.client.enabled.has("CONDSTORE") &&
+        mailbox !== false &&
+        mailbox.noModseq !== true,
+      move: this.client.capabilities.has("MOVE"),
+    };
+  }
+
+  async writeFlag(request: FlagWriteRequest): Promise<FlagWriteResult> {
+    if (this.currentPath === null) {
+      throw new SyncError("mailbox_error", "No mailbox is selected to write flags to.");
+    }
+    const keyword = IMAP_FLAGS[request.flag];
+    const range = String(request.uid);
+    const options = {
+      uid: true,
+      ...(request.unchangedSince === null ? {} : { unchangedSince: BigInt(request.unchangedSince) }),
+    };
+    try {
+      const ok = request.value
+        ? await this.client.messageFlagsAdd(range, [keyword], options)
+        : await this.client.messageFlagsRemove(range, [keyword], options);
+      if (ok === true) {
+        return { result: "accepted" };
+      }
+      // ImapFlow folds a failed command into `false` without saying whether
+      // the tagged response arrived, so a dead connection reads as a lost
+      // response and everything else as a definitive rejection.
+      return this.unusable() ? uncertain("The flag write response was lost.") : { result: "rejected" };
+    } catch (cause) {
+      return uncertain(describe(cause));
+    }
+  }
+
+  async moveMessage(request: MoveWriteRequest): Promise<MoveWriteResult> {
+    if (this.currentPath === null) {
+      throw new SyncError("mailbox_error", "No mailbox is selected to move from.");
+    }
+    if (!this.client.capabilities.has("MOVE")) {
+      // This version defines no copy-and-expunge fallback (SPEC F4).
+      return { result: "rejected" };
+    }
+    try {
+      const moved = await this.client.messageMove(String(request.uid), request.destinationFolder, {
+        uid: true,
+      });
+      if (!moved) {
+        return this.unusable() ? uncertain("The move response was lost.") : { result: "rejected" };
+      }
+      return {
+        result: "moved",
+        destination: {
+          folder: moved.destination,
+          uidvalidity: moved.uidValidity === undefined ? null : Number(moved.uidValidity),
+          // UIDPLUS servers map the source UID to its destination UID.
+          uid: moved.uidMap?.get(request.uid) ?? null,
+        },
+      };
+    } catch (cause) {
+      return uncertain(describe(cause));
+    }
+  }
+
   async logout(): Promise<void> {
     try {
       await this.client.logout();
@@ -171,6 +267,17 @@ export class ImapMailboxSession implements MailboxSession {
       throw new SyncError("mailbox_error", `The IMAP ${step} failed: ${describe(cause)}`);
     }
   }
+
+  private unusable(): boolean {
+    return this.client.usable !== true;
+  }
+}
+
+/** The wire keyword each tracked flag maps to. */
+const IMAP_FLAGS = { unread: "\\Seen", flagged: "\\Flagged" } as const;
+
+function uncertain(reason: string): { result: "uncertain"; reason: string } {
+  return { result: "uncertain", reason };
 }
 
 /** An internal date the server reported as a string instead of a Date. */

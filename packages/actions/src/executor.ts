@@ -1,7 +1,7 @@
 import type { ActionItemTarget } from "@mail-hub/database";
 
 import type { ActionKind, FlagDesire } from "./kinds.ts";
-import type { ActionMailbox, ActionMailboxFlags } from "./mailbox.ts";
+import type { ActionMailbox, ActionMailboxFlags, MoveDestination } from "./mailbox.ts";
 
 /**
  * The executor port: the remote write half of one action item (SPEC section 7,
@@ -12,6 +12,10 @@ import type { ActionMailbox, ActionMailboxFlags } from "./mailbox.ts";
  * A database transaction can never include an IMAP side effect. The executor
  * performs the remote operation only; the service commits the observed state,
  * the receipt, and the event together afterwards (SPEC section 7).
+ *
+ * A `conflicted` outcome reports a refresh that disproved the write's
+ * precondition — a rejected conditional store, or a target that vanished —
+ * together with the observed state that replaced it (SPEC F2).
  */
 
 /** The desired state one prepared item carries to the executor. */
@@ -35,7 +39,8 @@ export interface PreparedActionItem {
 
 /** The result of one remote mutation, as the executor reports it. */
 export type ExecutorOutcome =
-  | { outcome: "confirmed"; observed: ActionMailboxFlags }
+  | { outcome: "confirmed"; observed: ActionMailboxFlags; movedTo?: MoveDestination }
+  | { outcome: "conflicted"; reason: string; observed: ActionMailboxFlags }
   | { outcome: "unknown"; reason: string }
   | { outcome: "failed"; code: string; message: string };
 

@@ -35,7 +35,7 @@ export {
   type MailboxSessionFactory,
   type MailboxState,
 } from "./mailbox.ts";
-export { ImapMailboxSessionFactory, ImapMailboxSession } from "./imap-session.ts";
+export { ImapMailboxSessionFactory, ImapMailboxSession, type MailboxSessionOptions } from "./imap-session.ts";
 export {
   FOLDER_INVENTORY_EVENT,
   FOLDER_GENERATION_RESET_EVENT,

@@ -12,6 +12,8 @@ import type { FakeActionMailbox } from "./fake-action-mailbox.ts";
 /** What one executor call does. */
 export type ScriptedExecution =
   | { kind: "confirm" }
+  /** The executor reports a disproved precondition with the refreshed state. */
+  | { kind: "conflict"; reason?: string }
   | { kind: "unknown"; reason: string }
   | { kind: "throw"; error: Error };
 
@@ -40,6 +42,13 @@ export class FakeActionExecutor implements ActionExecutor<FakeActionMailbox> {
       ?.find((candidate) => candidate.uid === item.target.uid);
     if (message === undefined) {
       return { outcome: "failed", code: "absent", message: "The UID no longer exists on the server." };
+    }
+    if (behavior.kind === "conflict") {
+      return {
+        outcome: "conflicted",
+        reason: behavior.reason ?? "condstore_rejected",
+        observed: { uid: message.uid, unread: message.unread, flagged: message.flagged },
+      };
     }
     if (item.desired.type === "flags") {
       message[item.desired.desire.flag] = item.desired.desire.value;

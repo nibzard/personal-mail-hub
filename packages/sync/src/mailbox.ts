@@ -52,6 +52,11 @@ export interface MailboxFlags {
   uid: number;
   unread: boolean;
   flagged: boolean;
+  /**
+   * The modification sequence the answer carried. Present only on a session
+   * with CONDSTORE enabled; a conditional write captures it (SPEC F2).
+   */
+  modseq?: string | null;
 }
 
 /** One open mailbox connection bound to a single selected folder at a time. */

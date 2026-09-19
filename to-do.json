@@ -375,7 +375,7 @@
         "actions",
         "safety"
       ],
-      "updated_at": "2026-09-19T04:06:02Z",
+      "updated_at": "2026-09-19T04:06:38Z",
       "files": [
         "AGENTS.md",
         "apps/admin/package.json",
@@ -404,14 +404,33 @@
       "id": "T012",
       "title": "Implement two-way flag and move actions",
       "priority": 1,
-      "status": "todo",
-      "details": "Support explicit read, unread, star, unstar, archive, move, and bulk targets with revision checks, conditional writes, conflicts, and unknown move outcomes.",
+      "status": "done",
+      "details": "Two-way flag and move execution per SPEC F2 and F4. packages/actions gains the writable mailbox port (WritableActionMailbox: capabilities, writeFlag, moveMessage) and TwoWayActionExecutor, the concrete executor behind the ActionExecutor port. Flags: when the session reports CONDSTORE and the frozen target carries a modseq, the write goes out conditional with UNCHANGEDSINCE and the captured sequence; otherwise it applies only the requested flag like a +FLAGS/-FLAGS store. Every write is read back before anything confirms: a readback holding the desired value confirms (covers another client having set it), a conditional write whose readback misses conflicts as condstore_rejected with the refreshed state attached, and a plain write that raced a concurrent change confirms with the latest observed state and no ordering claim. Lost or thrown writes, and an accepted write whose target left before the readback, hold unknown. Moves: IMAP MOVE only; without the capability the item fails move_unsupported (no EXPUNGE fallback), a rejected move fails move_rejected, and a lost move response holds unknown for reconciliation. The service maps the new conflicted executor outcome to receipts, records the observed modseq with each disposition so the next action captures a fresher condition, and expunges the source occurrence of a confirmed move while recording the reported destination; the destination copy still arrives through normal synchronization. packages/sync implements the port on the ImapFlow session: single-keyword stores with unchangedSince, messageMove with UIDPLUS destination mapping, capability reporting from the enabled set and the selected folder, dead-connection answers classified as uncertain rather than rejected, and a condstoreWrites factory option that lets the post-login ENABLE turn CONDSTORE on for write sessions while sync sessions keep reading with extension enablement off. Verified: npm run check across all workspaces and npm test with TEST_DATABASE_URL, 255 tests green including the new 13-test executor suite and 5 new service cases.",
       "depends_on": [
         "T011"
       ],
       "tags": [
         "actions",
         "imap"
+      ],
+      "updated_at": "2026-09-19T04:35:00Z",
+      "files": [
+        "AGENTS.md",
+        "package-lock.json",
+        "packages/actions/src/executor.ts",
+        "packages/actions/src/index.ts",
+        "packages/actions/src/mailbox.ts",
+        "packages/actions/src/service.ts",
+        "packages/actions/src/two-way-executor.ts",
+        "packages/actions/test/fake-action-mailbox.ts",
+        "packages/actions/test/fake-executor.ts",
+        "packages/actions/test/service.test.ts",
+        "packages/actions/test/two-way-executor.test.ts",
+        "packages/sync/package.json",
+        "packages/sync/src/imap-session.ts",
+        "packages/sync/src/index.ts",
+        "packages/sync/src/mailbox.ts",
+        "to-do.json"
       ]
     },
     {

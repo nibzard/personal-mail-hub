@@ -23,6 +23,7 @@ import {
   ACTION_RESTORED_HELD_EVENT,
   ActionError,
   ActionService,
+  TwoWayActionExecutor,
   type MailActionSubmission,
 } from "../src/index.ts";
 import { FakeActionMailbox } from "./fake-action-mailbox.ts";
@@ -166,6 +167,9 @@ suite("ActionService", () => {
         uid: occurrence.uid,
         unread: occurrence.unread,
         flagged: occurrence.flagged,
+        ...(occurrence.modseq === null || occurrence.modseq === undefined
+          ? {}
+          : { modseq: occurrence.modseq }),
       })),
     );
     return mailbox;
@@ -581,6 +585,126 @@ suite("ActionService", () => {
       outcome: { reason: "destination_removed" },
     });
     expect(executor.calls).toHaveLength(0);
+  });
+
+  it("runs a two-way flag write through the readback and records what held", async () => {
+    const { accountId, inboxId } = await setupAccount();
+    const occurrence = await seedOccurrence(accountId, inboxId, 51, { unread: true, flagged: true });
+    const mailbox = mailboxOf([occurrence]);
+    const service = new ActionService(db, controls, new TwoWayActionExecutor());
+
+    const queued = await service.submit(submission(accountId, "mark_read", [occurrence.id]));
+    const result = await service.execute(queued.receipt.actionId, mailbox);
+    // No CONDSTORE, so the write carried no captured sequence (SPEC F2).
+    expect(mailbox.flagWrites).toEqual([
+      { uid: 51, flag: "unread", value: false, unchangedSince: null },
+    ]);
+    // The write touched only the requested flag; the readback proved it.
+    expect(result.receipt.items[0]).toMatchObject({
+      status: "confirmed",
+      outcome: { observed: { unread: false, flagged: true } },
+    });
+    const row = await occurrenceRow(occurrence.id);
+    expect([row.unread, row.flagged, row.revision]).toEqual([false, true, 2]);
+    expect(await eventsOf(ACTION_APPLIED_EVENT, occurrence.id)).toHaveLength(1);
+  });
+
+  it("writes conditionally with the frozen sequence and records the fresh one", async () => {
+    const { accountId, inboxId } = await setupAccount();
+    const occurrence = await seedOccurrence(accountId, inboxId, 52, { unread: true });
+    await db.update(messageOccurrences).set({ modseq: "7" }).where(eq(messageOccurrences.id, occurrence.id));
+    const mailbox = mailboxOf([{ ...occurrence, modseq: "7" }]);
+    mailbox.writes.condstore = true;
+    const service = new ActionService(db, controls, new TwoWayActionExecutor());
+
+    const queued = await service.submit(submission(accountId, "star", [occurrence.id]));
+    const result = await service.execute(queued.receipt.actionId, mailbox);
+    expect(mailbox.flagWrites).toEqual([
+      { uid: 52, flag: "flagged", value: true, unchangedSince: "7" },
+    ]);
+    expect(result.receipt.items[0]).toMatchObject({
+      status: "confirmed",
+      outcome: { observed: { unread: true, flagged: true, modseq: "8" } },
+    });
+    // The observation committed with its receipt, so the next queued action
+    // captures the fresh sequence (SPEC F2).
+    const row = await occurrenceRow(occurrence.id);
+    expect([row.flagged, row.revision, row.modseq]).toEqual([true, 2, "8"]);
+  });
+
+  it("commits a rejected conditional write as a conflict with the refreshed state", async () => {
+    const { accountId, inboxId } = await setupAccount();
+    const occurrence = await seedOccurrence(accountId, inboxId, 53, { unread: true });
+    await db.update(messageOccurrences).set({ modseq: "9" }).where(eq(messageOccurrences.id, occurrence.id));
+    const mailbox = mailboxOf([{ ...occurrence, modseq: "9" }]);
+    mailbox.writes.condstore = true;
+    // The server accepted the command, but a concurrent change won and the
+    // value never held (SPEC F2: refresh and conflict check).
+    mailbox.queue({ kind: "accept_without_effect" });
+    const service = new ActionService(db, controls, new TwoWayActionExecutor());
+
+    const queued = await service.submit(submission(accountId, "star", [occurrence.id]));
+    const result = await service.execute(queued.receipt.actionId, mailbox);
+    expect(result.receipt).toMatchObject({
+      status: "complete",
+      items: [
+        {
+          status: "conflicted",
+          outcome: { reason: "condstore_rejected", observed: { unread: true, flagged: false } },
+        },
+      ],
+    });
+    // A conflict writes no applied event and claims no change.
+    expect(await eventsOf(ACTION_APPLIED_EVENT, occurrence.id)).toHaveLength(0);
+    const row = await occurrenceRow(occurrence.id);
+    expect([row.flagged, row.revision]).toEqual([false, 1]);
+  });
+
+  it("expunges the source occurrence of a confirmed move and records the destination", async () => {
+    const { accountId, inboxId, archiveId } = await setupAccount();
+    const occurrence = await seedOccurrence(accountId, inboxId, 54, { unread: true });
+    const mailbox = mailboxOf([occurrence]);
+    mailbox.load("Archive", []);
+    const service = new ActionService(db, controls, new TwoWayActionExecutor());
+
+    const queued = await service.submit(
+      submission(accountId, "archive", [occurrence.id], { destinationFolderId: archiveId }),
+    );
+    const result = await service.execute(queued.receipt.actionId, mailbox);
+    expect(result.receipt.items[0]).toMatchObject({
+      status: "confirmed",
+      outcome: {
+        observed: { unread: true, flagged: false },
+        movedTo: { folder: "Archive", uidvalidity: 1, uid: 101 },
+      },
+    });
+    // The message left the source on the server, and the local row says so;
+    // the destination copy arrives through synchronization (SPEC F4).
+    expect(mailbox.mailboxes.get("INBOX")).toEqual([]);
+    expect(mailbox.mailboxes.get("Archive")).toEqual([{ uid: 101, unread: true, flagged: false }]);
+    const row = await occurrenceRow(occurrence.id);
+    expect(row.expungedAt).not.toBeNull();
+    expect(await eventsOf(ACTION_APPLIED_EVENT, occurrence.id)).toHaveLength(1);
+  });
+
+  it("fails a move without the MOVE capability and leaves the occurrence alone", async () => {
+    const { accountId, inboxId, archiveId } = await setupAccount();
+    const occurrence = await seedOccurrence(accountId, inboxId, 55);
+    const mailbox = mailboxOf([occurrence]);
+    mailbox.writes.move = false;
+    const service = new ActionService(db, controls, new TwoWayActionExecutor());
+
+    const queued = await service.submit(
+      submission(accountId, "move", [occurrence.id], { destinationFolderId: archiveId }),
+    );
+    const result = await service.execute(queued.receipt.actionId, mailbox);
+    expect(result.receipt.items[0]).toMatchObject({
+      status: "failed",
+      outcome: { code: "move_unsupported" },
+    });
+    expect(mailbox.moveRequests).toEqual([]);
+    const row = await occurrenceRow(occurrence.id);
+    expect(row.expungedAt).toBeNull();
   });
 
   it("reconciles only the account asked for", async () => {

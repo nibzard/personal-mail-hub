@@ -10,6 +10,12 @@
  * commits observed state, receipts, and events together per item. Restart
  * reconciliation replays flag assignments after refreshing their targets and
  * never replays an interrupted move or a restored action blindly.
+ *
+ * The two-way executor turns prepared items into explicit flag assignments
+ * and moves: conditional `UNCHANGEDSINCE` writes when the session and the
+ * frozen target allow one, a single-flag write with a readback otherwise,
+ * conflicts that carry the refreshed state, and unknown outcomes for lost
+ * move responses (SPEC F2 and F4).
  */
 export { ActionError, type ActionErrorCode } from "./errors.ts";
 export {
@@ -31,13 +37,25 @@ export {
   type MailActionSubmission,
   type MoveActionKind,
 } from "./kinds.ts";
-export type { ActionMailbox, ActionMailboxFlags, ActionMailboxState } from "./mailbox.ts";
+export type {
+  ActionMailbox,
+  ActionMailboxCapabilities,
+  ActionMailboxFlags,
+  ActionMailboxState,
+  FlagWriteRequest,
+  MoveDestination,
+  MoveWriteRequest,
+  MoveWriteResult,
+  FlagWriteResult,
+  WritableActionMailbox,
+} from "./mailbox.ts";
 export type {
   ActionExecutor,
   DesiredActionState,
   ExecutorOutcome,
   PreparedActionItem,
 } from "./executor.ts";
+export { TwoWayActionExecutor } from "./two-way-executor.ts";
 export {
   ACTION_APPLIED_EVENT,
   ACTION_COMPLETED_EVENT,

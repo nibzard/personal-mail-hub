@@ -26,12 +26,17 @@
   fetching, steady-state polls with arrival bounds, flag refreshes, and
   expunge detection, folder-generation resets, nightly inventory
   reconciliation, logical-message merging with parent linking and thread
-  reconciliation, and one bounded cycle per account per cron run.
+  reconciliation, and one bounded cycle per account per cron run. The
+  ImapFlow session also carries the two-way writes the action executor
+  drives: conditional `UNCHANGEDSINCE` flag stores on a session opened with
+  `condstoreWrites`, and IMAP `MOVE` with no expunge fallback.
 - `packages/actions` contains the recovery-aware mail action service: frozen
   action records with per-target work items and idempotency keys, remote-state
   refresh with generation and revision checks before any write, per-item
   receipts, restart reconciliation, and the restore disposition behind
-  `recovery hold-actions`. IMAP writes arrive through an executor port.
+  `recovery hold-actions`. The two-way executor applies explicit flag values
+  and moves over the writable mailbox port, reads every write back, and
+  reports conflicts and unknown outcomes instead of guessing.
 - `packages/database` contains the Drizzle schema, SQL migrations, object
   storage, and pg-boss integration. Run `npm run db:generate` there after
   changing `src/schema.ts`; apply migrations with `npm run db:migrate`.
