@@ -44,6 +44,7 @@ services:
       # Local trials only: allows an http BASE_URL (see deploy/env.example).
       PREFLIGHT_ALLOW_HTTP: ${PREFLIGHT_ALLOW_HTTP:-}
       # Optional: TYPE_SAFE_API_KEY for Jev classification.
+      TYPE_SAFE_API_KEY: ${TYPE_SAFE_API_KEY:-}
     volumes:
       - storage:/app/data/storage
       - backups:/backups
@@ -62,6 +63,17 @@ services:
       DATABASE_URL: postgres://mail_hub:${POSTGRES_PASSWORD}@db:5432/mail_hub
       RECOVERY_GENERATION: ${RECOVERY_GENERATION:?set RECOVERY_GENERATION in deploy/.env}
       CREDENTIALS_KEY: ${CREDENTIALS_KEY:?set CREDENTIALS_KEY in deploy/.env}
+      # The entrypoint runs the same preflight for every role, so the worker
+      # needs BASE_URL too.
+      BASE_URL: ${BASE_URL:?set BASE_URL in deploy/.env}
+      # Local trials only: allows an http BASE_URL (see deploy/env.example).
+      PREFLIGHT_ALLOW_HTTP: ${PREFLIGHT_ALLOW_HTTP:-}
+      TYPE_SAFE_API_KEY: ${TYPE_SAFE_API_KEY:-}
+      # Optional worker schedule overrides; blank keeps the image default.
+      SYNC_CYCLE_CRON: ${SYNC_CYCLE_CRON:-}
+      SEND_CYCLE_CRON: ${SEND_CYCLE_CRON:-}
+      SENT_COPY_CYCLE_CRON: ${SENT_COPY_CYCLE_CRON:-}
+      CLASSIFY_CYCLE_CRON: ${CLASSIFY_CYCLE_CRON:-}
     volumes:
       - storage:/app/data/storage
       - backups:/backups

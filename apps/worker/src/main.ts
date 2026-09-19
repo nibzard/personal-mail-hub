@@ -275,28 +275,18 @@ async function main(databaseUrl: string): Promise<void> {
     }
   });
 
-  await armSchedule(queue, ready.generation, SYNC_CYCLE_QUEUE, process.env.SYNC_CYCLE_CRON ?? DEFAULT_SYNC_CYCLE_CRON);
-  console.log(`Synchronization cycles scheduled (${process.env.SYNC_CYCLE_CRON ?? DEFAULT_SYNC_CYCLE_CRON}).`);
-  await armSchedule(queue, ready.generation, SEND_CYCLE_QUEUE, process.env.SEND_CYCLE_CRON ?? DEFAULT_SEND_CYCLE_CRON);
-  console.log(`Send cycles scheduled (${process.env.SEND_CYCLE_CRON ?? DEFAULT_SEND_CYCLE_CRON}).`);
-  await armSchedule(
-    queue,
-    ready.generation,
-    SENT_COPY_CYCLE_QUEUE,
-    process.env.SENT_COPY_CYCLE_CRON ?? DEFAULT_SENT_COPY_CYCLE_CRON,
-  );
-  console.log(
-    `Sent-copy cycles scheduled (${process.env.SENT_COPY_CYCLE_CRON ?? DEFAULT_SENT_COPY_CYCLE_CRON}).`,
-  );
-  await armSchedule(
-    queue,
-    ready.generation,
-    CLASSIFY_CYCLE_QUEUE,
-    process.env.CLASSIFY_CYCLE_CRON ?? DEFAULT_CLASSIFY_CYCLE_CRON,
-  );
-  console.log(
-    `Classify cycles scheduled (${process.env.CLASSIFY_CYCLE_CRON ?? DEFAULT_CLASSIFY_CYCLE_CRON}).`,
-  );
+  const syncCycleCron = cycleCron("SYNC_CYCLE_CRON", DEFAULT_SYNC_CYCLE_CRON);
+  const sendCycleCron = cycleCron("SEND_CYCLE_CRON", DEFAULT_SEND_CYCLE_CRON);
+  const sentCopyCycleCron = cycleCron("SENT_COPY_CYCLE_CRON", DEFAULT_SENT_COPY_CYCLE_CRON);
+  const classifyCycleCron = cycleCron("CLASSIFY_CYCLE_CRON", DEFAULT_CLASSIFY_CYCLE_CRON);
+  await armSchedule(queue, ready.generation, SYNC_CYCLE_QUEUE, syncCycleCron);
+  console.log(`Synchronization cycles scheduled (${syncCycleCron}).`);
+  await armSchedule(queue, ready.generation, SEND_CYCLE_QUEUE, sendCycleCron);
+  console.log(`Send cycles scheduled (${sendCycleCron}).`);
+  await armSchedule(queue, ready.generation, SENT_COPY_CYCLE_QUEUE, sentCopyCycleCron);
+  console.log(`Sent-copy cycles scheduled (${sentCopyCycleCron}).`);
+  await armSchedule(queue, ready.generation, CLASSIFY_CYCLE_QUEUE, classifyCycleCron);
+  console.log(`Classify cycles scheduled (${classifyCycleCron}).`);
 
   const stop = async () => {
     shutdown.abort();
@@ -353,6 +343,17 @@ async function runAccountCycle(
   } finally {
     await session?.logout().catch(() => undefined);
   }
+}
+
+/**
+ * Read one optional schedule override; a blank value keeps the default.
+ * Deployment files pass the variables through unset (an empty string after
+ * interpolation), and an empty expression schedules every minute, so blank
+ * must never reach the scheduler.
+ */
+function cycleCron(name: string, fallback: string): string {
+  const override = process.env[name]?.trim();
+  return override ? override : fallback;
 }
 
 /**

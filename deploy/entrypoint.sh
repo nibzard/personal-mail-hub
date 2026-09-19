@@ -6,10 +6,18 @@
 #   all    (default) one container runs the worker beside the API
 #   api    only the Fastify process; migrations run first
 #   worker only the worker; migrations are left to the api role
+#
+# Arguments replace the whole sequence: the backup schedule and the restore
+# runbook start one-off containers with a command, and a restore must not
+# race preflight, migrations, and the API against the live database.
 set -eu
 
 app_root="${APP_ROOT:-/app}"
 cd "$app_root"
+
+if [ "$#" -gt 0 ]; then
+  exec "$@"
+fi
 
 # The gateway and the platform proxy reach the API over the container
 # network, so it must listen on all interfaces.
@@ -64,10 +72,19 @@ while kill -0 "$api_pid" 2>/dev/null && kill -0 "$worker_pid" 2>/dev/null; do
   sleep 1
 done
 
+# Whichever process exited sets the exit status; the other is stopped and
+# waited for, so no process is left running and the platform restarts the
+# container on the status of the process that actually failed.
 status=0
-if ! kill -0 "$api_pid" 2>/dev/null; then
+if kill -0 "$api_pid" 2>/dev/null; then
+  # The worker exited first.
+  wait "$worker_pid" || status=$?
+  kill -TERM "$api_pid" 2>/dev/null || true
+  wait "$api_pid" 2>/dev/null || true
+else
+  # The API exited first.
   wait "$api_pid" || status=$?
+  kill -TERM "$worker_pid" 2>/dev/null || true
+  wait "$worker_pid" 2>/dev/null || true
 fi
-kill -TERM "$worker_pid" 2>/dev/null || true
-wait "$worker_pid" 2>/dev/null || true
 exit "$status"

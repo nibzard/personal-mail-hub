@@ -1312,23 +1312,23 @@
         "offline",
         "ui"
       ],
-      "updated_at": "2026-09-19T19:26:38Z",
+      "updated_at": "2026-09-19T19:27:32Z",
       "files": [
+        "apps/web/e2e/flows.browser.ts",
         "apps/web/index.html",
-        "apps/web/public/manifest.webmanifest",
+        "apps/web/package.json",
+        "apps/web/public/icons/apple-touch-icon.png",
         "apps/web/public/icons/favicon.svg",
         "apps/web/public/icons/icon-192.png",
         "apps/web/public/icons/icon-512.png",
         "apps/web/public/icons/maskable-192.png",
         "apps/web/public/icons/maskable-512.png",
-        "apps/web/public/icons/apple-touch-icon.png",
-        "apps/web/scripts/make-icons.mjs",
-        "apps/web/sw.js",
+        "apps/web/public/manifest.webmanifest",
         "apps/web/scripts/build-sw.mjs",
-        "apps/web/package.json",
-        "apps/web/src/main.tsx",
+        "apps/web/scripts/make-icons.mjs",
         "apps/web/src/mail/data.ts",
-        "apps/web/e2e/flows.browser.ts",
+        "apps/web/src/main.tsx",
+        "apps/web/sw.js",
         "deploy/nginx-web.conf.template"
       ]
     },
@@ -1336,19 +1336,21 @@
       "id": "T038",
       "title": "Fix the deployment startup defects",
       "priority": 1,
-      "status": "todo",
+      "status": "done",
       "details": "Three defects keep a compose deployment from working. First, the worker service in deploy/docker-compose.yml sets APP_ROLE, DATABASE_URL, RECOVERY_GENERATION, and CREDENTIALS_KEY but not BASE_URL, while entrypoint.sh runs deploy/preflight.mjs for every role and preflight fails without BASE_URL, so the worker crash-loops while api and web look healthy: no sync, no sends, no classification. Second, entrypoint.sh never execs the passed arguments although the Dockerfile defines no CMD, so the README backup and restore commands are silently ignored and the container runs preflight, migrations, and the API against the live database during a restore, exactly what restore step 1 forbids; exec the arguments when present or use an explicit entrypoint override in every README command. Third, the .dockerignore patterns .env and .env.* match only at the context root, so deploy/.env created by the README workflow (CREDENTIALS_KEY, RECOVERY_GENERATION, POSTGRES_PASSWORD) is copied into the image; add nested patterns. Also pass TYPE_SAFE_API_KEY and the cycle-cron overrides through to the containers, and make the worker-dies path in entrypoint.sh wait for the API and pass exit codes through instead of exiting 0.",
       "tags": [
         "deployment",
         "security"
       ],
-      "updated_at": "2026-09-19T17:39:46Z",
+      "updated_at": "2026-09-19T19:37:06Z",
       "files": [
         "deploy/docker-compose.yml",
         "deploy/entrypoint.sh",
-        "deploy/preflight.mjs",
         "deploy/README.md",
-        ".dockerignore"
+        "deploy/env.example",
+        ".dockerignore",
+        "apps/worker/src/main.ts",
+        "to-do.json"
       ]
     },
     {
