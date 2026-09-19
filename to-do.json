@@ -437,7 +437,7 @@
       "id": "T013",
       "title": "Implement full-text search and query operators",
       "priority": 2,
-      "status": "todo",
+      "status": "done",
       "details": "Provide cross-account PostgreSQL search for headers and bodies, filters, ranking, highlights, saved-search query state, and a 500 ms p95 target at 100k messages.",
       "depends_on": [
         "T007",
@@ -445,6 +445,29 @@
       ],
       "tags": [
         "search"
+      ],
+      "updated_at": "2026-09-19T09:34:18Z",
+      "files": [
+        "packages/database/src/schema.ts",
+        "packages/database/drizzle/0005_awesome_shape.sql",
+        "packages/database/drizzle/0006_wakeful_mephisto.sql",
+        "packages/database/test/migrations.test.ts",
+        "packages/ingestion/package.json",
+        "packages/contracts/src/index.ts",
+        "packages/search/package.json",
+        "packages/search/tsconfig.json",
+        "packages/search/src/index.ts",
+        "packages/search/src/errors.ts",
+        "packages/search/src/query.ts",
+        "packages/search/src/service.ts",
+        "packages/search/test/query.test.ts",
+        "packages/search/test/service.test.ts",
+        "packages/search/test/benchmark.test.ts",
+        "apps/api/src/search-routes.ts",
+        "apps/api/src/main.ts",
+        "apps/api/package.json",
+        "apps/api/test/search-routes.test.ts",
+        "AGENTS.md"
       ]
     },
     {
@@ -890,7 +913,7 @@
         "testing",
         "release"
       ],
-      "updated_at": "2026-09-19T08:53:02Z",
+      "updated_at": "2026-09-19T08:53:31Z",
       "files": [
         "AGENTS.md",
         "apps/api/test/restore-acceptance.test.ts",
@@ -905,12 +928,12 @@
         "packages/database/test/migrations.test.ts",
         "packages/ingestion/test/service.test.ts",
         "packages/recovery/test/controls.test.ts",
-        "scripts/release-gate.mjs",
         "packages/send/test/acceptance.test.ts",
         "packages/sync/test/acceptance.test.ts",
         "packages/sync/test/backfill.test.ts",
         "packages/sync/test/steady.test.ts",
         "packages/sync/test/threads.test.ts",
+        "scripts/release-gate.mjs",
         "to-do.json"
       ]
     }
