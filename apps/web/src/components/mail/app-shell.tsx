@@ -26,6 +26,7 @@ import {
 } from "@/mail/commands";
 import { scopeKey, scopeTitle, type MailScope } from "@/mail/view";
 import { runMailAction, type MailActionOutcome } from "@/mail/actions";
+import { ComposeScreen, type ComposeIntent } from "./compose-screen";
 import { CommandPalette } from "./command-palette";
 import { MessageListPane } from "./message-list";
 import { NavPane } from "./nav-pane";
@@ -107,6 +108,8 @@ export function AppShell({
   const platform = useMemo(shortcutPlatform, []);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [composeOpen, setComposeOpen] = useState(false);
+  const [composeIntent, setComposeIntent] = useState<ComposeIntent | null>(null);
 
   // Confirmed actions paint locally until the next server read replaces
   // them: no optimistic flip happens before the receipts confirm (SPEC F2).
@@ -321,6 +324,32 @@ export function AppShell({
     setSettingsOpen(true);
   }, []);
 
+  // Compose opens on one intent; a fresh intent object reopens the surface
+  // even when a previous one is still set (SPEC F6).
+  const openCompose = useCallback((intent: ComposeIntent) => {
+    setComposeIntent(intent);
+    setComposeOpen(true);
+  }, []);
+  const composeNew = useCallback(
+    (accountId: string) => {
+      openCompose({ kind: "new", accountId });
+    },
+    [openCompose],
+  );
+  const composeReply = useCallback(
+    (mode: "reply" | "reply_all") => {
+      const row = selectedRef.current;
+      if (row === null) {
+        return;
+      }
+      openCompose({ kind: "reply", messageId: row.messageId, mode });
+    },
+    [openCompose],
+  );
+  const openDrafts = useCallback(() => {
+    openCompose({ kind: "list" });
+  }, [openCompose]);
+
   // The command registry drives every management action (SPEC F11). Archive
   // resolves the account's mapped destination before it queues, because the
   // request must freeze one (SPEC F4).
@@ -373,6 +402,9 @@ export function AppShell({
           openSelection,
           mailAction,
           moveSelectionTo,
+          composeNew,
+          composeReply,
+          openDrafts,
           setTheme: persistTheme,
           setSingleKeyShortcuts: persistSingleKeyShortcuts,
           openSettings,
@@ -392,6 +424,9 @@ export function AppShell({
       openSelection,
       mailAction,
       moveSelectionTo,
+      composeNew,
+      composeReply,
+      openDrafts,
       persistTheme,
       persistSingleKeyShortcuts,
       openSettings,
@@ -598,6 +633,15 @@ export function AppShell({
         recoveryGeneration={recoveryGeneration}
         onAccountsChanged={onAccountsChanged}
         onFoldersChanged={folders.reload}
+      />
+
+      <ComposeScreen
+        open={composeOpen}
+        onOpenChange={setComposeOpen}
+        accounts={accounts}
+        recoveryGeneration={recoveryGeneration}
+        intent={composeIntent}
+        onSessionLost={onSessionLost}
       />
     </div>
   );

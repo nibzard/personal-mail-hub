@@ -45,15 +45,21 @@ function readColors(): ReaderColors {
 export interface SanitizedMessageFrameProps {
   /** A complete document from `prepareMessageDocument`. */
   document: string;
+  /** The name assistive technology announces for the frame. */
+  title?: string;
   className?: string;
 }
 
 /** The sandbox that shows one prepared message document. */
-export function SanitizedMessageFrame({ document: srcDoc, className }: SanitizedMessageFrameProps) {
+export function SanitizedMessageFrame({
+  document: srcDoc,
+  title = "Message body",
+  className,
+}: SanitizedMessageFrameProps) {
   return (
     <iframe
       srcDoc={srcDoc}
-      title="Message body"
+      title={title}
       // No scripts and no same-origin rights inside the message; popups are
       // the only escape, and hardened anchors open them without control.
       sandbox="allow-popups allow-popups-to-escape-sandbox"

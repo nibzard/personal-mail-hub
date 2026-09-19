@@ -22,15 +22,23 @@ export class ApiError extends Error {
    */
   readonly currentGeneration?: string;
 
+  /**
+   * The revision the server holds now, when the rejection was a stale
+   * draft revision (SPEC F6 and F9).
+   */
+  readonly currentRevision?: number;
+
   constructor(
     readonly status: number,
     readonly code: string,
     message: string,
     currentGeneration?: string,
+    currentRevision?: number,
   ) {
     super(message);
     this.name = "ApiError";
     this.currentGeneration = currentGeneration;
+    this.currentRevision = currentRevision;
   }
 
   /** True when the session is missing, expired, or revoked. */
@@ -98,7 +106,12 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
       "string"
         ? (body!.error as { currentGeneration: string }).currentGeneration
         : undefined;
-    throw new ApiError(response.status, code, message, currentGeneration);
+    const currentRevision =
+      typeof (body?.error as { currentRevision?: unknown } | undefined)?.currentRevision ===
+      "number"
+        ? (body!.error as { currentRevision: number }).currentRevision
+        : undefined;
+    throw new ApiError(response.status, code, message, currentGeneration, currentRevision);
   }
 
   return payload as T;

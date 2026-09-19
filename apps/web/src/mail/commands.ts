@@ -2,6 +2,7 @@ import type {
   AccountSummary,
   FolderSummary,
   MailActionKindWire,
+  ReplyMode,
   SearchResultItem,
 } from "@mail-hub/contracts";
 import type { Theme } from "@/theme";
@@ -66,6 +67,12 @@ export interface MailCommandHandlers {
   mailAction(kind: MailActionKindWire): void;
   /** Submits one move of the selected message to one folder (SPEC F4). */
   moveSelectionTo(destinationFolderId: string): void;
+  /** Starts one new draft on one account (SPEC F6). */
+  composeNew(accountId: string): void;
+  /** Derives one reply draft from the selected message (SPEC F6). */
+  composeReply(mode: ReplyMode): void;
+  /** Opens the drafts list, where a queued send shows its status (SPEC F7). */
+  openDrafts(): void;
   setTheme(theme: Theme): void;
   setSingleKeyShortcuts(on: boolean): void;
   openSettings(): void;
@@ -94,7 +101,6 @@ const NO_SERVER_COPY =
 const NO_ARCHIVE_FOLDER =
   "This account has no archive folder mapped. Choose one in settings first.";
 const NO_MOVE_DESTINATION = "This account has no other folder to move to.";
-const COMPOSING = "The compose editor is not part of this build yet.";
 
 /** Builds the full command set for the current shell state. */
 export function buildMailCommands(input: MailCommandsInput): MailCommand[] {
@@ -116,7 +122,6 @@ export function buildMailCommands(input: MailCommandsInput): MailCommand[] {
       : (input.folders?.get(selected.accountId) ?? []).find((folder) => folder.role === "archive") ??
         null;
   const moveTargets = selected === null ? [] : moveChoices(input);
-  const noCompose = selected === null ? NO_SELECTION : COMPOSING;
 
   return [
     // Navigation.
@@ -233,15 +238,18 @@ export function buildMailCommands(input: MailCommandsInput): MailCommand[] {
       choices: () => moveTargets,
     },
 
-    // Compose.
+    // Compose (SPEC F6). With several accounts, a new message picks its
+    // account through a nested chooser before any draft is created.
     {
       id: "new-message",
       group: "compose",
       label: "New message",
       keywords: ["compose", "write", "draft"],
-      unavailableReason: COMPOSING,
+      unavailableReason: input.accounts.length === 0 ? NO_ACCOUNTS : null,
       scopeNote: null,
-      run: undefined,
+      ...(input.accounts.length > 1
+        ? { choices: () => newMessageChoices(input) }
+        : { run: () => handlers.composeNew(input.accounts[0]!.id) }),
     },
     {
       id: "reply",
@@ -249,30 +257,29 @@ export function buildMailCommands(input: MailCommandsInput): MailCommand[] {
       label: "Reply",
       keywords: ["answer"],
       shortcut: { key: "r", mutation: false },
-      unavailableReason: noCompose,
+      unavailableReason: noMail,
       scopeNote: selectionNote,
-      run: undefined,
+      run: () => handlers.composeReply("reply"),
     },
     {
       id: "reply-all",
       group: "compose",
       label: "Reply all",
       keywords: ["answer", "everyone"],
-      unavailableReason: noCompose,
+      unavailableReason: noMail,
       scopeNote: selectionNote,
-      run: undefined,
+      run: () => handlers.composeReply("reply_all"),
     },
     {
       id: "send",
       group: "compose",
       label: "Send",
-      keywords: ["submit", "outbound"],
-      // Send only ever opens the addressed draft for review (SPEC F11); with
-      // no editor to open, it stays disabled with that reason.
-      unavailableReason:
-        selected === null ? NO_SELECTION : "Sending opens the addressed draft, and the compose editor is not part of this build yet.",
-      scopeNote: selectionNote,
-      run: undefined,
+      keywords: ["submit", "outbound", "drafts"],
+      // Send only ever opens the addressed draft for review (SPEC F11): the
+      // drafts list is where a queued send shows its status.
+      unavailableReason: null,
+      scopeNote: null,
+      run: () => handlers.openDrafts(),
     },
 
     // Settings.
@@ -327,6 +334,17 @@ export function buildMailCommands(input: MailCommandsInput): MailCommand[] {
       run: () => handlers.openSettings(),
     },
   ];
+}
+
+/** The accounts a new message can start from, one choice each. */
+function newMessageChoices(input: MailCommandsInput): CommandChoice[] {
+  const { handlers } = input;
+  return input.accounts.map((account) => ({
+    id: `compose:${account.id}`,
+    label: `New message from ${account.label}`,
+    group: account.label,
+    run: () => handlers.composeNew(account.id),
+  }));
 }
 
 /** The destinations of the account and folder chooser, grouped per account. */

@@ -559,3 +559,218 @@ test.describe("performance", () => {  test("the virtualized list mounts a bounde
     expect(Math.max(...samples)).toBeLessThan(100);
   });
 });
+
+test.describe("compose and send", () => {
+  test.setTimeout(45_000);
+
+  /** Opens the compose surface through the palette's Send command. */
+  async function openCompose(page: Page) {
+    await page.keyboard.press("Control+k");
+    await page.keyboard.type("send");
+    await page.keyboard.press("Enter");
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    return dialog;
+  }
+
+  /** Starts one new draft on the named account and waits for its editor. */
+  async function startNewDraft(page: Page, account: "Personal" | "Work") {
+    const dialog = await openCompose(page);
+    await dialog.getByRole("button", { name: "New message" }).click();
+    await dialog.getByRole("button", { name: account, exact: true }).click();
+    await expect(dialog.getByLabel("To")).toBeVisible();
+    return dialog;
+  }
+
+  test("a reply derives its draft through the account and identity choices", async ({ page }) => {
+    await openInbox(page);
+    // A second work identity makes the reply's From choice real (SPEC F6).
+    const identities = await page.request.put("/api/accounts/acc-work/identities", {
+      data: {
+        identities: [
+          {
+            address: "alexandra.fernandezholmes@work.example",
+            name: "Alexandra Fernandez-Holmes",
+            isDefault: true,
+          },
+          { address: "afh@work.example", name: null, isDefault: false },
+        ],
+      },
+    });
+    expect(identities.ok()).toBe(true);
+
+    await page.locator("[data-message-row='m-007']").click();
+    await page.keyboard.press("r");
+
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    // The fixture asks for the account first, then the identity (SPEC F6).
+    await expect(dialog.getByText("Which account holds the message you reply to?")).toBeVisible();
+    await dialog.getByRole("button", { name: "Work" }).click();
+    await expect(dialog.getByText("Which identity sends this reply?")).toBeVisible();
+    await dialog
+      .getByRole("button", { name: /Alexandra Fernandez-Holmes <alexandra/ })
+      .click();
+
+    // The derived draft carries the parent's context, quoted below the fold.
+    await expect(dialog.getByLabel("To")).toHaveValue("Priya Nair <priya@work.example>");
+    await expect(dialog.getByLabel("Subject")).toHaveValue("Re: Plain text reply");
+    await expect(dialog.locator(".cm-content")).toContainText("Works for me.");
+    await expect(dialog.getByText(/On 2026-09-17/u)).toBeVisible();
+  });
+
+  test("edits autosave after two seconds and the preview stays derived", async ({ page }) => {
+    await openInbox(page);
+    const dialog = await startNewDraft(page, "Personal");
+    await expect(dialog.getByTestId("autosave-status")).toHaveText("Saved.");
+
+    const patched = page.waitForRequest(
+      (request) => request.method() === "PATCH" && /\/api\/drafts\/d-\d+$/u.test(request.url()),
+    );
+    await dialog.getByLabel("To").fill("sam@personal.example");
+    await dialog.getByLabel("Subject").fill("Hello from the fixture");
+    const editor = dialog.locator(".cm-content");
+    await editor.click();
+    await page.keyboard.type("# Title\n\n<b>raw</b> and nothing else");
+    await expect(dialog.getByTestId("autosave-status")).toHaveText(/Saved\.|Saving…/u);
+    await (await patched).response();
+    await expect(dialog.getByTestId("autosave-status")).toHaveText("Saved.", { timeout: 8_000 });
+
+    // The preview renders the Markdown and escapes the raw markup (SPEC F6).
+    const frame = dialog.getByTitle("Markdown preview");
+    await expect(frame).toHaveAttribute("srcdoc", /<h1>Title<\/h1>/u);
+    await expect(frame).toHaveAttribute("srcdoc", /&lt;b&gt;raw&lt;b&gt;|&lt;b&gt;raw&lt;\/b&gt;/u);
+
+    // The draft outlives the dialog: the list names it after reopening.
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+    const reopened = await openCompose(page);
+    await expect(reopened.getByTestId("draft-list")).toContainText("Hello from the fixture");
+  });
+
+  test("attachments upload through the server and detach again", async ({ page }) => {
+    await openInbox(page);
+    const dialog = await startNewDraft(page, "Personal");
+
+    await dialog.locator("#draft-file-input").setInputFiles({
+      name: "notes.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from("fixture attachment bytes"),
+    });
+    const list = dialog.getByTestId("draft-attachments");
+    await expect(list).toContainText("notes.txt");
+    await expect(list.getByText("Attached")).toBeVisible();
+
+    await dialog.getByRole("button", { name: "Remove notes.txt" }).click();
+    // The row leaves with the list once the server confirms the detach.
+    await expect(list).toBeHidden();
+  });
+
+  test("a send settles, keeps its states separate from the Sent copy, and locks the draft", async ({
+    page,
+  }) => {
+    await openInbox(page);
+    const dialog = await startNewDraft(page, "Personal");
+    await dialog.getByLabel("To").fill("priya@work.example");
+    await dialog.getByLabel("Subject").fill("Fixture send");
+
+    await dialog.getByRole("button", { name: "Send", exact: true }).click();
+
+    // The attempt and the Sent copy each settle on their own (SPEC F7).
+    const status = dialog.getByRole("region", { name: "Send status" });
+    await expect(status.getByText("Sent", { exact: true })).toBeVisible({ timeout: 15_000 });
+    await expect(
+      status.getByTestId("send-recipients").locator("li").filter({ hasText: "priya@work.example" }),
+    ).toContainText("Accepted for delivery.");
+    await expect(status.getByText("Stored in Sent")).toBeVisible({ timeout: 15_000 });
+
+    // The locked draft stays in the list with its send one click away.
+    await expect(dialog.getByTestId("draft-list").getByText("Locked")).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "Send", exact: true })).toBeDisabled();
+  });
+
+  test("a partial acceptance names the split and offers no retry", async ({ page }) => {
+    await openInbox(page);
+    const dialog = await startNewDraft(page, "Personal");
+    await dialog.getByLabel("To").fill("priya@work.example, noreply.reject@work.example");
+
+    await dialog.getByRole("button", { name: "Send", exact: true }).click();
+
+    const status = dialog.getByRole("region", { name: "Send status" });
+    await expect(status.getByText("Partially accepted")).toBeVisible({ timeout: 15_000 });
+    const recipients = status.getByTestId("send-recipients");
+    await expect(recipients).toContainText("priya@work.example");
+    await expect(recipients).toContainText("Rejected: 550 User unknown");
+    await expect(status.getByText(/none is offered/u)).toBeVisible();
+    await expect(
+      status.getByRole("button", { name: "Edit the draft and queue it again" }),
+    ).toBeHidden();
+  });
+
+  test("a failed send unlocks the draft and offers the edit path", async ({ page }) => {
+    await openInbox(page);
+    const dialog = await startNewDraft(page, "Personal");
+    await dialog.getByLabel("To").fill("noreply.fail@work.example");
+
+    await dialog.getByRole("button", { name: "Send", exact: true }).click();
+
+    const status = dialog.getByRole("region", { name: "Send status" });
+    await expect(status.getByText("Failed", { exact: true })).toBeVisible({ timeout: 15_000 });
+    await expect(status.getByText(/draft is editable again/u)).toBeVisible();
+
+    await status.getByRole("button", { name: "Edit the draft and queue it again" }).click();
+    await expect(dialog.getByRole("button", { name: "Send", exact: true })).toBeEnabled();
+  });
+
+  test("an unknown outcome is preserved with no resend offered", async ({ page }) => {
+    await openInbox(page);
+    const dialog = await startNewDraft(page, "Personal");
+    await dialog.getByLabel("To").fill("noreply.unknown@work.example");
+
+    await dialog.getByRole("button", { name: "Send", exact: true }).click();
+
+    const status = dialog.getByRole("region", { name: "Send status" });
+    await expect(status.getByText("Outcome unknown")).toBeVisible({ timeout: 15_000 });
+    await expect(status.getByText(/preserved for review/u)).toBeVisible();
+    await expect(
+      status.getByRole("button", { name: "Edit the draft and queue it again" }),
+    ).toBeHidden();
+    // The draft stays locked with the attempt (SPEC F7).
+    await expect(dialog.getByRole("button", { name: "Send", exact: true })).toBeDisabled();
+  });
+
+  test("an interrupted queue-send shows the duplicate warning before a new key", async ({
+    page,
+  }) => {
+    await openInbox(page);
+    const dialog = await startNewDraft(page, "Personal");
+    await dialog.getByLabel("To").fill("sam@personal.example");
+
+    // The first queue-send request dies on the network; the second goes out
+    // with a fresh idempotency key after the warning is acknowledged.
+    let interrupted = false;
+    await page.route(/\/api\/drafts\/d-\d+\/send$/u, async (route) => {
+      if (!interrupted) {
+        interrupted = true;
+        await route.abort("connectionreset");
+        return;
+      }
+      await route.continue();
+    });
+
+    await dialog.getByRole("button", { name: "Send", exact: true }).click();
+    const warning = dialog.getByTestId("uncertain-send");
+    await expect(warning).toBeVisible();
+    await expect(warning.getByText(/may deliver a duplicate/u)).toBeVisible();
+
+    // The resend stays inert until the warning is acknowledged (SPEC F7).
+    const resend = warning.getByRole("button", { name: "Send again with a new key" });
+    await expect(resend).toBeDisabled();
+    await warning.getByRole("checkbox").check();
+    await expect(resend).toBeEnabled();
+
+    await resend.click();
+    const status = dialog.getByRole("region", { name: "Send status" });
+    await expect(status).toBeVisible({ timeout: 15_000 });
+  });
+});

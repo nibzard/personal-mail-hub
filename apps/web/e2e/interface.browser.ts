@@ -91,6 +91,28 @@ test.describe("axe", () => {
       .toBe(1);
     await expectNoAxeViolations(page);
   });
+
+  test("the compose surface passes", async ({ page }) => {
+    await openInbox(page);
+    await page.keyboard.press("Control+k");
+    await page.keyboard.type("send");
+    await page.keyboard.press("Enter");
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "New message" }).click();
+    await dialog.getByRole("button", { name: "Personal", exact: true }).click();
+    // The editor holds the densest compose controls: the identity picker,
+    // the recipient inputs, the CodeMirror source, and the preview frame.
+    await expect(dialog.getByLabel("Draft body in Markdown")).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          Number(getComputedStyle(document.querySelector("[role='dialog']") ?? document.body).opacity),
+        ),
+      )
+      .toBe(1);
+    await expectNoAxeViolations(page);
+  });
 });
 
 test.describe("screen-reader semantics", () => {

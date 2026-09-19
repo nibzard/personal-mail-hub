@@ -19,6 +19,12 @@
  * - `GET /api/sync/status`    per-account sync and queue status,
  * - `POST /api/actions`       mail management actions with receipts (SPEC F4),
  * - `GET /api/actions/:id`    one action's receipts,
+ * - `POST /api/drafts`        a new draft, and `POST /api/drafts/reply` a
+ *                             derived reply (SPEC F6),
+ * - `GET/PATCH/DELETE /api/drafts/:id` and `GET /api/drafts`,
+ * - `POST /api/uploads`       one raw byte upload,
+ * - `GET/POST /api/drafts/:id/uploads` and `DELETE .../uploads/:uploadId`,
+ * - `POST /api/drafts/:id/send` and `GET /api/outbound/:id` (SPEC F7),
  * - `PATCH /api/accounts/:id` the classification toggle,
  * - `PUT /api/accounts/:id/identities`,
  * - `PUT/DELETE /api/accounts/:id/folders/:folderId/role`.
@@ -32,7 +38,7 @@
  * works). The process stays in the foreground; Playwright's `webServer`
  * starts and stops it.
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -81,7 +87,167 @@ function freshSession() {
     rowPatches: new Map(),
     actions: new Map(),
     actionsByKey: new Map(),
+    // Compose state (SPEC F6 and F7): drafts and their attachments, byte
+    // uploads, outbound snapshots, and sends keyed for idempotent replay.
+    drafts: new Map(),
+    attachments: new Map(),
+    uploads: new Map(),
+    outbounds: new Map(),
+    sendsByKey: new Map(),
+    sequence: 0,
   };
+}
+
+/**
+ * The compose fixtures derive recipient outcomes from the addresses
+ * themselves, so one send's path stays chosen by the check that sends it.
+ *
+ * - an address holding `reject@` is refused while the others are accepted,
+ * - an address holding `fail@` fails the whole attempt permanently,
+ * - an address holding `unknown@` loses the attempt's outcome.
+ */
+function recipientFate(address) {
+  if (address.includes("fail@")) {
+    return "fail";
+  }
+  if (address.includes("unknown@")) {
+    return "unknown";
+  }
+  if (address.includes("reject@")) {
+    return "reject";
+  }
+  return "accept";
+}
+
+/** Every address one draft's recipients name, in send order. */
+function flatRecipients(recipients) {
+  return [...recipients.to, ...(recipients.cc ?? []), ...(recipients.bcc ?? [])];
+}
+
+/**
+ * One read of an outbound advances its state machine a single step (SPEC
+ * F7): queued, then sending, then the outcome the addresses chose, then the
+ * Sent copy settles. A definitive failure unlocks the draft; every other
+ * terminal outcome keeps it locked.
+ */
+function advanceOutbound(outbound, draft) {
+  if (outbound.status === "queued") {
+    outbound.status = "sending";
+    return;
+  }
+  if (outbound.status === "sending") {
+    const addresses = [...new Set(flatRecipients(outbound.recipients).map((r) => r.address))];
+    const fates = addresses.map((address) => ({ address, fate: recipientFate(address) }));
+    const now = new Date().toISOString();
+    if (fates.some((entry) => entry.fate === "fail")) {
+      outbound.status = "failed";
+      outbound.sentAt = now;
+      outbound.recipientResults = fates.map((entry) => ({
+        address: entry.address,
+        accepted: false,
+        response: "550 Requested action aborted: permanent failure",
+      }));
+      outbound.lastError = { message: "550 Requested action aborted: permanent failure" };
+      outbound.sentCopyStatus = "failed";
+      if (draft !== undefined) {
+        draft.lockedBySend = null;
+      }
+      return;
+    }
+    if (fates.some((entry) => entry.fate === "unknown")) {
+      outbound.status = "outcome_unknown";
+      outbound.recipientResults = [];
+      outbound.sentCopyStatus = "unknown";
+      return;
+    }
+    outbound.sentAt = now;
+    outbound.recipientResults = fates.map((entry) => ({
+      address: entry.address,
+      accepted: entry.fate !== "reject",
+      response: entry.fate === "reject" ? "550 User unknown" : "250 Ok",
+    }));
+    // Partial acceptance stays visible through the recipient results; the
+    // wire status stays `sent` (SPEC F7).
+    outbound.status = "sent";
+    outbound.sentCopyStatus = "appending";
+    return;
+  }
+  if (
+    (outbound.status === "sent" || outbound.status === "failed") &&
+    outbound.sentCopyStatus === "appending"
+  ) {
+    outbound.sentCopyStatus = "stored";
+  }
+}
+
+/** The reply body the fixture derives: the parent quoted under a header. */
+function quotedReplyMarkdown(parent) {
+  const body = parent.textPlain ?? "(no text body)";
+  const quoted = body
+    .split("\n")
+    .map((line) => `> ${line}`)
+    .join("\n");
+  const sender = parent.sender === null ? "somebody" : parent.sender.name ?? parent.sender.address;
+  return `\n\nOn ${parent.sentAt}, ${sender} wrote:\n\n${quoted}\n`;
+}
+
+/** Creates one draft record with the next fixture identifiers. */
+function newDraft(session, fields) {
+  session.sequence += 1;
+  const draft = {
+    id: `d-${session.sequence}`,
+    revision: 1,
+    lockedBySend: null,
+    subject: null,
+    markdown: "",
+    recipients: { to: [], cc: [], bcc: [] },
+    referenceIds: [],
+    updatedAt: new Date().toISOString(),
+    ...fields,
+  };
+  session.drafts.set(draft.id, draft);
+  session.attachments.set(draft.id, []);
+  return draft;
+}
+
+/** The identity a draft's From address names, when the account holds it. */
+function identityByAddress(account, address) {
+  return account.identities.find((identity) => identity.address === address) ?? null;
+}
+
+/** Applies one draft patch after the stale and lock gates (SPEC F6). */
+function applyDraftPatch(draft, body) {
+  if (body.baseRevision !== draft.revision) {
+    return { status: 409, code: "draft_stale", extra: { currentRevision: draft.revision } };
+  }
+  if (draft.lockedBySend !== null) {
+    return { status: 409, code: "draft_locked", extra: {} };
+  }
+  if (body.recipients !== undefined) {
+    draft.recipients = {
+      to: body.recipients.to ?? [],
+      cc: body.recipients.cc ?? [],
+      bcc: body.recipients.bcc ?? [],
+    };
+  }
+  if (body.subject !== undefined) {
+    draft.subject = body.subject;
+  }
+  if (body.markdown !== undefined) {
+    draft.markdown = body.markdown;
+  }
+  draft.revision += 1;
+  draft.updatedAt = new Date().toISOString();
+  return null;
+}
+
+/** Reads one raw request body as bytes. */
+async function readRawBody(request) {
+  const chunks = [];
+  for await (const chunk of request) {
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
 }
 
 /** The occurrence ids one row exposes, keyed by message id. */
@@ -199,8 +365,8 @@ function sendJson(response, status, body) {
 }
 
 /** Sends one API rejection in the shared error shape. */
-function sendError(response, status, code, message) {
-  sendJson(response, status, { error: { code, message } });
+function sendError(response, status, code, message, extra = {}) {
+  sendJson(response, status, { error: { code, message, ...extra } });
 }
 
 /** Reads one JSON request body. */
@@ -434,6 +600,310 @@ const server = createServer(async (request, response) => {
         return;
       }
       sendJson(response, 200, { action: receipt });
+      return;
+    }
+
+    //
+    // Compose and send (SPEC F6 and F7).
+    //
+
+    if (pathname === "/api/drafts" && request.method === "POST") {
+      const body = await readJsonBody(request);
+      const account = session.accounts.find((entry) => entry.id === body?.accountId);
+      if (account === undefined) {
+        sendError(response, 404, "not_found", "No such account in the fixture.");
+        return;
+      }
+      const identity = account.identities.find((entry) => entry.isDefault) ?? account.identities[0];
+      const draft = newDraft(session, {
+        accountId: account.id,
+        identity: { address: identity.address, name: identity.name ?? null },
+        replyParentId: null,
+        threadId: null,
+        inReplyTo: null,
+      });
+      sendJson(response, 201, { draft });
+      return;
+    }
+
+    if (pathname === "/api/drafts/reply" && request.method === "POST") {
+      const body = await readJsonBody(request);
+      const parent = messageDetails.get(body?.messageId);
+      if (parent === undefined) {
+        sendError(response, 404, "not_found", "No such message in the fixture.");
+        return;
+      }
+      // The fixture always asks for the account, so the interface's choice
+      // step stays reachable on every reply.
+      if (typeof body.accountId !== "string") {
+        sendError(
+          response,
+          409,
+          "account_choice_required",
+          "Several accounts hold this message. Name the account to reply from.",
+        );
+        return;
+      }
+      const account = session.accounts.find((entry) => entry.id === body.accountId);
+      if (account === undefined) {
+        sendError(response, 404, "not_found", "No such account in the fixture.");
+        return;
+      }
+      let identity = null;
+      if (body.identity !== undefined) {
+        identity = identityByAddress(account, body.identity.address);
+        if (identity === null) {
+          sendError(response, 400, "invalid_request", "That identity is not on the account.");
+          return;
+        }
+      } else if (account.identities.length > 1) {
+        sendError(
+          response,
+          409,
+          "identity_choice_required",
+          "This account holds several identities. Choose the one to send from.",
+        );
+        return;
+      } else {
+        identity = account.identities[0];
+      }
+      const self = identity.address;
+      let recipients = null;
+      if (body.recipients !== undefined) {
+        recipients = body.recipients;
+      } else {
+        const others = (parent.recipients?.to ?? []).concat(parent.recipients?.cc ?? []).filter(
+          (entry) => entry.address !== self,
+        );
+        recipients =
+          body.mode === "reply_all" && others.length > 0
+            ? { to: [parent.sender], cc: others }
+            : { to: [parent.sender] };
+      }
+      if (recipients.to.length === 0) {
+        sendError(
+          response,
+          409,
+          "recipients_required",
+          "The reply has no recipient. Name the recipients.",
+        );
+        return;
+      }
+      const subject = parent.subject === null ? null : parent.subject.replace(/^Re: /u, "");
+      const draft = newDraft(session, {
+        accountId: account.id,
+        identity: { address: identity.address, name: identity.name ?? null },
+        recipients: {
+          to: recipients.to,
+          cc: recipients.cc ?? [],
+          bcc: recipients.bcc ?? [],
+        },
+        subject: `Re: ${subject ?? "(no subject)"}`,
+        markdown: quotedReplyMarkdown(parent),
+        replyParentId: parent.id,
+        threadId: parent.threadId,
+        inReplyTo: `<${parent.threadId}@fixture>`,
+      });
+      sendJson(response, 201, { draft });
+      return;
+    }
+
+    if (pathname === "/api/drafts" && request.method === "GET") {
+      const drafts = [...session.drafts.values()].sort((a, b) =>
+        a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0,
+      );
+      sendJson(response, 200, { drafts });
+      return;
+    }
+
+    match = /^\/api\/drafts\/([^/]+)$/.exec(pathname);
+    if (match !== null && request.method === "GET") {
+      const draft = session.drafts.get(match[1]);
+      if (draft === undefined) {
+        sendError(response, 404, "not_found", "No such draft in the fixture.");
+        return;
+      }
+      sendJson(response, 200, { draft });
+      return;
+    }
+
+    if (match !== null && request.method === "PATCH") {
+      const draft = session.drafts.get(match[1]);
+      if (draft === undefined) {
+        sendError(response, 404, "not_found", "No such draft in the fixture.");
+        return;
+      }
+      const body = await readJsonBody(request);
+      if (body.identity !== undefined) {
+        const account = session.accounts.find((entry) => entry.id === draft.accountId);
+        const identity = account === undefined ? null : identityByAddress(account, body.identity.address);
+        if (identity === null) {
+          sendError(response, 400, "invalid_request", "That identity is not on the account.");
+          return;
+        }
+        draft.identity = { address: identity.address, name: identity.name ?? null };
+      }
+      const rejection = applyDraftPatch(draft, body);
+      if (rejection !== null) {
+        sendError(
+          response,
+          rejection.status,
+          rejection.code,
+          "The draft could not accept that patch.",
+          rejection.extra,
+        );
+        return;
+      }
+      sendJson(response, 200, { draft });
+      return;
+    }
+
+    if (match !== null && request.method === "DELETE") {
+      const draft = session.drafts.get(match[1]);
+      if (draft === undefined) {
+        sendError(response, 404, "not_found", "No such draft in the fixture.");
+        return;
+      }
+      if (draft.lockedBySend !== null) {
+        sendError(response, 409, "draft_locked", "A queued send holds this draft.");
+        return;
+      }
+      session.drafts.delete(match[1]);
+      session.attachments.delete(match[1]);
+      response.writeHead(204, { "cache-control": "no-store" });
+      response.end();
+      return;
+    }
+
+    if (pathname === "/api/uploads" && request.method === "POST") {
+      const accountId = url.searchParams.get("accountId");
+      const filename = url.searchParams.get("filename");
+      const account = session.accounts.find((entry) => entry.id === accountId);
+      if (account === undefined || filename === null || filename.length === 0) {
+        sendError(response, 400, "invalid_request", "The upload names no account or filename.");
+        return;
+      }
+      const bytes = await readRawBody(request);
+      session.sequence += 1;
+      const upload = {
+        id: `u-${session.sequence}`,
+        accountId,
+        filename,
+        contentType: request.headers["content-type"] ?? "application/octet-stream",
+        sizeBytes: bytes.byteLength,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        createdAt: new Date().toISOString(),
+      };
+      session.uploads.set(upload.id, upload);
+      sendJson(response, 201, { upload });
+      return;
+    }
+
+    match = /^\/api\/drafts\/([^/]+)\/uploads$/.exec(pathname);
+    if (match !== null && request.method === "GET") {
+      const attachments = session.attachments.get(match[1]);
+      if (attachments === undefined) {
+        sendError(response, 404, "not_found", "No such draft in the fixture.");
+        return;
+      }
+      sendJson(response, 200, { attachments });
+      return;
+    }
+
+    if (match !== null && request.method === "POST") {
+      const attachments = session.attachments.get(match[1]);
+      const body = await readJsonBody(request);
+      const upload = session.uploads.get(body?.uploadId);
+      if (attachments === undefined || upload === undefined) {
+        sendError(response, 404, "not_found", "No such draft or upload in the fixture.");
+        return;
+      }
+      if (attachments.some((entry) => entry.id === upload.id)) {
+        sendError(response, 409, "invalid_request", "The draft already holds that upload.");
+        return;
+      }
+      const attachment = { ...upload, ordinal: attachments.length + 1 };
+      attachments.push(attachment);
+      sendJson(response, 201, attachment);
+      return;
+    }
+
+    match = /^\/api\/drafts\/([^/]+)\/uploads\/([^/]+)$/.exec(pathname);
+    if (match !== null && request.method === "DELETE") {
+      const attachments = session.attachments.get(match[1]);
+      if (attachments === undefined || !attachments.some((entry) => entry.id === match[2])) {
+        sendError(response, 404, "not_found", "No such attachment on the draft.");
+        return;
+      }
+      session.attachments.set(
+        match[1],
+        attachments.filter((entry) => entry.id !== match[2]),
+      );
+      response.writeHead(204, { "cache-control": "no-store" });
+      response.end();
+      return;
+    }
+
+    match = /^\/api\/drafts\/([^/]+)\/send$/.exec(pathname);
+    if (match !== null && request.method === "POST") {
+      const draft = session.drafts.get(match[1]);
+      if (draft === undefined) {
+        sendError(response, 404, "not_found", "No such draft in the fixture.");
+        return;
+      }
+      const body = await readJsonBody(request);
+      if (typeof body?.idempotencyKey !== "string" || body.idempotencyKey.length === 0) {
+        sendError(response, 400, "invalid_request", "The send names no idempotency key.");
+        return;
+      }
+      const replayed = session.sendsByKey.get(body.idempotencyKey);
+      if (replayed !== undefined) {
+        sendJson(response, 200, { outbound: replayed });
+        return;
+      }
+      if (body.baseRevision !== draft.revision) {
+        sendJson(response, 409, "draft_stale", "The draft changed before the send.", {
+          currentRevision: draft.revision,
+        });
+        return;
+      }
+      if (draft.lockedBySend !== null) {
+        sendError(response, 409, "draft_locked", "A queued send already holds this draft.");
+        return;
+      }
+      session.sequence += 1;
+      const outbound = {
+        id: `ob-${session.sequence}`,
+        draftId: draft.id,
+        accountId: draft.accountId,
+        status: "queued",
+        sentCopyStatus: "pending",
+        identity: draft.identity,
+        recipients: draft.recipients,
+        subject: draft.subject,
+        rfcMessageId: `<${randomUUID()}@fixture>`,
+        recipientResults: [],
+        smtpResponse: null,
+        lastError: null,
+        createdAt: new Date().toISOString(),
+        sentAt: null,
+      };
+      session.outbounds.set(outbound.id, outbound);
+      session.sendsByKey.set(body.idempotencyKey, outbound);
+      draft.lockedBySend = outbound.id;
+      sendJson(response, 202, { outbound });
+      return;
+    }
+
+    match = /^\/api\/outbound\/([^/]+)$/.exec(pathname);
+    if (match !== null && request.method === "GET") {
+      const outbound = session.outbounds.get(match[1]);
+      if (outbound === undefined) {
+        sendError(response, 404, "not_found", "No such outbound attempt in the fixture.");
+        return;
+      }
+      advanceOutbound(outbound, session.drafts.get(outbound.draftId ?? ""));
+      sendJson(response, 200, { outbound });
       return;
     }
 

@@ -83,6 +83,9 @@ function build(overrides: Partial<MailCommandsInput> = {}) {
     openSelection: vi.fn(),
     mailAction: vi.fn(),
     moveSelectionTo: vi.fn(),
+    composeNew: vi.fn(),
+    composeReply: vi.fn(),
+    openDrafts: vi.fn(),
     setTheme: vi.fn(),
     setSingleKeyShortcuts: vi.fn(),
     openSettings: vi.fn(),
@@ -198,9 +201,10 @@ describe("buildMailCommands", () => {
 
   it("keeps unavailable commands listed with their reason", () => {
     const { commands: withSelection, handlers } = build();
+    // The compose surface ships, so a new message runs (SPEC F6).
     expect(
       withSelection.find((command) => command.id === "new-message")!.unavailableReason,
-    ).toMatch(/compose editor/);
+    ).toBeNull();
     // The settings screen ships, so its command runs.
     const openSettings = withSelection.find((command) => command.id === "open-settings")!;
     expect(openSettings.unavailableReason).toBeNull();
@@ -217,12 +221,49 @@ describe("buildMailCommands", () => {
       "move",
       "reply",
       "reply-all",
-      "send",
     ]) {
       expect(withoutSelection.find((command) => command.id === id)?.unavailableReason).toBe(
         "Select a message first.",
       );
     }
+  });
+
+  it("runs the compose commands through their handlers (SPEC F6 and F7)", () => {
+    const { commands, handlers } = build();
+    // Several accounts: a new message picks its account in a chooser.
+    const newMessage = commands.find((command) => command.id === "new-message")!;
+    expect(newMessage.unavailableReason).toBeNull();
+    const choices = newMessage.choices?.() ?? [];
+    expect(choices.map((choice) => choice.id)).toEqual(["compose:a1", "compose:a2"]);
+    choices[0]!.run();
+    expect(handlers.composeNew).toHaveBeenCalledWith("a1");
+    expect(handlers.composeNew).toHaveBeenCalledTimes(1);
+
+    // One account: the command starts the draft at once.
+    const single = build({ accounts: [ACCOUNT_A] });
+    const direct = single.commands.find((command) => command.id === "new-message")!;
+    expect(direct.unavailableReason).toBeNull();
+    direct.run?.();
+    expect(single.handlers.composeNew).toHaveBeenCalledWith("a1");
+
+    // No accounts: the command stays listed with its reason.
+    const none = build({ accounts: [] }).commands;
+    expect(none.find((command) => command.id === "new-message")!.unavailableReason).toBe(
+      "No accounts are configured yet.",
+    );
+
+    const reply = commands.find((command) => command.id === "reply")!;
+    expect(reply.unavailableReason).toBeNull();
+    reply.run?.();
+    expect(handlers.composeReply).toHaveBeenCalledWith("reply");
+    commands.find((command) => command.id === "reply-all")!.run?.();
+    expect(handlers.composeReply).toHaveBeenCalledWith("reply_all");
+
+    // Send opens the drafts list, where a queued send shows its status.
+    const send = commands.find((command) => command.id === "send")!;
+    expect(send.unavailableReason).toBeNull();
+    send.run?.();
+    expect(handlers.openDrafts).toHaveBeenCalledOnce();
   });
 
   it("offers the account and folder chooser as nested choices", () => {
