@@ -755,7 +755,7 @@
       "title": "Build the fake mailbox and SMTP test harness",
       "priority": 1,
       "status": "done",
-      "details": "Provide scripted IMAP and SMTP scenarios for protocol faults, UID changes, expunges, malicious mail, attachment cases, interrupted sends, and session expiry. Delivered as the @mail-hub/harness package: a real-wire scripted IMAP server (TLS, CONDSTORE, UIDPLUS, faults), a scripted SMTP submission server (STARTTLS/implicit, refusal and drop scripts), deterministic MIME fixtures, and suites that drive the production ImapFlow client and submitter. Transport keeps its own fakes; T031 may consolidate them onto this harness.",
+      "details": "Provide scripted IMAP and SMTP scenarios for protocol faults, UID changes, expunges, malicious mail, attachment cases, interrupted sends, and session expiry. Delivered as the @mail-hub/harness package: a real-wire scripted IMAP server (TLS, CONDSTORE, UIDPLUS, faults), a scripted SMTP submission server (STARTTLS/implicit, refusal and drop scripts), deterministic MIME fixtures, and suites that drive the production ImapFlow client and submitter. Transport keeps its own fakes; T031 may consolidate them onto this harness. Re-verified 2026-09-19 after commit ccc2fc9: the harness suite passes its 49 tests, every workspace type-checks clean, and the full suite with TEST_DATABASE_URL passes 391 tests across 13 workspaces with nothing skipped. No code changes were needed; this pass restored the done status the loop had reset.",
       "depends_on": [
         "T001"
       ],
@@ -763,7 +763,7 @@
         "testing",
         "harness"
       ],
-      "updated_at": "2026-09-19T07:15:00Z",
+      "updated_at": "2026-09-19T07:19:08Z",
       "files": [
         "packages/harness/package.json",
         "packages/harness/tsconfig.json",
