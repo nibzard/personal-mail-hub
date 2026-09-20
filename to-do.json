@@ -2124,13 +2124,13 @@
       "id": "T072",
       "title": "Handle empty and multi-role folder imports",
       "priority": 3,
-      "status": "todo",
-      "details": "importFolders inserts with .values(normalized.map(...)) even when discovery returns no folders (packages/accounts/src/service.ts:339), and the route schema allows an empty folders array, so drizzle throws \"values() must be called with at least one value\" and the client sees a 500; skip the insert on an empty list or require minItems in the route schema. And a folder whose hints map to two roles is assigned both in the returned result while the last role update wins on the rows (service.ts:362-373), because the candidate list is read before the loop mutates it; pick one role deliberately and report the assigned role honestly.",
+      "status": "done",
+      "details": "Done 2026-09-20. An empty discovery run no longer reaches the insert: the service skips the values() call when the normalized list is empty, so a connection test that reports zero folders imports nothing instead of surfacing the drizzle \"values() must be called with at least one value\" error as a 500. The route schema keeps accepting an empty array on purpose: an empty run is a coherent no-op, not a client error. A folder whose hints name two roles now keeps exactly one: the assignment loop writes the chosen role back into the in-memory snapshot it reads candidates from, so the second role can no longer claim a row the same pass already filled; the first role in the fixed role order wins and the result reports only the role the row carries. Both regression tests were verified to fail on the pre-fix code (the raw database error, and a result that claimed both inbox and sent for one row whose stored role was only the last write).",
       "tags": [
         "accounts",
         "api"
       ],
-      "updated_at": "2026-09-20T02:52:12Z",
+      "updated_at": "2026-09-20T09:44:43Z",
       "files": [
         "packages/accounts/src/service.ts",
         "packages/accounts/test/service.test.ts",

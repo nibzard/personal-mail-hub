@@ -306,6 +306,47 @@ suite("account and identity management", () => {
     expect(hinted.folders.find((folder) => folder.name === "Trash")!.role).toBe("trash");
   });
 
+  it("imports an empty discovery run as a no-op", async () => {
+    const account = await service.createAccount(readyContext, {
+      label: "Bare",
+      color: "#131313",
+      username: "bare@example.com",
+      password: "bare-secret",
+    });
+
+    // A connection test may report zero folders; the import must not turn
+    // that into a database error the client sees as a 500.
+    const result = await service.importFolders(readyContext, account.id, []);
+    expect(result.created).toEqual([]);
+    expect(result.assignedRoles).toEqual({});
+    expect(result.ambiguousRoles).toEqual([]);
+    expect(result.folders).toEqual([]);
+  });
+
+  it("assigns one role to a folder that hints at two", async () => {
+    const account = await service.createAccount(readyContext, {
+      label: "Twofold",
+      color: "#141414",
+      username: "twofold@example.com",
+      password: "twofold-secret",
+    });
+
+    // The reserved inbox name and a sent attribute name two roles. One row
+    // holds one role: the inbox hint wins, the sent hint stays unfilled, and
+    // the result reports only the role the row really carries.
+    const result = await service.importFolders(readyContext, account.id, [
+      { name: "INBOX", specialUse: ["\\Sent"] },
+    ]);
+    expect(result.assignedRoles).toEqual({ inbox: "INBOX" });
+    const folder = result.folders.find((row) => row.name === "INBOX")!;
+    expect(folder.role).toBe("inbox");
+    expect(result.pendingRoleChoices).toContain("sent");
+
+    const stored = await service.listFolders(account.id);
+    expect(stored.folders.find((row) => row.name === "INBOX")!.role).toBe("inbox");
+    expect(stored.folders.filter((row) => row.role !== null)).toHaveLength(1);
+  });
+
   it("serializes concurrent discovery imports over the role map", async () => {
     const account = await service.createAccount(readyContext, {
       label: "Race",

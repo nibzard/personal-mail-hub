@@ -316,8 +316,10 @@ export class AccountService {
   /**
    * Import one discovery run, such as the folder list a connection test
    * reports. New folders appear; unambiguous server hints fill empty roles.
-   * Ambiguous hints leave the role unset for a manual choice, and a hint that
-   * disagrees with an existing assignment is reported, not applied (SPEC F1).
+   * A folder that hints at several roles keeps the first of them, because one
+   * row holds one role. Ambiguous hints leave the role unset for a manual
+   * choice, and a hint that disagrees with an existing assignment is
+   * reported, not applied (SPEC F1).
    */
   async importFolders(
     context: MutationContext,
@@ -335,11 +337,17 @@ export class AccountService {
       // still-empty role and hit the partial unique index with a raw 500.
       await lockAccountRow(tx, accountId);
 
-      const created = await tx
-        .insert(folders)
-        .values(normalized.map((folder) => ({ accountId, name: folder.name })))
-        .onConflictDoNothing()
-        .returning();
+      // A connection test may report zero folders. An empty values() list is
+      // a database error the client would see as a 500, so an empty run
+      // imports nothing instead.
+      const created =
+        normalized.length === 0
+          ? []
+          : await tx
+              .insert(folders)
+              .values(normalized.map((folder) => ({ accountId, name: folder.name })))
+              .onConflictDoNothing()
+              .returning();
 
       const current = await this.selectFolders(tx, accountId);
       const byName = new Map(current.map((folder) => [folder.name, folder]));
@@ -371,6 +379,10 @@ export class AccountService {
         const candidate = candidates[0]!;
         if (holder === undefined) {
           await tx.update(folders).set({ role }).where(eq(folders.id, candidate.id));
+          // The snapshot the later roles read must agree with the row. Without
+          // this, one folder hinting at two roles reports both while the last
+          // update alone reaches the row.
+          candidate.role = role;
           holders.set(role, candidate);
           assignedRoles[role] = candidate.name;
         } else if (holder.id !== candidate.id) {
