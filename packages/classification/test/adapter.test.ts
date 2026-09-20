@@ -106,6 +106,29 @@ describe("type-safe jev adapter", () => {
     } satisfies Partial<JevAdapterError>);
   });
 
+  it("reports a timeout when the response body stalls past the deadline", async () => {
+    // The headers arrive; the body never does. Only the abort can end the
+    // read, so the deadline must still cover `response.json()`: cleared at
+    // the fetch, the timer leaves the caller hung forever.
+    const transport = (async (_url: string | URL, init: RequestInit) => {
+      const signal = init.signal;
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            signal?.addEventListener("abort", () =>
+              controller.error(new Error("The operation was aborted.")),
+            );
+          },
+        }),
+      );
+    }) as typeof fetch;
+    const failing = new TypeSafeJevAdapter({ apiKey: "test-key", timeoutMs: 50, fetch: transport });
+    await expect(failing.ask({ text: "x" })).rejects.toMatchObject({
+      kind: "timeout",
+      name: "JevAdapterError",
+    } satisfies Partial<JevAdapterError>);
+  }, 2_000);
+
   it("reports a request failure on an error status", async () => {
     const { transport } = recordingTransport({ error: "rate limited" }, 429);
     await expect(adapter(transport).ask({ text: "x" })).rejects.toMatchObject({ kind: "request_failed" });

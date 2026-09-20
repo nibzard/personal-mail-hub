@@ -1,4 +1,6 @@
 import net from "node:net";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { submitSmtpMessage } from "@mail-hub/transport";
 import {
@@ -279,4 +281,76 @@ describe("scripted SMTP server", () => {
     await closed;
     expect(server.commands).toHaveLength(0);
   });
+
+  it("refuses AUTH LOGIN whose decoded username is not the accepted one", async () => {
+    const server = await startSmtp({});
+    const socket = net.createConnection({ host: HOST, port: server.port });
+    socket.on("error", () => undefined);
+    try {
+      await new Promise<void>((resolve) => socket.once("connect", resolve));
+      // The greeting and the EHLO reply are read whole; the login lines follow.
+      await readLine(socket, "220");
+      socket.write("EHLO client.example\r\n");
+      await readLine(socket, "250 ");
+      socket.write("AUTH LOGIN\r\n");
+      await readLine(socket, "334");
+      socket.write(`${Buffer.from("wrong-user@example.com", "utf8").toString("base64")}\r\n`);
+      await readLine(socket, "334");
+      socket.write(`${Buffer.from(PASSWORD, "utf8").toString("base64")}\r\n`);
+      // The password matches; the username does not, so the login fails.
+      expect(await readLine(socket, "")).toMatch(/^535 /);
+      socket.write("AUTH LOGIN\r\n");
+      await readLine(socket, "334");
+      socket.write(`${Buffer.from(USER, "utf8").toString("base64")}\r\n`);
+      await readLine(socket, "334");
+      socket.write(`${Buffer.from(PASSWORD, "utf8").toString("base64")}\r\n`);
+      expect(await readLine(socket, "")).toMatch(/^235 /);
+    } finally {
+      socket.destroy();
+    }
+  });
+
+  it("clears a delayed final response when the connection closes", async () => {
+    // A child drives one delayed-answer submission, closes the connection,
+    // and stops the server; it must exit on its own. An uncleared answer
+    // timer holds the child's event loop open for the full delay.
+    const probePath = fileURLToPath(new URL("smtp-exit-probe.ts", import.meta.url));
+    const tsxBin = fileURLToPath(new URL("../../../node_modules/.bin/tsx", import.meta.url));
+    const child = spawn(tsxBin, [probePath], { stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    });
+    const code = await new Promise<number | null>((resolve) => {
+      const deadline = setTimeout(() => {
+        child.kill("SIGKILL");
+        resolve(null);
+      }, 5_000);
+      child.once("exit", (exitCode) => {
+        clearTimeout(deadline);
+        resolve(exitCode);
+      });
+    });
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+  }, 10_000);
 });
+
+/** Resolve the next complete reply line that starts with `prefix`. */
+function readLine(socket: net.Socket, prefix: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let seen = "";
+    const onData = (chunk: Buffer) => {
+      seen += chunk.toString("utf8");
+      const line = seen.split("\r\n").find((candidate) => candidate.startsWith(prefix));
+      if (line !== undefined) {
+        socket.off("data", onData);
+        socket.off("error", onError);
+        resolve(line);
+      }
+    };
+    const onError = (error: Error) => reject(error);
+    socket.on("data", onData);
+    socket.on("error", onError);
+  });
+}

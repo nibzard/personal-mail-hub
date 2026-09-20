@@ -28,6 +28,9 @@ import {
 /** Capabilities the scripted server advertises. */
 const CAPABILITIES = "IMAP4rev1 ENABLE UIDPLUS MOVE CONDSTORE SPECIAL-USE NAMESPACE";
 
+/** The commands the not-authenticated state allows (RFC 3501 section 6). */
+const PRE_AUTH_COMMANDS = new Set(["CAPABILITY", "NOOP", "LOGIN", "AUTHENTICATE", "LOGOUT"]);
+
 const SYSTEM_FLAGS = ["\\Answered", "\\Flagged", "\\Deleted", "\\Seen", "\\Draft"];
 
 /**
@@ -94,6 +97,8 @@ interface ConnectionState {
   selected: StoredImapFolder | null;
   /** The message set this connection has already reported, ascending UIDs. */
   view: number[];
+  /** Fault delays this connection owes; closing the connection clears them. */
+  timers: Set<ReturnType<typeof setTimeout>>;
 }
 
 export class ScriptedImapServer {
@@ -176,6 +181,7 @@ export class ScriptedImapServer {
       enabled: new Set(),
       selected: null,
       view: [],
+      timers: new Set(),
     };
     this.connections.set(id, state);
     socket.on("error", () => this.dropConnection(id));
@@ -188,9 +194,19 @@ export class ScriptedImapServer {
   }
 
   private dropConnection(id: number): void {
-    if (this.connections.delete(id)) {
-      this.openConnections -= 1;
+    const state = this.connections.get(id);
+    if (state === undefined) {
+      return;
     }
+    this.connections.delete(id);
+    this.openConnections -= 1;
+    // A scripted delay belongs to the connection that armed it; a closed
+    // connection owes no answer, so its timers are cleared, not left to keep
+    // the process alive.
+    for (const timer of state.timers) {
+      clearTimeout(timer);
+    }
+    state.timers.clear();
   }
 
   /** Apply one scripted fault. Returns false when the command must not run. */
@@ -204,7 +220,7 @@ export class ScriptedImapServer {
     }
     switch (fault.kind) {
       case "delay":
-        await sleep(fault.ms);
+        await this.delay(state, fault.ms);
         return "continue";
       case "drop":
         state.socket.destroy();
@@ -224,6 +240,21 @@ export class ScriptedImapServer {
         this.faults.unshift(fault);
         return "continue";
     }
+  }
+
+  /**
+   * One scripted delay tied to its connection. The timer is registered on the
+   * connection state, so `dropConnection` clears it when the socket closes;
+   * the wait then never settles and the abandoned command simply stops.
+   */
+  private delay(state: ConnectionState, ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        state.timers.delete(timer);
+        resolve();
+      }, ms);
+      state.timers.add(timer);
+    });
   }
 
   private async dispatch(state: ConnectionState, line: string, tokens: Token[]): Promise<void> {
@@ -253,6 +284,14 @@ export class ScriptedImapServer {
     tokens: Token[],
   ): Promise<void> {
     const write = state.socket;
+    // RFC 3501: before authentication only the session commands run. A real
+    // server answers work commands with BAD here, so a client that sends
+    // them early must fail against this server too, or the suites cannot
+    // tell a protocol-faithful client from one that merely works.
+    if (!state.authenticated && !PRE_AUTH_COMMANDS.has(command)) {
+      this.writeTagged(write, tag, "BAD", "", "Not authenticated");
+      return;
+    }
     switch (command) {
       case "CAPABILITY":
         write.write(`* CAPABILITY ${CAPABILITIES}\r\n`);
@@ -1300,8 +1339,4 @@ function folderMatcher(pattern: string): (path: string) => boolean {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

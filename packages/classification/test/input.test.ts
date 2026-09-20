@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { MAX_INPUT_CHARS, MAX_SENDER_CHARS, MAX_SUBJECT_CHARS, minimizeMessageInput, stripQuotedChains } from "../src/index.ts";
+import { MAX_INPUT_CHARS, MAX_SENDER_CHARS, MAX_SUBJECT_CHARS, minimizeMessageInput, stripQuotedChains, type MessageInputSource } from "../src/index.ts";
 
 /**
  * Input minimization acceptance (SPEC F8): sender, subject, and the first
@@ -86,5 +86,25 @@ describe("minimized input", () => {
       `From: Sam Rivera <sam@personal.example>\nSubject: ${"s".repeat(MAX_SUBJECT_CHARS)}\n\nShort body.`,
     );
     expect(input.inputHash).toBe(createHash("sha256").update(input.text, "utf8").digest("hex"));
+  });
+
+  it("composes without throwing on pathological wire text", () => {
+    // Whatever the wire delivered — absent fields, split surrogates, fields
+    // several windows long — the composer may neither throw nor index past
+    // its slice, and the composed text stays inside the window.
+    const inputs: MessageInputSource[] = [
+      { senderText: "", subject: null, bodyText: null },
+      { senderText: "\uD83D", subject: "😀\uD83D", bodyText: "\uD800" },
+      {
+        senderText: "a".repeat(MAX_INPUT_CHARS * 3),
+        subject: "b".repeat(MAX_INPUT_CHARS * 3),
+        bodyText: "c".repeat(MAX_INPUT_CHARS * 3),
+      },
+    ];
+    for (const source of inputs) {
+      const input = minimizeMessageInput(source);
+      expect(input.text.length).toBeLessThanOrEqual(MAX_INPUT_CHARS);
+      expect(input.inputHash).toHaveLength(64);
+    }
   });
 });

@@ -476,3 +476,95 @@ describe("the scripted IMAP server's input bounds", () => {
     expect(server.commands).toHaveLength(0);
   });
 });
+
+describe("the scripted IMAP server's session gating", () => {
+  /** One raw TLS connection that collects every line the server sends. */
+  function rawConnect(server: ScriptedImapServer): Promise<tls.TLSSocket> {
+    return new Promise((resolve, reject) => {
+      const socket = tls.connect({ host: HOST, port: server.port, ...verifiedTlsOptions([authority.certPem]) });
+      socket.on("data", () => undefined);
+      socket.once("secureConnect", () => resolve(socket));
+      socket.once("error", (error) => reject(error));
+    });
+  }
+
+  /** Read lines until the tagged response for `tag` arrives. */
+  function readTagged(socket: tls.TLSSocket, tag: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      let seen = "";
+      const onData = (chunk: Buffer) => {
+        seen += chunk.toString("utf8");
+        const line = seen.split("\r\n").find((candidate) => candidate.startsWith(`${tag} `));
+        if (line !== undefined) {
+          socket.off("data", onData);
+          socket.off("error", onError);
+          resolve(line);
+        }
+      };
+      const onError = (error: Error) => reject(error);
+      socket.on("data", onData);
+      socket.on("error", onError);
+    });
+  }
+
+  it("refuses work commands before authentication", async () => {
+    const server = await startImap();
+    const socket = await rawConnect(server);
+    try {
+      socket.write('a1 LIST "" "*"\r\n');
+      const answer = await readTagged(socket, "a1");
+      expect(answer).toMatch(/^a1 BAD\b/);
+      expect(answer).toContain("Not authenticated");
+      socket.write("a2 UID FETCH 1:* (FLAGS)\r\n");
+      const refused = await readTagged(socket, "a2");
+      expect(refused).toMatch(/^a2 BAD\b/);
+      expect(server.appends).toHaveLength(0);
+    } finally {
+      socket.destroy();
+    }
+  });
+
+  it("admits the session commands before authentication and work after login", async () => {
+    const server = await startImap();
+    const socket = await rawConnect(server);
+    try {
+      socket.write("a1 CAPABILITY\r\n");
+      expect(await readTagged(socket, "a1")).toMatch(/^a1 OK\b/);
+      socket.write(`a2 LOGIN "${USER}" "${PASSWORD}"\r\n`);
+      expect(await readTagged(socket, "a2")).toMatch(/^a2 OK\b/);
+      socket.write('a3 LIST "" "*"\r\n');
+      expect(await readTagged(socket, "a3")).toMatch(/^a3 OK\b/);
+    } finally {
+      socket.destroy();
+    }
+  });
+
+  it("clears a scripted delay when the connection closes", async () => {
+    const server = await startImap();
+    const client = await connect(server, { condstore: true });
+    try {
+      await client.mailboxOpen("INBOX");
+      // UID 3 starts unseen in the shared fixture; UID 1 is born seen.
+      server.faults.push({ kind: "delay", ms: 150 });
+      const attempt = client.messageFlagsAdd("3", ["\\Seen"], { uid: true });
+      attempt.catch(() => undefined);
+      // The STORE reached the server and armed its delay before the close. The
+      // pattern must name UID STORE: the CONDSTORE enablement the client sent
+      // during connect already holds the word STORE in an unrelated command.
+      const storeArrived = (): boolean =>
+        server.commands.some(({ line }) => /UID STORE/i.test(line));
+      for (let tries = 0; tries < 40 && !storeArrived(); tries += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(storeArrived()).toBe(true);
+      client.close();
+      await attempt.catch(() => undefined);
+      // Past the delay: a cleared timer means the command never ran, so the
+      // shared store never moved and no dead connection wrote the mailbox.
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(server.store.folder("INBOX")?.messages.get(3)?.flags.includes("\\Seen")).toBe(false);
+    } finally {
+      client.close();
+    }
+  });
+});

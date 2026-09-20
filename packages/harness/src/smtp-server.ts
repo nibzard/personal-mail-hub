@@ -197,6 +197,10 @@ class SmtpSession {
   private transport: net.Socket;
   private upgraded: boolean;
   private loginStage: "user" | "pass" | null = null;
+  /** The decoded username the AUTH LOGIN stages carry, between the two lines. */
+  private loginUser: string | null = null;
+  /** The timer of a delayed final answer, cleared when the connection closes. */
+  private pendingResponse: ReturnType<typeof setTimeout> | null = null;
   private inDataMode = false;
   private droppedDuringData = false;
   private dataLines: string[] = [];
@@ -219,6 +223,15 @@ class SmtpSession {
 
   start(): void {
     this.socket.on("data", (chunk: Buffer) => this.receive(chunk));
+    // A delayed final answer belongs to the connection that earned it;
+    // closing the connection clears the timer instead of answering a dead
+    // socket and holding the process alive for the delay.
+    this.socket.on("close", () => {
+      if (this.pendingResponse !== null) {
+        clearTimeout(this.pendingResponse);
+        this.pendingResponse = null;
+      }
+    });
     this.transport.write(`${this.options.greeting ?? "220 scripted.example ESMTP Scripted SMTP ready"}\r\n`);
   }
 
@@ -371,17 +384,23 @@ class SmtpSession {
     // AUTH LOGIN continues with bare base64 lines, which carry no command verb.
     if (this.loginStage !== null && /^[A-Za-z0-9+/=]+$/.test(line)) {
       if (this.loginStage === "user") {
+        this.loginUser = Buffer.from(line, "base64").toString("utf8");
         this.loginStage = "pass";
         this.transport.write("334 UGFzc3dvcmQ6\r\n");
         return;
       }
+      // Both stages carry credentials, so both must match the accepted login;
+      // a correct password under a wrong username is still a refusal.
+      const user = this.loginUser;
       const pass = Buffer.from(line, "base64").toString("utf8");
+      const expected = this.options.auth;
+      this.loginUser = null;
+      this.loginStage = null;
       this.transport.write(
-        this.options.auth !== null && pass === this.options.auth.pass
+        expected !== null && user === expected.user && pass === expected.pass
           ? "235 2.7.0 Authentication successful\r\n"
           : "535 5.7.8 Authentication credentials invalid\r\n",
       );
-      this.loginStage = null;
       return;
     }
 
@@ -417,10 +436,11 @@ class SmtpSession {
     }
     const delay = script?.delayFinalResponseMs ?? 0;
     const respond = (): void => {
+      this.pendingResponse = null;
       this.transport.write(`${script?.finalResponse ?? "250 2.0.0 Ok: queued"}\r\n`);
     };
     if (delay > 0) {
-      setTimeout(respond, delay);
+      this.pendingResponse = setTimeout(respond, delay);
       return;
     }
     respond();

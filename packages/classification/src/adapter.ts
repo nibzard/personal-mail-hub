@@ -131,51 +131,63 @@ export class TypeSafeJevAdapter implements JevAdapter {
     this.transport = options.fetch ?? fetch;
   }
 
+  /**
+   * Ask the whole question set over one minimized message text. The timeout
+   * covers the response headers and the body read alike: the timer stays
+   * armed until the payload is parsed, so a stalled body fails as a timeout
+   * instead of hanging the caller with the circuit blind to it.
+   */
   async ask(input: { text: string }): Promise<JevDecision> {
     const startedAt = Date.now();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    let response: Response;
     try {
-      response = await this.transport(`${this.baseUrl}/v1/evaluations`, {
-        method: "POST",
-        signal: controller.signal,
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${this.apiKey}`,
-        },
-        body: JSON.stringify({
-          model: JEV_MODEL,
-          input: { text: input.text },
-          questions: QUESTIONS,
-        }),
-      });
-    } catch (cause) {
-      if (cause instanceof JevAdapterError) {
-        throw cause;
+      let response: Response;
+      try {
+        response = await this.transport(`${this.baseUrl}/v1/evaluations`, {
+          method: "POST",
+          signal: controller.signal,
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${this.apiKey}`,
+          },
+          body: JSON.stringify({
+            model: JEV_MODEL,
+            input: { text: input.text },
+            questions: QUESTIONS,
+          }),
+        });
+      } catch (cause) {
+        if (cause instanceof JevAdapterError) {
+          throw cause;
+        }
+        // The signal is the authority on timeouts: undici raises a DOMException
+        // no name check matches, so the abort state must decide, not the shape.
+        if (controller.signal.aborted) {
+          throw new JevAdapterError("timeout", `Jev did not answer within ${this.timeoutMs} ms.`);
+        }
+        throw new JevAdapterError("request_failed", "The Jev evaluation request could not be sent.");
       }
-      if (cause instanceof Error && cause.name === "AbortError") {
-        throw new JevAdapterError("timeout", `Jev did not answer within ${this.timeoutMs} ms.`);
+      if (!response.ok) {
+        throw new JevAdapterError(
+          "request_failed",
+          `The Jev evaluation endpoint answered with HTTP ${response.status}.`,
+        );
       }
-      throw new JevAdapterError("request_failed", "The Jev evaluation request could not be sent.");
+      let payload: unknown;
+      try {
+        payload = await response.json();
+      } catch {
+        if (controller.signal.aborted) {
+          throw new JevAdapterError("timeout", `Jev did not answer within ${this.timeoutMs} ms.`);
+        }
+        throw new JevAdapterError("invalid_response", "The Jev evaluation response was not JSON.");
+      }
+      const latencyMs = Date.now() - startedAt;
+      return parseEvaluation(payload, latencyMs);
     } finally {
       clearTimeout(timer);
     }
-
-    if (!response.ok) {
-      throw new JevAdapterError(
-        "request_failed",
-        `The Jev evaluation endpoint answered with HTTP ${response.status}.`,
-      );
-    }
-    let payload: unknown;
-    try {
-      payload = await response.json();
-    } catch {
-      throw new JevAdapterError("invalid_response", "The Jev evaluation response was not JSON.");
-    }
-    const latencyMs = Date.now() - startedAt;
-    return parseEvaluation(payload, latencyMs);
   }
 }
 
