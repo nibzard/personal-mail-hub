@@ -226,7 +226,14 @@ export class OfflineSync {
         stoppedForRestore = true;
         break;
       }
-      const run = this.handlerFor(action.payload);
+      // A save that settled earlier in this pass may have chained this
+      // item's base revision forward, so replay the payload as the store
+      // holds it now, not as the pass snapshot captured it.
+      const queued = await this.store.getAction(action.localId);
+      if (queued === null || queued.state !== "pending") {
+        continue;
+      }
+      const run = this.handlerFor(queued.payload);
       if (run === null) {
         continue;
       }
@@ -234,7 +241,7 @@ export class OfflineSync {
       const outcome = await run();
       attempted += 1;
       if (outcome.state === "synced") {
-        await this.settleSynced(action, outcome.revision, outcome.serverUploadId);
+        await this.settleSynced(queued, outcome.revision, outcome.serverUploadId);
         synced += 1;
       } else if (outcome.state === "failed") {
         await this.store.updateAction(action.localId, {
@@ -534,8 +541,26 @@ export class OfflineSync {
     });
     if (action.payload.kind === "draft-save" && revision !== undefined) {
       const payload = action.payload;
+      const pending = await this.store.pendingActions();
+      // Queued saves of one draft are coalesced snapshots of the same
+      // editor, each frozen against the revision enqueue time held. The
+      // save that just synced moved that revision, so chain it forward:
+      // without the chain, the device's own next edit replays against the
+      // revision its earlier edit produced, the server refuses it as
+      // stale, and no competing change ever existed (SPEC F9).
+      for (const entry of pending) {
+        if (
+          entry.payload.kind === "draft-save" &&
+          entry.payload.draftId === payload.draftId &&
+          entry.payload.baseRevision < revision
+        ) {
+          await this.store.updateAction(entry.localId, {
+            payload: { ...entry.payload, baseRevision: revision },
+          });
+        }
+      }
       const local = await this.store.getLocalDraft(payload.draftId);
-      const moreEditsPending = (await this.store.pendingActions()).some(
+      const moreEditsPending = pending.some(
         (entry) => draftIdOf(entry.payload) === payload.draftId,
       );
       if (local !== null && local.baseRevision <= revision) {

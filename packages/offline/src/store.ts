@@ -249,6 +249,11 @@ export class OfflineStore {
     return pending.sort((a, b) => a.queuedAt - b.queuedAt);
   }
 
+  /** One queued action by its local id, when it still exists. */
+  async getAction(localId: string): Promise<QueuedAction | null> {
+    return (await this.db.queue.get(localId)) ?? null;
+  }
+
   /** The actions waiting for a person, not the network (SPEC F9). */
   async reviewActions(): Promise<QueuedAction[]> {
     const review = await this.db.queue.where("state").equals("review").toArray();

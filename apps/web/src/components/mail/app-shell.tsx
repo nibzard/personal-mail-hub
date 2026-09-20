@@ -147,6 +147,25 @@ export function AppShell({
   const selected = rows.find((row) => row.messageId === selectedId) ?? null;
   const title = scopeTitle(scope, accounts, folders.data);
 
+  // A server read that replaced the rows also retires the overlays: the
+  // server answered again, so its flags and placements are the truth. Until
+  // then the overlays hold; without this clearing, an archived message
+  // stayed hidden from All Mail and search for the whole session, against
+  // the rule that nothing is hidden (SPEC section 4 and F2). Cached offline
+  // rows never clear them, because only the server can confirm a change.
+  const serverReadId =
+    list.state.phase === "ready" && !list.state.offlineFromCache
+      ? list.state.serverReadId
+      : null;
+  useEffect(() => {
+    if (serverReadId !== null) {
+      setFlagPatches(new Map());
+      setMovedAside(new Set());
+    }
+    // The overlays are cleared only when a new read lands, not on their own
+    // changes; that is the dependency list's whole point.
+  }, [serverReadId]);
+
   const commandsButtonRef = useRef<HTMLButtonElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const paletteOpenerRef = useRef<HTMLElement | null>(null);

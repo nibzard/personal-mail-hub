@@ -170,6 +170,61 @@ describe("replay", () => {
     expect((await sync.snapshot()).pendingActions).toBe(1);
   });
 
+  it("chains the revision through queued saves of one draft", async () => {
+    // Two coalesced edits queued while offline both froze the revision the
+    // editor held at enqueue time; replaying the second against that frozen
+    // revision would collide with the first and land in review (SPEC F9).
+    const seen: string[] = [];
+    const port: OfflinePort = {
+      saveDraft: async (payload) => {
+        seen.push(`${payload.draftId}:${payload.baseRevision}`);
+        return { state: "synced", revision: payload.baseRevision + 1 };
+      },
+    };
+    const { sync, store } = makeSync(port);
+    await sync.observeGeneration(GENERATION_A);
+    await store.putLocalDraft(draftRecord());
+    await store.putLocalDraft(draftRecord({ draftId: "d2" }));
+    await sync.enqueueDraftSave("d1", 1, { markdown: "First" });
+    await sync.enqueueDraftSave("d2", 1, { markdown: "Another draft" });
+    await sync.enqueueDraftSave("d1", 1, { markdown: "Second" });
+
+    const report = await sync.sync();
+    expect(report.synced).toBe(3);
+    expect(seen).toEqual(["d1:1", "d2:1", "d1:2"]);
+
+    const snapshot = await sync.snapshot();
+    expect(snapshot.pendingActions).toBe(0);
+    expect(snapshot.reviewActions).toHaveLength(0);
+    expect((await sync.localDraft("d1"))?.baseRevision).toBe(3);
+    expect((await sync.localDraft("d1"))?.dirty).toBe(false);
+  });
+
+  it("never chains a save the queue already rebased past the synced revision", async () => {
+    const seen: number[] = [];
+    const port: OfflinePort = {
+      saveDraft: async (payload) => {
+        seen.push(payload.baseRevision);
+        return payload.baseRevision === 1
+          ? { state: "synced", revision: 2 }
+          : { state: "review", reason: "draft_conflict" };
+      },
+    };
+    const { sync, store } = makeSync(port);
+    await sync.observeGeneration(GENERATION_A);
+    await sync.enqueueDraftSave("d1", 1, { markdown: "Earlier enqueue" });
+    // A review rebase set this item's base onto the shown server revision.
+    const rebased = await store.enqueue(
+      { kind: "draft-save", draftId: "d1", baseRevision: 7, patch: { markdown: "Rebased" } },
+      GENERATION_A,
+    );
+    expect(rebased.payload).toMatchObject({ baseRevision: 7 });
+
+    await sync.sync();
+    // The chain moved nothing backward: the rebased save kept revision 7.
+    expect(seen).toEqual([1, 7]);
+  });
+
   it("keeps items pending on a retryable failure and records definitive failures", async () => {
     let attempts = 0;
     const port: OfflinePort = {

@@ -429,9 +429,20 @@ export interface MessageListState {
   indexing: { messages: number; bodies: number } | null;
   error: ApiError | null;
   loadingMore: boolean;
+  /**
+   * True while a refresh of the same view runs: the rows already on screen
+   * stay visible until the read answers (SPEC F12).
+   */
+  refreshing: boolean;
   canLoadMore: boolean;
   /** True when the rows come from the offline cache, not the server. */
   offlineFromCache: boolean;
+  /**
+   * Rises on every server read that replaces the rows from their first row;
+   * cached and appended reads keep the value. The shell uses it to drop the
+   * local action overlays once the server answered again.
+   */
+  serverReadId: number;
 }
 
 export interface MessageList {
@@ -468,20 +479,31 @@ export function useMessageList(
   const [pages, setPages] = useState(1);
   const [nonce, setNonce] = useState(0);
   const [entry, setEntry] = useState<{
+    identity: string;
     phase: MessageListState["phase"];
     rows: SearchResultItem[];
     total: number;
     indexing: MessageListState["indexing"];
     error: ApiError | null;
     loadingMore: boolean;
+    refreshing: boolean;
     offlineFromCache: boolean;
-  }>({ phase: "loading", rows: [], total: 0, indexing: null, error: null, loadingMore: false, offlineFromCache: false });
-  // The failure path reads the entry as it stands now, not the one the
-  // effect closure captured: a page-one reload clears the rows before the
-  // request runs, so "is anything on screen" must answer for the cleared
-  // state. Without this, the offline cache only appears on a second retry.
-  const entryRef = useRef(entry);
-  entryRef.current = entry;
+    serverReadId: number;
+  }>({
+    identity: "",
+    phase: "loading",
+    rows: [],
+    total: 0,
+    indexing: null,
+    error: null,
+    loadingMore: false,
+    refreshing: false,
+    offlineFromCache: false,
+    serverReadId: 0,
+  });
+  // Counts the server reads that replaced the rows; only the live fetch
+  // path raises it, so an aborted attempt never advances the counter.
+  const serverReads = useRef(0);
 
   // A new scope or query restarts the list from its first page. The reset
   // happens during render so the fetch effect never sees a stale page count.
@@ -500,13 +522,16 @@ export function useMessageList(
         // forever: the failure shows with a retry, and a retry that reloads
         // the index brings the list back to loading (SPEC F12).
         setEntry({
+          identity,
           phase: folderIndexError === null ? "loading" : "error",
           rows: [],
           total: 0,
           indexing: null,
           error: folderIndexError,
           loadingMore: false,
+          refreshing: false,
           offlineFromCache: false,
+          serverReadId: serverReads.current,
         });
         return;
       }
@@ -516,15 +541,25 @@ export function useMessageList(
       if (loadingMore) {
         setEntry((current) => ({ ...current, loadingMore: true }));
       } else {
-        setEntry({
-          phase: "loading",
-          rows: [],
-          total: 0,
-          indexing: null,
-          error: null,
-          loadingMore: false,
-          offlineFromCache: false,
-        });
+        // A read of the same view refreshes it: the rows already on screen
+        // stay visible until the read answers, because skeletons are for
+        // uncached content (SPEC F12). A new view still starts clean.
+        setEntry((current) =>
+          current.identity === identity && current.rows.length > 0
+            ? { ...current, refreshing: true, loadingMore: false }
+            : {
+                identity,
+                phase: "loading",
+                rows: [],
+                total: 0,
+                indexing: null,
+                error: null,
+                loadingMore: false,
+                refreshing: false,
+                offlineFromCache: false,
+                serverReadId: serverReads.current,
+              },
+        );
       }
 
       const run = async () => {
@@ -556,7 +591,11 @@ export function useMessageList(
               responses.flatMap((response) => response.results),
             ).sort(compareItems);
             if (live) {
+              // The unified inbox refetches its whole window, so every read
+              // replaces the rows from the first row.
+              const readId = (serverReads.current += 1);
               setEntry({
+                identity,
                 phase: "ready",
                 rows: merged.slice(0, pages * PAGE_SIZE),
                 total: responses.reduce((sum, response) => sum + response.total, 0),
@@ -566,7 +605,9 @@ export function useMessageList(
                 },
                 error: null,
                 loadingMore: false,
+                refreshing: false,
                 offlineFromCache: false,
+                serverReadId: readId,
               });
             }
             cacheRowsLive(merged);
@@ -586,7 +627,10 @@ export function useMessageList(
             controller.signal,
           );
           if (live) {
+            // A first page replaces the rows; a later page appends to them.
+            const readId = pages === 1 ? (serverReads.current += 1) : serverReads.current;
             setEntry((current) => ({
+              identity,
               phase: "ready",
               rows:
                 pages === 1 ? response.results : dedupe([...current.rows, ...response.results]),
@@ -594,7 +638,9 @@ export function useMessageList(
               indexing: response.indexing,
               error: null,
               loadingMore: false,
+              refreshing: false,
               offlineFromCache: false,
+              serverReadId: readId,
             }));
           }
           cacheRowsLive(response.results);
@@ -604,7 +650,6 @@ export function useMessageList(
           }
           const failure = toApiError(error);
           if (live) {
-            const hadRows = entryRef.current.rows.length > 0;
             setEntry((current) => ({
               ...current,
               // Keep the rows already on screen; the failure stays inspectable
@@ -612,23 +657,28 @@ export function useMessageList(
               phase: current.rows.length > 0 ? "ready" : "error",
               error: failure,
               loadingMore: false,
+              refreshing: false,
             }));
-            // With nothing on screen and no service, downloaded mail still
-            // reads, narrowed to this scope and query (SPEC F9).
-            if (failure.network && !hadRows && pages === 1) {
+            // With no service on a first-page read, downloaded mail still
+            // reads, narrowed to this scope and query (SPEC F9) — also when
+            // the refresh kept the previous rows on screen.
+            if (failure.network && pages === 1) {
               void readCachedRows().then((cached) => {
                 if (!live || cached.length === 0) {
                   return;
                 }
                 const rows = filterCachedRows(cached, scope, folderIndex, trimmed);
                 setEntry({
+                  identity,
                   phase: "ready",
                   rows,
                   total: rows.length,
                   indexing: null,
                   error: failure,
                   loadingMore: false,
+                  refreshing: false,
                   offlineFromCache: true,
+                  serverReadId: serverReads.current,
                 });
               });
             }
@@ -649,6 +699,9 @@ export function useMessageList(
 
   const canLoadMore =
     entry.phase === "ready" &&
+    // A refresh in flight restarts the view from its first row, so paging
+    // waits until the read answers.
+    !entry.refreshing &&
     entry.rows.length < entry.total &&
     (scope.kind === "unified-inbox"
       ? pages * PAGE_SIZE < REQUEST_LIMIT_CAP

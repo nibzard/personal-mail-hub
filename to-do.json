@@ -1792,31 +1792,31 @@
         "send",
         "compose"
       ],
-      "updated_at": "2026-09-20",
+      "updated_at": "2026-09-20T01:58:40Z",
       "files": [
-        "packages/compose/src/validation.ts",
-        "packages/compose/src/service.ts",
-        "packages/compose/src/index.ts",
-        "packages/send/src/service.ts",
-        "packages/send/src/mime.ts",
         "apps/api/src/compose-routes.ts",
-        "apps/web/src/mail/send-state.ts",
-        "apps/web/src/mail/compose-data.ts",
-        "apps/web/src/components/mail/send-panel.tsx",
-        "apps/web/src/components/mail/draft-editor.tsx",
-        "apps/web/src/components/mail/compose-screen.tsx",
-        "packages/send/test/service.test.ts",
-        "packages/send/test/mime.test.ts",
-        "packages/compose/test/service.test.ts",
         "apps/api/test/compose-routes.test.ts",
-        "apps/web/test/send-state.test.ts"
+        "apps/web/src/components/mail/compose-screen.tsx",
+        "apps/web/src/components/mail/draft-editor.tsx",
+        "apps/web/src/components/mail/send-panel.tsx",
+        "apps/web/src/mail/compose-data.ts",
+        "apps/web/src/mail/send-state.ts",
+        "apps/web/test/send-state.test.ts",
+        "packages/compose/src/index.ts",
+        "packages/compose/src/service.ts",
+        "packages/compose/src/validation.ts",
+        "packages/compose/test/service.test.ts",
+        "packages/send/src/mime.ts",
+        "packages/send/src/service.ts",
+        "packages/send/test/mime.test.ts",
+        "packages/send/test/service.test.ts"
       ]
     },
     {
       "id": "T058",
       "title": "Fix offline draft replay and list overlay defects",
       "priority": 2,
-      "status": "todo",
+      "status": "done",
       "details": "Queued draft-saves freeze the base revision at enqueue time, and the autosaver advances its revision only on a saved outcome (apps/web/src/mail/compose-data.ts:596). The second offline edit replays against the revision the first edit moved. The server rejects draft_stale (packages/compose/src/service.ts:309), so every save after the first lands in manual review although no competing change exists. Chain the base revision through queued saves of one draft during replay (settleSynced, packages/offline/src/sync.ts:523-551). The flagPatches and movedAside overlays are only added, never cleared on a fresh server read (apps/web/src/components/mail/app-shell.tsx:120-198). An archived message stays hidden from All Mail and search for the whole session, against the SPEC rule that nothing is hidden. A single-page reload blanks the list to a skeleton instead of keeping stale rows (apps/web/src/mail/data.ts:519-527). The send action lacks a double-submit guard. The API client sets no request timeout, so a stalled connection never falls back to the offline cache (apps/web/src/lib/api.ts).",
       "depends_on": [
         "T023",
@@ -1827,14 +1827,18 @@
         "offline",
         "ui"
       ],
-      "updated_at": "2026-09-20T00:56:03Z",
+      "updated_at": "2026-09-20T02:21:37Z",
       "files": [
+        "apps/web/e2e/flows.browser.ts",
         "apps/web/src/components/mail/app-shell.tsx",
-        "apps/web/src/components/mail/compose-screen.tsx",
+        "apps/web/src/components/mail/draft-editor.tsx",
+        "apps/web/src/components/mail/message-list.tsx",
         "apps/web/src/lib/api.ts",
-        "apps/web/src/mail/compose-data.ts",
         "apps/web/src/mail/data.ts",
-        "packages/offline/src/sync.ts"
+        "apps/web/test/api.test.ts",
+        "packages/offline/src/store.ts",
+        "packages/offline/src/sync.ts",
+        "packages/offline/test/sync.test.ts"
       ]
     },
     {

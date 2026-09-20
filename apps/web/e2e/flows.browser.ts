@@ -248,6 +248,22 @@ test.describe("message actions", () => {
     await expect(row).toBeHidden();
   });
 
+  test("an archived message returns in All Mail", async ({ page }) => {
+    await openInbox(page);
+
+    await page.keyboard.press("j");
+    await page.keyboard.press("e");
+    await expect(page.getByText("Archived.", { exact: true })).toBeVisible();
+    const row = page.locator("[data-message-row='m-001']");
+    await expect(row).toBeHidden();
+
+    // All Mail holds every message, archived or not, and the archive overlay
+    // retires on the fresh read: nothing stays hidden (SPEC section 4).
+    await page.getByRole("button", { name: "All Mail" }).click();
+    await expect(row).toBeVisible();
+    await expect(row).toContainText("Dinner on Saturday");
+  });
+
   test("move opens a destination chooser and files the row", async ({ page }) => {
     await openInbox(page);
     await page.locator("[data-message-row='m-007']").click();
@@ -757,6 +773,33 @@ test.describe("failure and pending states", () => {
       timeout: 10_000,
     });
     await expect(page.locator("#message-list")).not.toHaveAttribute("aria-busy", "true");
+  });
+
+  test("a slow refresh keeps the rows on screen", async ({ page }) => {
+    await openInbox(page);
+    const firstRow = page.locator("#message-list [data-message-row]").first();
+    await expect(firstRow).toContainText("Dinner on Saturday");
+
+    await page.route(/\/api\/search/u, async (route) => {
+      await page.waitForTimeout(600);
+      await route.continue();
+    });
+    await page.getByRole("button", { name: "Refresh this view" }).click();
+
+    // A refresh of a view already on screen keeps its content visible; the
+    // skeletons are for uncached content (SPEC F12). The pane still says it
+    // is busy, and the button does not stack a second refresh on top. The
+    // mid-refresh checks are single-shot once busy: a retried locator would
+    // wait the delay out and pass even against a skeleton flash.
+    await expect(page.locator("#message-list")).toHaveAttribute("aria-busy", "true");
+    expect(await page.locator("#message-list .animate-pulse").count()).toBe(0);
+    expect(await firstRow.isVisible()).toBe(true);
+    expect(await firstRow.textContent()).toContain("Dinner on Saturday");
+
+    await expect(page.locator("#message-list")).not.toHaveAttribute("aria-busy", "true", {
+      timeout: 10_000,
+    });
+    await expect(firstRow).toContainText("Dinner on Saturday");
   });
 
   test("a slow settings save shows the saving state before it settles", async ({ page }) => {

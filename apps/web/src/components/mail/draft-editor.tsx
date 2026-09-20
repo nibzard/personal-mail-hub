@@ -135,6 +135,7 @@ export function DraftEditor({
   const [uncertain, setUncertain] = useState<string | null>(null);
   const [duplicateAcknowledged, setDuplicateAcknowledged] = useState(false);
   const [sendNote, setSendNote] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
   const [resendBusy, setResendBusy] = useState(false);
   const [discarding, setDiscarding] = useState(false);
   const [showPreview, setShowPreview] = useState(true);
@@ -142,6 +143,10 @@ export function DraftEditor({
 
   const autosaverRef = useRef<DraftAutosaver | null>(null);
   const autosaverForRef = useRef<string | null>(null);
+  // The re-entrancy guard of the send control: one deliberate send is one
+  // request with one idempotency key. A second click while the first is in
+  // flight would mint a second key and queue a true duplicate (SPEC F7).
+  const sendInFlight = useRef(false);
   const generationRef = useRef(session.recoveryGeneration);
   generationRef.current = session.recoveryGeneration;
   const serverDraftRef = useRef<DraftView | null>(null);
@@ -201,6 +206,7 @@ export function DraftEditor({
     setSendTarget(null);
     setUncertain(null);
     setSendNote(null);
+    setSending(false);
     setDiscarding(false);
     void load({ adopt: true });
   }, [load, nonce]);
@@ -354,6 +360,7 @@ export function DraftEditor({
     draft !== null &&
     fields !== null &&
     !locked &&
+    !sending &&
     autosaveState !== "conflict" &&
     autosaveState !== "saving" &&
     recipientCount(recipientsOf(fields)) > 0 &&
@@ -362,7 +369,7 @@ export function DraftEditor({
 
   const submitSend = async () => {
     const autosaver = autosaverRef.current;
-    if (autosaver === null || draft === null || fields === null) {
+    if (sendInFlight.current || autosaver === null || draft === null || fields === null) {
       return;
     }
     setSendNote(null);
@@ -374,40 +381,47 @@ export function DraftEditor({
       setSendNote(`These addresses do not look valid: ${invalidInFields.join(", ")}.`);
       return;
     }
-    if (autosaver.pendingPatch !== null) {
-      await autosaver.flush();
-    }
-    if (autosaver.state === "conflict") {
-      setSendNote("Resolve the conflicting copy before sending.");
-      return;
-    }
-    // A deliberate send is new work: its own key, never a reused one.
-    const outcome = await requestDraftSend(
-      session,
-      draft.id,
-      autosaver.revision,
-      newSendIdempotencyKey(),
-    );
-    switch (outcome.state) {
-      case "queued":
-        setUncertain(null);
-        setDuplicateAcknowledged(false);
-        setSendTarget(outcome.outbound.id);
-        onDraftChanged();
-        void load({ adopt: false });
+    sendInFlight.current = true;
+    setSending(true);
+    try {
+      if (autosaver.pendingPatch !== null) {
+        await autosaver.flush();
+      }
+      if (autosaver.state === "conflict") {
+        setSendNote("Resolve the conflicting copy before sending.");
         return;
-      case "queued-offline":
-        setSendNote(
-          "Offline. The send is queued on this device and replays when the connection returns.",
-        );
-        onDraftChanged();
-        return;
-      case "uncertain":
-        setUncertain(outcome.message);
-        return;
-      case "rejected":
-        setSendNote(outcome.message);
-        return;
+      }
+      // A deliberate send is new work: its own key, never a reused one.
+      const outcome = await requestDraftSend(
+        session,
+        draft.id,
+        autosaver.revision,
+        newSendIdempotencyKey(),
+      );
+      switch (outcome.state) {
+        case "queued":
+          setUncertain(null);
+          setDuplicateAcknowledged(false);
+          setSendTarget(outcome.outbound.id);
+          onDraftChanged();
+          void load({ adopt: false });
+          return;
+        case "queued-offline":
+          setSendNote(
+            "Offline. The send is queued on this device and replays when the connection returns.",
+          );
+          onDraftChanged();
+          return;
+        case "uncertain":
+          setUncertain(outcome.message);
+          return;
+        case "rejected":
+          setSendNote(outcome.message);
+          return;
+      }
+    } finally {
+      sendInFlight.current = false;
+      setSending(false);
     }
   };
 
@@ -860,7 +874,7 @@ export function DraftEditor({
           <Trash2 aria-hidden="true" className="size-4" />
           {discarding ? "Discard for good?" : "Discard"}
         </Button>
-        <Button disabled={!canSend} onClick={() => void submitSend()}>
+        <Button disabled={!canSend} pending={sending} onClick={() => void submitSend()}>
           Send
         </Button>
       </footer>
@@ -893,7 +907,8 @@ export function DraftEditor({
             <Button
               variant="destructive"
               size="sm"
-              disabled={!duplicateAcknowledged}
+              disabled={!duplicateAcknowledged || sending}
+              pending={sending}
               onClick={() => void submitSend()}
             >
               Send again with a new key

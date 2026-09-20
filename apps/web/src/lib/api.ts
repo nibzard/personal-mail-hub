@@ -2,9 +2,17 @@
  * Typed client for the API (SPEC section 6). Requests go to the same origin
  * through the `/api` prefix the deployment proxy routes to the Fastify
  * process. Set `VITE_API_BASE_URL` to point the client somewhere else.
+ * Every request carries a deadline: a stalled connection fails like an
+ * unreachable service, so the offline fallbacks can engage (SPEC F9).
  */
 
 const DEFAULT_BASE = "/api";
+
+/** How long one JSON request may run before the client gives up on it. */
+export const REQUEST_TIMEOUT_MS = 30_000;
+
+/** Byte transfers run longer: a 25 MB file on a slow link is legal (SPEC F6). */
+export const TRANSFER_TIMEOUT_MS = 120_000;
 
 function readBase(): string {
   const configured = import.meta.env.VITE_API_BASE_URL;
@@ -64,62 +72,120 @@ export function toApiError(error: unknown): ApiError {
   return new ApiError(0, "unexpected", "Something went wrong while contacting the mail service.");
 }
 
-async function request<T>(path: string, init: RequestInit): Promise<T> {
-  let response: Response;
+/** One request deadline, as the fetch signal and the release it needs. */
+interface Deadline {
+  signal: AbortSignal;
+  /** True when the deadline itself ended the call, not a caller's abort. */
+  timedOut(): boolean;
+  /** Releases the timer and the caller-signal listener when the call ends. */
+  done(): void;
+}
+
+/**
+ * Bounds one request in time. Without a deadline a stalled connection never
+ * rejects, so no `ApiError.network` ever lands and the offline fallbacks
+ * never engage (SPEC F9). A caller's own abort still applies at once.
+ */
+function withDeadline(ms: number, signal: AbortSignal | null | undefined): Deadline {
+  const controller = new AbortController();
+  let expired = false;
+  const timer = setTimeout(() => {
+    expired = true;
+    controller.abort();
+  }, ms);
+  const forwardAbort = () => controller.abort();
+  if (signal != null) {
+    if (signal.aborted) {
+      controller.abort();
+    } else {
+      signal.addEventListener("abort", forwardAbort, { once: true });
+    }
+  }
+  return {
+    signal: controller.signal,
+    timedOut: () => expired,
+    done: () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", forwardAbort);
+    },
+  };
+}
+
+async function request<T>(
+  path: string,
+  init: RequestInit,
+  options: { timeoutMs?: number } = {},
+): Promise<T> {
+  const deadline = withDeadline(options.timeoutMs ?? REQUEST_TIMEOUT_MS, init.signal);
   try {
-    response = await fetch(`${readBase()}${path}`, {
+    const response = await fetch(`${readBase()}${path}`, {
       credentials: "same-origin",
       ...init,
+      signal: deadline.signal,
       headers: { accept: "application/json", ...(init.headers ?? {}) },
     });
+
+    if (response.status === 204) {
+      return undefined as T;
+    }
+
+    let payload: unknown = null;
+    const text = await response.text();
+    if (text.length > 0) {
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        payload = null;
+      }
+    }
+
+    if (!response.ok) {
+      const body = payload as { error?: { code?: unknown; message?: unknown } } | null;
+      const code =
+        typeof body?.error?.code === "string" ? body.error.code : `http_${response.status}`;
+      const message =
+        typeof body?.error?.message === "string"
+          ? body.error.message
+          : `The request failed with status ${response.status}.`;
+      const currentGeneration =
+        typeof (body?.error as { currentGeneration?: unknown } | undefined)?.currentGeneration ===
+        "string"
+          ? (body!.error as { currentGeneration: string }).currentGeneration
+          : undefined;
+      const currentRevision =
+        typeof (body?.error as { currentRevision?: unknown } | undefined)?.currentRevision ===
+        "number"
+          ? (body!.error as { currentRevision: number }).currentRevision
+          : undefined;
+      throw new ApiError(response.status, code, message, currentGeneration, currentRevision);
+    }
+
+    return payload as T;
   } catch (error) {
+    if (error instanceof ApiError) {
+      throw error;
+    }
+    if (deadline.timedOut()) {
+      // A stalled connection fails like an unreachable one, so the offline
+      // fallbacks engage instead of the request waiting forever.
+      throw new ApiError(0, "network_error", "The mail service did not answer in time.");
+    }
     if (isAbort(error)) {
       throw error;
     }
     throw new ApiError(0, "network_error", "The mail service cannot be reached.");
+  } finally {
+    deadline.done();
   }
-
-  if (response.status === 204) {
-    return undefined as T;
-  }
-
-  let payload: unknown = null;
-  const text = await response.text();
-  if (text.length > 0) {
-    try {
-      payload = JSON.parse(text);
-    } catch {
-      payload = null;
-    }
-  }
-
-  if (!response.ok) {
-    const body = payload as { error?: { code?: unknown; message?: unknown } } | null;
-    const code =
-      typeof body?.error?.code === "string" ? body.error.code : `http_${response.status}`;
-    const message =
-      typeof body?.error?.message === "string"
-        ? body.error.message
-        : `The request failed with status ${response.status}.`;
-    const currentGeneration =
-      typeof (body?.error as { currentGeneration?: unknown } | undefined)?.currentGeneration ===
-      "string"
-        ? (body!.error as { currentGeneration: string }).currentGeneration
-        : undefined;
-    const currentRevision =
-      typeof (body?.error as { currentRevision?: unknown } | undefined)?.currentRevision ===
-      "number"
-        ? (body!.error as { currentRevision: number }).currentRevision
-        : undefined;
-    throw new ApiError(response.status, code, message, currentGeneration, currentRevision);
-  }
-
-  return payload as T;
 }
 
 /** One authenticated read. */
-export function apiGet<T>(path: string, signal?: AbortSignal): Promise<T> {
-  return request<T>(path, { method: "GET", signal });
+export function apiGet<T>(
+  path: string,
+  signal?: AbortSignal,
+  options?: { timeoutMs?: number },
+): Promise<T> {
+  return request<T>(path, { method: "GET", signal }, options);
 }
 
 /** The URL of one API path, for links the browser navigates by itself. */
@@ -128,25 +194,42 @@ export function apiUrl(path: string): string {
 }
 
 /** One authenticated binary read, as a blob. */
-export async function apiGetBlob(path: string, signal?: AbortSignal): Promise<Blob> {
+export async function apiGetBlob(
+  path: string,
+  signal?: AbortSignal,
+  options?: { timeoutMs?: number },
+): Promise<Blob> {
+  const deadline = withDeadline(options?.timeoutMs ?? TRANSFER_TIMEOUT_MS, signal);
   let response: Response;
   try {
     response = await fetch(apiUrl(path), {
       method: "GET",
       credentials: "same-origin",
       headers: { accept: "*/*" },
-      signal,
+      signal: deadline.signal,
     });
+    if (!response.ok) {
+      throw new ApiError(response.status, `http_${response.status}`, `The download failed with status ${response.status}.`);
+    }
+    const blob = await response.blob();
+    if (deadline.timedOut()) {
+      throw new ApiError(0, "network_error", "The mail service did not answer in time.");
+    }
+    return blob;
   } catch (error) {
+    if (error instanceof ApiError) {
+      throw error;
+    }
+    if (deadline.timedOut()) {
+      throw new ApiError(0, "network_error", "The mail service did not answer in time.");
+    }
     if (isAbort(error)) {
       throw error;
     }
     throw new ApiError(0, "network_error", "The mail service cannot be reached.");
+  } finally {
+    deadline.done();
   }
-  if (!response.ok) {
-    throw new ApiError(response.status, `http_${response.status}`, `The download failed with status ${response.status}.`);
-  }
-  return response.blob();
 }
 
 /** One authenticated mutation or ceremony step. */
@@ -209,9 +292,13 @@ export function apiPostBytes<T>(
   contentType: string,
   headers?: Record<string, string>,
 ): Promise<T> {
-  return request<T>(path, {
-    method: "POST",
-    headers: { "content-type": contentType, ...(headers ?? {}) },
-    body: bytes,
-  });
+  return request<T>(
+    path,
+    {
+      method: "POST",
+      headers: { "content-type": contentType, ...(headers ?? {}) },
+      body: bytes,
+    },
+    { timeoutMs: TRANSFER_TIMEOUT_MS },
+  );
 }

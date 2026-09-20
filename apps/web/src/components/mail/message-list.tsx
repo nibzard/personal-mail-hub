@@ -62,7 +62,7 @@ export function MessageListPane({
     <section
       id="message-list"
       aria-label={`${title} message list`}
-      aria-busy={state.phase === "loading" || undefined}
+      aria-busy={state.phase === "loading" || state.refreshing || undefined}
       className={cn("flex min-h-0 flex-col bg-background", className)}
     >
       <header className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
@@ -81,12 +81,12 @@ export function MessageListPane({
           size="icon-sm"
           className="ms-auto max-md:size-11"
           onClick={onReload}
-          disabled={state.phase === "loading"}
+          disabled={state.phase === "loading" || state.refreshing}
           aria-label="Refresh this view"
         >
           <RotateCw
             aria-hidden="true"
-            className={cn("size-4", state.loadingMore && "animate-spin")}
+            className={cn("size-4", (state.loadingMore || state.refreshing) && "animate-spin")}
           />
         </Button>
       </header>
