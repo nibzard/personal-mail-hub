@@ -19,6 +19,7 @@ import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { AccountSettingsCard } from "./account-settings";
+import { AddAccountCard } from "./add-account-card";
 
 /*
  * The settings screen (SPEC F10): density, shortcuts, the clean-view default,
@@ -220,6 +221,11 @@ export function SettingsScreen({
                   ))}
                 </ul>
               )}
+              <AddAccountCard
+                recoveryGeneration={recoveryGeneration}
+                onAccountsChanged={onAccountsChanged}
+                onFoldersChanged={onFoldersChanged}
+              />
             </section>
 
             <Separator />
