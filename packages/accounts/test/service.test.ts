@@ -284,6 +284,59 @@ suite("account and identity management", () => {
     expect(again.folders).toEqual(result.folders);
   });
 
+  it("maps a re-spelled inbox onto the stored folder row", async () => {
+    const account = await service.createAccount(readyContext, {
+      label: "Respelled",
+      color: "#161616",
+      username: "respell@example.com",
+      password: "respell-secret",
+    });
+    const first = await service.importFolders(readyContext, account.id, [{ name: "INBOX" }]);
+    expect(first.created.map((folder) => folder.name)).toEqual(["INBOX"]);
+    expect(first.assignedRoles).toEqual({ inbox: "INBOX" });
+
+    // RFC 3501 lets the server spell the inbox without case between runs.
+    // The second import maps onto the stored row: no duplicate folder for
+    // the one mailbox, no spurious creation, and no role conflict.
+    const second = await service.importFolders(readyContext, account.id, [{ name: "Inbox" }]);
+    expect(second.created).toEqual([]);
+    expect(second.assignedRoles).toEqual({});
+    expect(second.conflicts).toEqual([]);
+    const folders = (await service.listFolders(account.id)).folders;
+    expect(folders.map((folder) => folder.name)).toEqual(["INBOX"]);
+    expect(folders.filter((folder) => folder.role === "inbox")).toHaveLength(1);
+
+    // Two spellings in one run name the same mailbox twice, which rejects.
+    await expect(
+      rejection(
+        service.importFolders(readyContext, account.id, [
+          { name: "INBOX" },
+          { name: "Inbox" },
+        ]),
+      ),
+    ).resolves.toMatchObject({ code: "invalid_request" });
+  });
+
+  it("reports the assigned role on folders the same import created", async () => {
+    const account = await service.createAccount(readyContext, {
+      label: "Fresh roles",
+      color: "#171717",
+      username: "fresh-roles@example.com",
+      password: "fresh-roles-secret",
+    });
+
+    // The INSERT snapshot predates the role loop, but `created` must report
+    // the roles this import assigned, the way `folders` does.
+    const result = await service.importFolders(readyContext, account.id, [
+      { name: "INBOX" },
+      { name: "Sent", specialUse: ["\\Sent"] },
+    ]);
+    const createdRoles = new Map(result.created.map((folder) => [folder.name, folder.role]));
+    expect(createdRoles.get("INBOX")).toBe("inbox");
+    expect(createdRoles.get("Sent")).toBe("sent");
+    expect(result.folders.find((folder) => folder.name === "Sent")!.role).toBe("sent");
+  });
+
   it("leaves ambiguous hints unset and reports conflicts with existing choices", async () => {
     const account = (await service.listAccounts()).find((row) => row.label === "Primary")!;
 

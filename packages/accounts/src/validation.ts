@@ -31,8 +31,11 @@ const FOLDERS_MAX = 1024;
 const COLOR_PATTERN = /^#[0-9a-f]{6}$/;
 const HOSTNAME_PATTERN = /^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(?:\.(?!-)[a-z0-9-]{1,63}(?<!-))*$/;
 const IPV4_PATTERN = /^(?:\d{1,3}\.){3}\d{1,3}$/;
+// The local part is one dot-atom (RFC 5321): dots only separate atoms, so a
+// leading, trailing, or doubled dot never passes. The lookahead keeps the
+// 64-character ceiling on the whole local part.
 const EMAIL_PATTERN =
-  /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+  /^(?=.{1,64}@)[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
 const CONTROL_PATTERN = /[\u0000-\u001f\u007f-\u009f]/;
 
 /** A discovered folder after normalization, with the roles its hints name. */
@@ -166,15 +169,29 @@ function normalizeIdentityName(input: string | null | undefined): string | null 
   if (trimmed === "") {
     return null;
   }
-  if (trimmed.length > NAME_MAX) {
-    throw new AccountError("invalid_request", `An identity name must hold at most ${NAME_MAX} characters.`);
+  if (trimmed.length > NAME_MAX || CONTROL_PATTERN.test(trimmed)) {
+    throw new AccountError(
+      "invalid_request",
+      `An identity name must hold at most ${NAME_MAX} characters without controls.`,
+    );
   }
   return trimmed;
 }
 
 /**
+ * The key one folder name identifies a folder by. RFC 3501 reserves the
+ * inbox name without case, so every spelling of it names the one mailbox;
+ * every other folder name identifies itself exactly.
+ */
+export function folderKey(name: string): string {
+  return name.toLowerCase() === INBOX_NAME ? INBOX_NAME : name;
+}
+
+/**
  * Normalize one discovery run. Duplicate names reject: a server reports each
- * folder path once, so a repeat means the client data is wrong.
+ * folder path once, so a repeat means the client data is wrong. The reserved
+ * inbox name compares without case (RFC 3501), so two spellings of it count
+ * as the same folder.
  */
 export function normalizeDiscoveredFolders(input: DiscoveredFolder[]): NormalizedFolder[] {
   if (input.length > FOLDERS_MAX) {
@@ -184,13 +201,13 @@ export function normalizeDiscoveredFolders(input: DiscoveredFolder[]): Normalize
   const folders: NormalizedFolder[] = [];
   for (const item of input) {
     const name = normalizeFolderName(item.name);
-    if (seen.has(name)) {
+    if (seen.has(folderKey(name))) {
       throw new AccountError(
         "invalid_request",
         `The folder ${name} appears more than once in the discovery result.`,
       );
     }
-    seen.add(name);
+    seen.add(folderKey(name));
     folders.push({ name, roles: rolesOf(item, name) });
   }
   return folders;

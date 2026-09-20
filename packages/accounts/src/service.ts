@@ -15,6 +15,7 @@ import type { MailHubTransaction, MutationGate } from "@mail-hub/recovery";
 import { AccountError } from "./errors.ts";
 import type { CredentialCipher } from "./crypto.ts";
 import {
+  folderKey,
   normalizeColor,
   normalizeDiscoveredFolders,
   normalizeIdentities,
@@ -319,7 +320,9 @@ export class AccountService {
    * A folder that hints at several roles keeps the first of them, because one
    * row holds one role. Ambiguous hints leave the role unset for a manual
    * choice, and a hint that disagrees with an existing assignment is
-   * reported, not applied (SPEC F1).
+   * reported, not applied (SPEC F1). The reserved inbox name compares
+   * without case (RFC 3501): a re-spelled inbox maps onto the stored row,
+   * because every spelling names the one mailbox.
    */
   async importFolders(
     context: MutationContext,
@@ -337,15 +340,31 @@ export class AccountService {
       // still-empty role and hit the partial unique index with a raw 500.
       await lockAccountRow(tx, accountId);
 
+      // The stored rows are read before the insert, so a discovery run that
+      // spells the inbox differently than it was stored — "Inbox" after
+      // "INBOX" — maps onto the row the account already holds instead of
+      // inserting a second folder for the one mailbox.
+      const stored = await this.selectFolders(tx, accountId);
+      const storedByKey = new Map(stored.map((folder) => [folderKey(folder.name), folder]));
+      const fresh: { accountId: string; name: string }[] = [];
+      for (const folder of normalized) {
+        const present = storedByKey.get(folderKey(folder.name));
+        if (present === undefined) {
+          fresh.push({ accountId, name: folder.name });
+        } else {
+          folder.name = present.name;
+        }
+      }
+
       // A connection test may report zero folders. An empty values() list is
       // a database error the client would see as a 500, so an empty run
       // imports nothing instead.
-      const created =
-        normalized.length === 0
+      const inserted =
+        fresh.length === 0
           ? []
           : await tx
               .insert(folders)
-              .values(normalized.map((folder) => ({ accountId, name: folder.name })))
+              .values(fresh)
               .onConflictDoNothing()
               .returning();
 
@@ -392,13 +411,17 @@ export class AccountService {
 
       const finalFolders = await this.selectFolders(tx, accountId);
       await recordAccountEvent(tx, "account.folders_imported", accountId, {
-        created: created.length,
+        created: inserted.length,
         assignedRoles,
         ambiguousRoles,
         conflicts,
       });
+      // `created` reads the final rows: the snapshot the INSERT returned
+      // predates the role loop, so a folder this import just role-assigned
+      // would report its role as null while `folders` reports it filled.
+      const insertedIds = new Set(inserted.map((row) => row.id));
       return {
-        created: created.map(toFolderSummary),
+        created: finalFolders.filter((folder) => insertedIds.has(folder.id)).map(toFolderSummary),
         assignedRoles,
         ambiguousRoles,
         conflicts,

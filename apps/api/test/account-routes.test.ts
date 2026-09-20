@@ -370,6 +370,34 @@ describe("the account routes", () => {
     expect(badColor.statusCode).toBe(400);
   });
 
+  it("rejects control characters in identity names at the boundary", async () => {
+    const service = fakeService();
+    const app = appWith(service);
+
+    // The schema rejects the name before the service runs, so the control
+    // never reaches a stored identity and its outbound From header.
+    const created = await app.inject({
+      method: "POST",
+      url: "/accounts",
+      headers: withGeneration,
+      payload: {
+        ...validCreateBody(),
+        identities: [{ address: "user@example.com", name: "Bad\u0000Name", isDefault: true }],
+      },
+    });
+    expect(created.statusCode).toBe(400);
+    expect(service.calls.createdLabels).toEqual([]);
+
+    const replaced = await app.inject({
+      method: "PUT",
+      url: `/accounts/${ACCOUNT_ID}/identities`,
+      headers: withGeneration,
+      payload: { identities: [{ address: "user@example.com", name: "Esc\u001bape", isDefault: true }] },
+    });
+    expect(replaced.statusCode).toBe(400);
+    expect(service.calls.identityIds).toEqual([]);
+  });
+
   it("changes the password with 204 and forwards no body", async () => {
     const service = fakeService();
     const app = appWith(service);

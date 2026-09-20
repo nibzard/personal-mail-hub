@@ -52,12 +52,15 @@ export interface AccountRoutesOptions {
 
 const UUID_PATTERN = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
 
+/** Rejects the control characters a display name must never carry. */
+const NO_CONTROL_PATTERN = "^[^\\u0000-\\u001f\\u007f-\\u009f]*$";
+
 const identitySchema = {
   type: "object",
   required: ["address", "isDefault"],
   properties: {
     address: { type: "string", minLength: 3, maxLength: 320 },
-    name: { type: ["string", "null"], maxLength: 128 },
+    name: { type: ["string", "null"], maxLength: 128, pattern: NO_CONTROL_PATTERN },
     isDefault: { type: "boolean" },
   },
   additionalProperties: false,
