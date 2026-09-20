@@ -395,12 +395,17 @@ export function DraftEditor({
   const waitingUploads = pendingUploads;
   const invalidInFields = fields === null ? [] : invalidEntries(fields);
   const locked = draft?.lockedBySend != null;
+  // A queued send freezes the acknowledged revision and locks the draft. It
+  // waits while edits sit parked on a conflict, an error, or offline, because
+  // it would leave without them and they could never land after it.
   const canSend =
     draft !== null &&
     fields !== null &&
     !locked &&
     !sending &&
     autosaveState !== "conflict" &&
+    autosaveState !== "error" &&
+    autosaveState !== "offline" &&
     autosaveState !== "saving" &&
     recipientCount(recipientsOf(fields)) > 0 &&
     invalidInFields.length === 0 &&
@@ -426,8 +431,10 @@ export function DraftEditor({
       if (autosaver.pendingPatch !== null) {
         await autosaver.flush();
       }
-      if (autosaver.state === "conflict") {
-        setSendNote("Resolve the conflicting copy before sending.");
+      // The queued send freezes the acknowledged revision and locks the
+      // draft, so it must not leave while edits sit unsaved in the autosaver.
+      if (autosaver.pendingPatch !== null) {
+        setSendNote(unsavedEditsNote(autosaver.state));
         return;
       }
       // A deliberate send is new work: its own key, never a reused one.
@@ -970,6 +977,24 @@ function identityLabel(draft: DraftView, account: AccountSummary | null): string
   return name === null || name.length === 0
     ? draft.identity.address
     : `${name} <${draft.identity.address}>`;
+}
+
+/**
+ * Why a send waits while the autosaver still holds edits. The queued send
+ * freezes the acknowledged revision and locks the draft, so edits that never
+ * reached the server could not land after it (SPEC F7).
+ */
+function unsavedEditsNote(state: AutosaveState): string {
+  switch (state) {
+    case "conflict":
+      return "Resolve the conflicting copy before sending.";
+    case "offline":
+      return "Offline. The draft edits wait on this device. Reconnect before sending.";
+    case "error":
+      return "The draft could not be saved. Try saving again before sending.";
+    default:
+      return "The draft edits are not saved yet. Try again.";
+  }
 }
 
 /** The invalid addresses across all three recipient fields. */

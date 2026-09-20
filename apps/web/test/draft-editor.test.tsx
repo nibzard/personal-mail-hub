@@ -5,14 +5,19 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { AccountSummary, DraftView } from "@mail-hub/contracts";
 
 /*
- * The editor's dispose path: an edit inside the two-second debounce window
- * still belongs to the draft, so closing the editor or switching drafts
- * saves it instead of dropping it.
+ * The editor's dispose path and send gate: an edit inside the two-second
+ * debounce window still belongs to the draft, so closing the editor or
+ * switching drafts saves it instead of dropping it. And a send whose flush
+ * first fails never leaves with the stale revision the server acknowledges.
  */
 
 const harness = vi.hoisted(() => ({
   saves: [] as Array<{ draftId: string; baseRevision: number; patch: unknown }>,
   draft: null as DraftView | null,
+  /** When set, every save attempt ends in this outcome instead of saving. */
+  saveOutcome: null as { state: "offline" } | { state: "error"; message: string } | null,
+  /** Every send request the editor issued. */
+  sendRequests: [] as Array<{ draftId: string; baseRevision: number; idempotencyKey: string }>,
 }));
 
 vi.mock("../src/mail/compose-data.ts", () => ({
@@ -21,6 +26,9 @@ vi.mock("../src/mail/compose-data.ts", () => ({
     () =>
     async (draftId: string, baseRevision: number, patch: unknown) => {
       harness.saves.push({ draftId, baseRevision, patch });
+      if (harness.saveOutcome !== null) {
+        return harness.saveOutcome;
+      }
       return { state: "saved", revision: baseRevision + 1 };
     },
   listDraftAttachments: async () => [],
@@ -43,7 +51,14 @@ vi.mock("../src/mail/compose-data.ts", () => ({
   invalidAddresses: () => [],
   recipientCount: (recipients: { to: unknown[]; cc?: unknown[]; bcc?: unknown[] }) =>
     recipients.to.length + (recipients.cc?.length ?? 0) + (recipients.bcc?.length ?? 0),
-  requestDraftSend: async () => ({ state: "rejected", message: "" }),
+  requestDraftSend: async (
+    draftId: string,
+    baseRevision: number,
+    idempotencyKey: string,
+  ) => {
+    harness.sendRequests.push({ draftId, baseRevision, idempotencyKey });
+    return { state: "rejected", message: "" };
+  },
 }));
 
 vi.mock("../src/offline/sync-context.tsx", () => ({
@@ -138,6 +153,8 @@ afterEach(() => {
   container = null;
   harness.saves.length = 0;
   harness.draft = null;
+  harness.saveOutcome = null;
+  harness.sendRequests.length = 0;
 });
 
 function mountEditor(draftId: string) {
@@ -170,6 +187,18 @@ async function editBody(text: string) {
     set.call(editor!, text);
     editor!.dispatchEvent(new Event("input", { bubbles: true }));
   });
+}
+
+function buttonNamed(label: string): HTMLButtonElement {
+  const found = [...document.querySelectorAll("button")].filter(
+    (button) => button.textContent?.trim() === label,
+  );
+  expect(found).toHaveLength(1);
+  return found[0]!;
+}
+
+function sendNote(): string | null {
+  return document.querySelector<HTMLElement>('[data-testid="send-note"]')?.textContent ?? null;
 }
 
 describe("the draft editor's dispose path", () => {
@@ -219,5 +248,59 @@ describe("the draft editor's dispose path", () => {
     const forFirst = harness.saves.filter((save) => save.draftId === "d-1");
     expect(forFirst).toHaveLength(1);
     expect(forFirst[0]!.patch).toEqual({ markdown: "edit before the switch" });
+  });
+});
+
+describe("the draft editor's send gate", () => {
+  it("holds the send back when the flush before it fails", async () => {
+    harness.draft = draftOf("d-1");
+    harness.saveOutcome = { state: "error", message: "The draft could not be saved." };
+    mountEditor("d-1");
+    await act(async () => {});
+    await editBody("edit the save cannot land");
+
+    await act(async () => {
+      buttonNamed("Send").click();
+    });
+
+    // The flush ran and failed, so the edit stays pending. The send never
+    // leaves with revision 4, the last one the server acknowledged.
+    expect(harness.saves).toHaveLength(1);
+    expect(harness.sendRequests).toEqual([]);
+    expect(sendNote()).toBe("The draft could not be saved. Try saving again before sending.");
+  });
+
+  it("holds the send back when the flush parks the edit offline", async () => {
+    harness.draft = draftOf("d-1");
+    harness.saveOutcome = { state: "offline" };
+    mountEditor("d-1");
+    await act(async () => {});
+    await editBody("edit waiting on this device");
+
+    await act(async () => {
+      buttonNamed("Send").click();
+    });
+
+    expect(harness.sendRequests).toEqual([]);
+    expect(sendNote()).toBe(
+      "Offline. The draft edits wait on this device. Reconnect before sending.",
+    );
+  });
+
+  it("keeps the send control off while a save sits on an error", async () => {
+    harness.draft = draftOf("d-1");
+    harness.saveOutcome = { state: "error", message: "The draft could not be saved." };
+    mountEditor("d-1");
+    await act(async () => {});
+    await editBody("edit the save cannot land");
+
+    // Save now, so the error surfaces before any send attempt.
+    await act(async () => {
+      buttonNamed("Save now").click();
+    });
+    expect(harness.saves).toHaveLength(1);
+
+    expect(buttonNamed("Send").disabled).toBe(true);
+    expect(harness.sendRequests).toEqual([]);
   });
 });
