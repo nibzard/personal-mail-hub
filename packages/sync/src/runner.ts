@@ -40,6 +40,17 @@ export interface SyncRunnerOptions {
   bodiesPerCycle?: number;
   /** Thread jobs one cycle resolves. */
   threadsPerCycle?: number;
+  /**
+   * Where contained failures land. A cycle counts a failing folder or body
+   * job and moves on; without a logger the diagnostic behind the counter is
+   * lost, so the worker passes one.
+   */
+  logger?: SyncLogger;
+}
+
+/** The logging surface the runner needs. */
+export interface SyncLogger {
+  warn(message: string): void;
 }
 
 /** What one cycle changed. */
@@ -78,6 +89,7 @@ export class SyncRunner {
   private readonly batchesPerFolder: number;
   private readonly bodiesPerCycle: number;
   private readonly threadsPerCycle: number;
+  private readonly logger: SyncLogger | null;
 
   constructor(
     private readonly db: MailHubDatabase,
@@ -91,6 +103,7 @@ export class SyncRunner {
     this.batchesPerFolder = positiveInteger(options.batchesPerFolder, DEFAULT_BATCHES_PER_FOLDER, "batches per folder");
     this.bodiesPerCycle = positiveInteger(options.bodiesPerCycle, DEFAULT_BODIES_PER_CYCLE, "bodies per cycle");
     this.threadsPerCycle = positiveInteger(options.threadsPerCycle, DEFAULT_THREADS_PER_CYCLE, "threads per cycle");
+    this.logger = options.logger ?? null;
   }
 
   /**
@@ -135,10 +148,14 @@ export class SyncRunner {
       }
       try {
         await this.synchronizeFolder(session, accountId, folder, control, summary);
-      } catch {
+      } catch (cause) {
         // One failing folder never stops the folders that follow, the body
-        // jobs, or the status event; the next cycle retries it.
+        // jobs, or the status event; the next cycle retries it. The count
+        // alone cannot say why, so the diagnostic goes to the logger.
         summary.folderErrors += 1;
+        this.logger?.warn(
+          `Sync folder ${folder.name} (${folder.id}) of account ${accountId} failed and was contained: ${failureText(cause)}`,
+        );
       }
       await yieldControl();
     }
@@ -153,10 +170,14 @@ export class SyncRunner {
         if (outcome.state === "fetched") {
           summary.bodiesFetched += 1;
         }
-      } catch {
+      } catch (cause) {
         // One stale job — its occurrence moved or expired after the listing —
-        // is skipped, not allowed to abort the account cycle.
+        // is skipped, not allowed to abort the account cycle. The count alone
+        // cannot say which job or why, so the diagnostic goes to the logger.
         summary.bodyErrors += 1;
+        this.logger?.warn(
+          `Body job ${job.messageId} (uid ${job.uid} of ${job.folderName}) failed and was contained: ${failureText(cause)}`,
+        );
       }
       await yieldControl();
     }
@@ -344,6 +365,14 @@ function needsBackfill(folder: Folder): boolean {
 
 function aborted(control: CycleControl): boolean {
   return control.signal?.aborted === true;
+}
+
+/** One failure line without credentials or message content. */
+function failureText(cause: unknown): string {
+  if (cause instanceof Error) {
+    return cause.message.length > 0 ? cause.message : cause.name;
+  }
+  return String(cause);
 }
 
 /** One turn of the event loop between remote batches. */

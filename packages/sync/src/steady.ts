@@ -5,6 +5,7 @@ import {
   type Folder,
   type MailHubDatabase,
 } from "@mail-hub/database";
+import { markThreadJobsDirty } from "@mail-hub/ingestion";
 import { SyncError } from "./errors.ts";
 import type { MailboxSession } from "./mailbox.ts";
 import {
@@ -41,6 +42,14 @@ export const OTHER_FOLDER_POLL_INTERVAL_MS = 15 * 60_000;
 
 /** Flags move in bounded batches, like header windows. */
 export const DEFAULT_FLAG_BATCH = 200;
+
+/**
+ * The most occurrence identifiers one statement binds. PostgreSQL accepts at
+ * most 65535 parameters per statement, so an expunge pass over a whole
+ * folder — which can hold every message an account ever kept — updates in
+ * slices of this size.
+ */
+export const OCCURRENCE_SLICE = 5_000;
 
 /** Arrivals import in bounded batches, like header windows (SPEC F2). */
 export const DEFAULT_ARRIVAL_BATCH = 200;
@@ -252,13 +261,25 @@ export class SteadyStateService {
         }
         let batchImported = 0;
         let batchSkipped = 0;
+        const identifiers: string[] = [];
         for (const record of records) {
-          const wasImported = await importHeaderRecord(tx, accountId, folder.id, generation, record);
-          if (wasImported) {
+          const outcome = await importHeaderRecord(tx, accountId, folder.id, generation, record);
+          if (outcome.imported) {
             batchImported += 1;
+            if (outcome.identifier !== null) {
+              identifiers.push(outcome.identifier);
+            }
           } else {
             batchSkipped += 1;
           }
+        }
+        // Each new row is one thread-reconciliation job (`thread_dirty`
+        // defaults to true), and a reused `Message-ID` changes the holder set
+        // of that identifier: rows already referencing it must re-decide,
+        // which can remove an unsafe link (SPEC F2). One call marks the whole
+        // window and commits with the imported rows.
+        if (identifiers.length > 0) {
+          await markThreadJobsDirty(tx, accountId, { identifiers });
         }
         // The checkpoint is monotonic: only a higher value moves it.
         const covered = index === windows.length - 1 ? bound : window[window.length - 1]!;
@@ -285,8 +306,11 @@ export class SteadyStateService {
 
   /**
    * Compare the server's UID set with the active occurrences of this
-   * generation and mark absent ones expunged. Originals and message rows stay
-   * (SPEC section 8: expunged mail remains readable locally).
+   * generation and mark absent ones expunged. The occurrences are read in
+   * pages of the flag batch size — a folder can hold every message an account
+   * ever kept — and the marks are written in slices that stay inside the
+   * statement parameter bound. Originals and message rows stay (SPEC
+   * section 8: expunged mail remains readable locally).
    */
   private async markExpunges(
     session: MailboxSession,
@@ -297,23 +321,38 @@ export class SteadyStateService {
     const bound = Math.max(0, (await session.revalidate()).uidNext - 1);
     const present = new Set(bound >= 1 ? await session.searchUids(1, bound) : []);
 
-    const active = await this.db
-      .select({ id: messageOccurrences.id, uid: messageOccurrences.uid })
-      .from(messageOccurrences)
-      .where(
-        and(
-          eq(messageOccurrences.accountId, accountId),
-          eq(messageOccurrences.folderId, folderId),
-          eq(messageOccurrences.uidvalidity, generation),
-          isNull(messageOccurrences.expungedAt),
-          isNull(messageOccurrences.invalidatedAt),
-        ),
-      );
     // A UID above the snapshot bound is an arrival this snapshot never judged:
     // the search window stops at the bound, so a concurrent import above it
     // must not read as an expunge (SPEC F2).
-    const absent = active.filter((row) => row.uid <= bound && !present.has(row.uid));
-    if (absent.length === 0) {
+    const absentIds: string[] = [];
+    let uidAfter = 0;
+    for (;;) {
+      const page = await this.db
+        .select({ id: messageOccurrences.id, uid: messageOccurrences.uid })
+        .from(messageOccurrences)
+        .where(
+          and(
+            eq(messageOccurrences.accountId, accountId),
+            eq(messageOccurrences.folderId, folderId),
+            eq(messageOccurrences.uidvalidity, generation),
+            isNull(messageOccurrences.expungedAt),
+            isNull(messageOccurrences.invalidatedAt),
+            gt(messageOccurrences.uid, uidAfter),
+          ),
+        )
+        .orderBy(messageOccurrences.uid)
+        .limit(this.flagBatch);
+      if (page.length === 0) {
+        break;
+      }
+      uidAfter = page[page.length - 1]!.uid;
+      for (const row of page) {
+        if (row.uid <= bound && !present.has(row.uid)) {
+          absentIds.push(row.id);
+        }
+      }
+    }
+    if (absentIds.length === 0) {
       return { state: "ok", count: 0 };
     }
 
@@ -326,20 +365,22 @@ export class SteadyStateService {
       if (locked.uidvalidity !== generation) {
         return null;
       }
-      const updated = await tx
-        .update(messageOccurrences)
-        .set({ expungedAt: new Date() })
-        .where(
-          and(
-            inArray(
-              messageOccurrences.id,
-              absent.map((row) => row.id),
+      let updated = 0;
+      for (let offset = 0; offset < absentIds.length; offset += OCCURRENCE_SLICE) {
+        const slice = absentIds.slice(offset, offset + OCCURRENCE_SLICE);
+        const rows = await tx
+          .update(messageOccurrences)
+          .set({ expungedAt: new Date() })
+          .where(
+            and(
+              inArray(messageOccurrences.id, slice),
+              isNull(messageOccurrences.expungedAt),
             ),
-            isNull(messageOccurrences.expungedAt),
-          ),
-        )
-        .returning({ id: messageOccurrences.id });
-      return updated.length;
+          )
+          .returning({ id: messageOccurrences.id });
+        updated += rows.length;
+      }
+      return updated;
     });
     if (marked === null) {
       return { state: "generation_changed", recorded: generation, observed: generation };
@@ -424,20 +465,30 @@ export class SteadyStateService {
         if (locked.uidvalidity !== generation) {
           return null;
         }
-        for (const change of changes) {
-          await tx
-            .update(messageOccurrences)
-            .set({
-              unread: change.unread,
-              flagged: change.flagged,
-              // Increment in the statement itself, so a revision another writer
-              // committed between the read and this lock still counts.
-              revision: sql`${messageOccurrences.revision} + 1`,
-              observedAt: new Date(),
-            })
-            .where(eq(messageOccurrences.id, change.occurrenceId));
-        }
-        return changes.length;
+        // One statement carries the whole batch. An occurrence the expunge
+        // pass marked between the page read and this lock is left untouched:
+        // its flags are history now, and a write would resurrect a revision
+        // bump on a row nothing lists anymore.
+        const values = sql.join(
+          changes.map(
+            (change) =>
+              sql`(${change.occurrenceId}::uuid, ${change.unread}::boolean, ${change.flagged}::boolean)`,
+          ),
+          sql`, `,
+        );
+        const result = await tx.execute(sql`
+          update message_occurrences as o
+          set unread = v.unread,
+              flagged = v.flagged,
+              revision = o.revision + 1,
+              observed_at = now()
+          from (values ${values}) as v(id, unread, flagged)
+          where o.id = v.id
+            and o.expunged_at is null
+            and o.invalidated_at is null
+          returning o.id
+        `);
+        return result.rowCount ?? 0;
       });
       if (applied === null) {
         return { state: "generation_changed", recorded: generation, observed: generation };

@@ -236,6 +236,12 @@ export const messages = pgTable(
     hasAttachments: boolean("has_attachments").notNull().default(false),
     sizeBytes: bigint("size_bytes", { mode: "number" }),
     fetchedBody: boolean("fetched_body").notNull().default(false),
+    /**
+     * When the body fetch last failed for a deterministic reason, for example
+     * a stored original that will not parse. A failed row stops qualifying as
+     * a body job; the matching event carries the reason.
+     */
+    bodyFailedAt: timestamp("body_failed_at", { withTimezone: true }),
     /** Denormalized latest Jev answer. */
     classHint: text("class_hint"),
     asksAction: boolean("asks_action"),
@@ -620,8 +626,10 @@ export const events = pgTable(
   },
   (t) => [
     // Synchronization reads the newest event of one type for one folder every
-    // cycle to decide what is due (SPEC F2 steady state).
-    index("events_type_entity_id_idx").on(t.type, t.entityId),
+    // cycle to decide what is due (SPEC F2 steady state). The index covers the
+    // aggregated `at` column too, so the due-ness check reads the index alone
+    // instead of a heap visit per folder per cycle.
+    index("events_type_entity_id_at_idx").on(t.type, t.entityId, sql`${t.at} desc`),
   ],
 );
 

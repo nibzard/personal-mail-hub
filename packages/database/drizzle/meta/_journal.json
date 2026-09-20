@@ -57,6 +57,13 @@
       "when": 1789894588383,
       "tag": "0007_sparkling_clint_barton",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1789897785854,
+      "tag": "0008_luxuriant_smasher",
+      "breakpoints": true
     }
   ]
 }

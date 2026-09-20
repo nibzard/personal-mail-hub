@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm";
 import { folders, type Folder, type MailHubDatabase } from "@mail-hub/database";
+import { markThreadJobsDirty } from "@mail-hub/ingestion";
 import type { MailHubTransaction } from "@mail-hub/recovery";
 import { SyncError } from "./errors.ts";
 import type { MailboxSession, MailboxState } from "./mailbox.ts";
@@ -201,19 +202,29 @@ export class BackfillService {
 
       let imported = 0;
       let skipped = 0;
+      const identifiers: string[] = [];
       for (const record of records) {
-        const wasImported = await importHeaderRecord(
+        const outcome = await importHeaderRecord(
           tx,
           accountId,
           folderId,
           mailbox.uidValidity,
           record,
         );
-        if (wasImported) {
+        if (outcome.imported) {
           imported += 1;
+          if (outcome.identifier !== null) {
+            identifiers.push(outcome.identifier);
+          }
         } else {
           skipped += 1;
         }
+      }
+      // One marking call covers the whole window: each new row is its own
+      // thread job, and a reused `Message-ID` changes a holder set. The marks
+      // commit with the rows (SPEC F2).
+      if (identifiers.length > 0) {
+        await markThreadJobsDirty(tx, accountId, { identifiers });
       }
 
       // The boundary moves below the scanned window, monotonically, in the

@@ -111,6 +111,8 @@ export interface ThreadReconciliationSummary {
   reassigned: number;
   /** Dirty rows still waiting after this pass. */
   remaining: number;
+  /** Thread rows deleted because nothing references them anymore. */
+  threadsPruned: number;
 }
 
 /** What resolving one row did. */
@@ -184,6 +186,7 @@ export class ThreadService {
       threadsCreated: 0,
       reassigned: 0,
       remaining: 0,
+      threadsPruned: 0,
     };
     for (const target of dirty) {
       const outcome = await this.reconcileRow(accountId, target.id);
@@ -206,11 +209,38 @@ export class ThreadService {
       }
     }
 
+    summary.threadsPruned = await this.pruneDetachedThreads(accountId);
     summary.remaining = await this.pendingCount(accountId);
-    if (summary.examined > 0) {
+    if (summary.examined > 0 || summary.threadsPruned > 0) {
       await recordAccountEvent(this.db, accountId, "sync.thread_reconciliation", { ...summary });
     }
     return summary;
+  }
+
+  /**
+   * Delete thread rows nothing references anymore. A row that loses its last
+   * message — every member moved to another thread, or a detached row started
+   * a fresh one — stays behind otherwise, because the drafts and snapshots of
+   * SPEC section 8 may still point at the old thread when the link moves. A
+   * referenced thread is never touched; the pass is bounded so one account's
+   * history cannot hold the cycle.
+   */
+  async pruneDetachedThreads(accountId: string, limit = 500): Promise<number> {
+    requireUuid("account id", accountId);
+    const result = await this.db.execute(sql`
+      with doomed as (
+        select t.id from threads t
+        where t.account_id = ${accountId}
+          and not exists (select 1 from messages m where m.thread_id = t.id)
+          and not exists (select 1 from drafts d where d.thread_id = t.id)
+          and not exists (select 1 from outbound_messages o where o.thread_id = t.id)
+        limit ${limit}
+      )
+      delete from threads t
+      where t.id in (select id from doomed)
+      returning t.id
+    `);
+    return result.rowCount ?? 0;
   }
 
   /**

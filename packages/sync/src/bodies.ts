@@ -8,7 +8,7 @@ import {
   type MailHubDatabase,
   type MessageOccurrence,
 } from "@mail-hub/database";
-import { IngestionService, MAX_MESSAGE_BYTES } from "@mail-hub/ingestion";
+import { IngestionError, MAX_MESSAGE_BYTES, type IngestResult, type StagedOriginal } from "@mail-hub/ingestion";
 import { SyncError } from "./errors.ts";
 import type { MailboxSession } from "./mailbox.ts";
 
@@ -22,8 +22,17 @@ import type { MailboxSession } from "./mailbox.ts";
  * into durable storage, confirm the folder generation held, then parse and
  * apply what was stored. An original above the maximum message size never
  * becomes a body job — header import already skipped it with an event — and
- * a size that drifted past the bound is skipped the same way here.
+ * a size that drifted past the bound is skipped the same way here. A stream
+ * that itself crosses the bound is routed to the same skip, and an original
+ * that will not parse lands in a bounded failed state instead of retrying
+ * every cycle.
  */
+
+/** The ingestion surface the body fetch needs; tests stub exactly this. */
+export interface BodyIngestion {
+  stageOriginal(input: { messageId: string; source: AsyncIterable<Uint8Array>; expectedSize: number | null }): Promise<StagedOriginal>;
+  applyStagedOriginal(input: { accountId: string; messageId: string; staged: StagedOriginal }): Promise<IngestResult>;
+}
 
 /** One durable body job: a message and one active occurrence to fetch it by. */
 export interface PendingBody {
@@ -53,6 +62,11 @@ export type BodyFetchOutcome =
       messageId: string;
       sizeBytes: number;
     }
+  | {
+      /** The stored original will not parse; the row carries a bounded failure. */
+      state: "failed";
+      messageId: string;
+    }
   | { state: "generation_changed"; messageId: string; recorded: number; observed: number };
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -60,7 +74,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 export class BodyFetchService {
   constructor(
     private readonly db: MailHubDatabase,
-    private readonly ingestion: IngestionService,
+    private readonly ingestion: BodyIngestion,
   ) {}
 
   /**
@@ -205,11 +219,26 @@ export class BodyFetchService {
       await this.skipOversized(accountId, target.message.id, download.expectedSize);
       return { state: "skipped_oversized", messageId: pending.messageId, sizeBytes: download.expectedSize };
     }
-    const staged = await this.ingestion.stageOriginal({
-      messageId: target.message.id,
-      source: download.chunks,
-      expectedSize: download.expectedSize,
-    });
+    let staged;
+    try {
+      staged = await this.ingestion.stageOriginal({
+        messageId: target.message.id,
+        source: download.chunks,
+        expectedSize: download.expectedSize,
+      });
+    } catch (cause) {
+      if (cause instanceof IngestionError && cause.code === "message_too_large") {
+        // The server reported a size inside the bound but the stream itself
+        // crossed it mid-download. The same size policy applies: record the
+        // crossing point and stop qualifying, or every cycle re-downloads up
+        // to the bound for a message that can never be parsed here.
+        download.discard();
+        const crossed = cause.sizeBytes ?? MAX_MESSAGE_BYTES + 1;
+        await this.skipOversized(accountId, target.message.id, crossed);
+        return { state: "skipped_oversized", messageId: pending.messageId, sizeBytes: crossed };
+      }
+      throw cause;
+    }
     const recheck = await session.revalidate();
     if (recheck.uidValidity !== target.occurrence.uidvalidity) {
       // The staged object stays unreferenced and waits for garbage
@@ -222,11 +251,24 @@ export class BodyFetchService {
       };
     }
 
-    const result = await this.ingestion.applyStagedOriginal({
-      accountId,
-      messageId: target.message.id,
-      staged,
-    });
+    let result;
+    try {
+      result = await this.ingestion.applyStagedOriginal({
+        accountId,
+        messageId: target.message.id,
+        staged,
+      });
+    } catch (cause) {
+      if (cause instanceof IngestionError && cause.code === "parse_failed") {
+        // A parse failure is deterministic: the stored bytes parse the same
+        // way every time, so an endless retry would only re-download what
+        // storage already holds. The row carries the bounded failure and one
+        // event names it; the headers stay imported and readable.
+        await this.markBodyFailed(accountId, target.message.id, cause.code);
+        return { state: "failed", messageId: pending.messageId };
+      }
+      throw cause;
+    }
     return {
       state: "fetched",
       messageId: pending.messageId,
@@ -253,6 +295,27 @@ export class BodyFetchService {
         entityType: "message",
         entityId: messageId,
         payload: { accountId, sizeBytes, maxBytes: MAX_MESSAGE_BYTES },
+      });
+    });
+  }
+
+  /**
+   * Record one bounded body failure. The row stops qualifying as a body job
+   * and one audit event names the failure kind — the code alone, never the
+   * parser text, so no message content reaches the trail.
+   */
+  private async markBodyFailed(accountId: string, messageId: string, reason: string): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      await tx
+        .update(messages)
+        .set({ bodyFailedAt: new Date() })
+        .where(and(eq(messages.id, messageId), eq(messages.accountId, accountId)));
+      await tx.insert(events).values({
+        actor: "system",
+        type: "message.body_failed",
+        entityType: "message",
+        entityId: messageId,
+        payload: { accountId, reason },
       });
     });
   }
@@ -292,6 +355,8 @@ function pendingBodyConditions(accountId: string) {
   return and(
     eq(messages.accountId, accountId),
     eq(messages.fetchedBody, false),
+    // A deterministic failure is decided; the row is not a job anymore.
+    isNull(messages.bodyFailedAt),
     isNull(messageOccurrences.expungedAt),
     isNull(messageOccurrences.invalidatedAt),
     // Only the current folder generation resolves UIDs.

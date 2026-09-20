@@ -156,7 +156,11 @@ async function main(databaseUrl: string): Promise<void> {
   const threads = new ThreadService(db);
   const steady = new SteadyStateService(db);
   const reconcile = new ReconciliationService(db);
-  const runner = new SyncRunner(db, backfill, bodies, threads, steady, reconcile);
+  const runner = new SyncRunner(db, backfill, bodies, threads, steady, reconcile, {
+    // Contained folder and body failures are counted in the status event;
+    // the logger keeps the reason a person can read.
+    logger: { warn: (message) => console.warn(message) },
+  });
   const sessions = new ImapMailboxSessionFactory();
   // Two-way writes ride the same verified connection the sync cycle opens
   // (SPEC F4 and section 7, step 6): pending actions re-drive per account,
@@ -377,12 +381,19 @@ async function runAccountCycle(
   let session;
   try {
     const credentials = await accounts.resolveCredentials(accountId);
-    session = await sessions.open({
-      host: credentials.imap.host,
-      port: credentials.imap.port,
-      username: credentials.username,
-      password: credentials.password,
-    });
+    // This one connection carries both the sync reads and the queued action
+    // writes that re-drive on it afterwards, so CONDSTORE must be enabled:
+    // without it every conditional flag write degrades to an unconditional
+    // one and the captured modification sequences never apply (SPEC F2).
+    session = await sessions.open(
+      {
+        host: credentials.imap.host,
+        port: credentials.imap.port,
+        username: credentials.username,
+        password: credentials.password,
+      },
+      { condstoreWrites: true },
+    );
     const summary = await runner.runAccountCycle(session, accountId, { signal });
     console.log(
       `Sync cycle for account ${accountId}: ${summary.folders} folders, ${summary.batches} batches, ` +

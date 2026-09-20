@@ -21,11 +21,14 @@ const HTTP_STATUS_BY_CODE: Record<IngestionErrorCode, number> = {
 export class IngestionError extends Error {
   readonly code: IngestionErrorCode;
   readonly httpStatus: number;
+  /** The observed byte count a `message_too_large` refusal crossed, when known. */
+  readonly sizeBytes: number | null;
 
-  constructor(code: IngestionErrorCode, message: string) {
+  constructor(code: IngestionErrorCode, message: string, sizeBytes?: number) {
     super(message);
     this.name = "IngestionError";
     this.code = code;
     this.httpStatus = HTTP_STATUS_BY_CODE[code];
+    this.sizeBytes = sizeBytes ?? null;
   }
 }

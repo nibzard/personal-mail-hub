@@ -7,7 +7,7 @@ import {
   type Folder,
   type MailHubDatabase,
 } from "@mail-hub/database";
-import { markThreadJobsDirty, MAX_MESSAGE_BYTES } from "@mail-hub/ingestion";
+import { MAX_MESSAGE_BYTES } from "@mail-hub/ingestion";
 import type { MailHubTransaction } from "@mail-hub/recovery";
 import { SyncError } from "./errors.ts";
 import { parseHeaderBlock } from "./headers.ts";
@@ -114,9 +114,10 @@ export async function lastFolderEventAt(
 }
 
 /**
- * Import one header record into one folder generation. Returns `false` when an
- * occurrence already covers the UID, so a replayed range never duplicates a
- * message.
+ * Import one header record into one folder generation. The result names
+ * whether the record imported and the `Message-ID` it carried, so the caller
+ * marks thread jobs for a whole window with one call instead of one per
+ * record. A replayed range imports nothing and reports `null`.
  */
 export async function importHeaderRecord(
   tx: MailHubTransaction,
@@ -124,7 +125,7 @@ export async function importHeaderRecord(
   folderId: string,
   uidvalidity: number,
   record: MailboxHeaders,
-): Promise<boolean> {
+): Promise<{ imported: boolean; identifier: string | null }> {
   const existing = await tx
     .select({ id: messageOccurrences.id })
     .from(messageOccurrences)
@@ -137,7 +138,7 @@ export async function importHeaderRecord(
     )
     .limit(1);
   if (existing.length > 0) {
-    return false;
+    return { imported: false, identifier: null };
   }
 
   const header = await parseHeaderBlock(record.rawHeaders);
@@ -186,14 +187,7 @@ export async function importHeaderRecord(
     });
   }
 
-  // The new row is one thread-reconciliation job (`thread_dirty` defaults to
-  // true), and a reused `Message-ID` changes the holder set of that
-  // identifier: rows already referencing it must re-decide, which can remove
-  // an unsafe link (SPEC F2). The marks commit with the imported rows.
-  if (header.messageId !== null) {
-    await markThreadJobsDirty(tx, accountId, { identifiers: [header.messageId] });
-  }
-  return true;
+  return { imported: true, identifier: header.messageId };
 }
 
 /** Reject an identifier that is not a UUID before it reaches the database. */

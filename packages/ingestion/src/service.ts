@@ -589,6 +589,7 @@ function tooLarge(sizeBytes: number): IngestionError {
   return new IngestionError(
     "message_too_large",
     `The message is ${sizeBytes} bytes, above the ${MAX_MESSAGE_BYTES}-byte maximum this deployment parses.`,
+    sizeBytes,
   );
 }
 

@@ -18,7 +18,7 @@ import {
   type Storage,
   dropTestDatabase,
 } from "@mail-hub/database";
-import { IngestionService, MAX_MESSAGE_BYTES } from "@mail-hub/ingestion";
+import { IngestionError, IngestionService, MAX_MESSAGE_BYTES } from "@mail-hub/ingestion";
 import {
   BackfillService,
   BodyFetchService,
@@ -945,5 +945,209 @@ suite("SteadyStateService and ReconciliationService", () => {
     expect(await eventsOf("sync.folder_generation_reset", folder.id)).toHaveLength(1);
     const status = (await eventsOf("sync.status", accountId))[0]!;
     expect(status).toMatchObject({ resets: 1, generationChanges: 1 });
+  });
+
+  it("serves due-ness queries from a covering index that sorts by at", async () => {
+    const index = await pool.query(
+      "select indexdef from pg_indexes where tablename = 'events' and indexname = 'events_type_entity_id_at_idx'",
+    );
+    expect(index.rows).toHaveLength(1);
+    expect(index.rows[0].indexdef).toMatch(/using btree \(type, entity_id, at desc\)/i);
+    // The index it replaced covered the same lookups without the sort.
+    const old = await pool.query(
+      "select count(*)::int as count from pg_indexes where tablename = 'events' and indexname = 'events_type_entity_id_idx'",
+    );
+    expect(old.rows[0].count).toBe(0);
+  });
+
+  it("skips a body whose stream itself crosses the size bound", async () => {
+    const { accountId, folderIds } = await setupAccount([{ name: "INBOX", role: "inbox" }]);
+    const folder = folderIds.get("INBOX")!;
+    const session = new FakeMailboxSession();
+    session.load("INBOX", [fixture(1, "Grows mid stream")]);
+
+    const { backfill, bodies } = services();
+    await drain(backfill, session, accountId, folder);
+    const job = (await bodies.pendingBodies(accountId, 10))[0]!;
+
+    // The server reports no size; the bytes themselves cross the bound.
+    const crossing = Buffer.alloc(MAX_MESSAGE_BYTES + 2048, 0x2e);
+    let discarded = false;
+    session.streamOriginal = async () => ({
+      expectedSize: null,
+      chunks: (async function* () {
+        yield crossing;
+      })(),
+      discard: () => {
+        discarded = true;
+      },
+    });
+
+    const outcome = await bodies.fetchBody(session, accountId, job);
+    expect(outcome).toMatchObject({ state: "skipped_oversized", sizeBytes: MAX_MESSAGE_BYTES + 2048 });
+    expect(discarded).toBe(true);
+
+    const db = createDatabase(pool);
+    const [row] = await db
+      .select({ id: messages.id, sizeBytes: messages.sizeBytes })
+      .from(messages)
+      .where(eq(messages.accountId, accountId));
+    expect(row).toMatchObject({ sizeBytes: MAX_MESSAGE_BYTES + 2048 });
+    expect(await eventsOf("message.body_skipped", row!.id)).toEqual([
+      { accountId, sizeBytes: MAX_MESSAGE_BYTES + 2048, maxBytes: MAX_MESSAGE_BYTES },
+    ]);
+    expect(await bodies.pendingBodyCount(accountId)).toBe(0);
+    await expect(storage.durable.stat(originalMessageKey(row!.id))).resolves.toBeNull();
+  });
+
+  it("records a bounded failure for a body that will not parse", async () => {
+    const { accountId, folderIds } = await setupAccount([{ name: "INBOX", role: "inbox" }]);
+    const folder = folderIds.get("INBOX")!;
+    const session = new FakeMailboxSession();
+    session.load("INBOX", [fixture(1, "Will not parse")]);
+
+    const { backfill } = services();
+    await drain(backfill, session, accountId, folder);
+    const db = createDatabase(pool);
+    // Ingestion always fails at the parse step: the failure is deterministic.
+    const bodies = new BodyFetchService(db, {
+      stageOriginal: async (input) => ({
+        messageId: input.messageId,
+        storageKey: "unreferenced",
+        sha256: "0".repeat(64),
+        sizeBytes: 1,
+      }),
+      applyStagedOriginal: async () => {
+        throw new IngestionError("parse_failed", "The stored original will not parse.");
+      },
+    });
+    const jobs = await bodies.pendingBodies(accountId, 10);
+    expect(jobs).toHaveLength(1);
+
+    const outcome = await bodies.fetchBody(session, accountId, jobs[0]!);
+    expect(outcome).toMatchObject({ state: "failed" });
+
+    const [row] = await db
+      .select({ id: messages.id, bodyFailedAt: messages.bodyFailedAt, fetchedBody: messages.fetchedBody })
+      .from(messages)
+      .where(eq(messages.accountId, accountId));
+    expect(row!.bodyFailedAt).not.toBeNull();
+    expect(row!.fetchedBody).toBe(false);
+    // The event names the failure kind alone; parser text stays out of the trail.
+    expect(await eventsOf("message.body_failed", row!.id)).toEqual([
+      { accountId, reason: "parse_failed" },
+    ]);
+    // A decided failure is not a job anymore: the row stops qualifying.
+    expect(await bodies.pendingBodyCount(accountId)).toBe(0);
+  });
+
+  it("does not refresh flags onto an occurrence marked expunged mid-poll", async () => {
+    const { accountId, folderIds } = await setupAccount([{ name: "INBOX", role: "inbox" }]);
+    const folder = folderIds.get("INBOX")!;
+    const session = new FakeMailboxSession();
+    session.load("INBOX", [fixture(1, "Guard one"), fixture(2, "Guard two")]);
+
+    const { backfill, steady, db } = services();
+    await drain(backfill, session, accountId, folder);
+
+    // The server marks UID 2 read while the expunge pass removes it between
+    // the page read and the flag commit.
+    session.load("INBOX", [fixture(1, "Guard one"), fixture(2, "Guard two", ["\\Seen"])]);
+    const originalFetchFlags = session.fetchFlags.bind(session);
+    session.fetchFlags = async (uids: number[]) => {
+      await db
+        .update(messageOccurrences)
+        .set({ expungedAt: new Date() })
+        .where(
+          and(
+            eq(messageOccurrences.accountId, accountId),
+            eq(messageOccurrences.folderId, folder.id),
+            eq(messageOccurrences.uid, 2),
+          ),
+        );
+      return originalFetchFlags(uids);
+    };
+
+    const poll = await steady.pollFolder(session, accountId, folder.id);
+    expect(poll).toMatchObject({ state: "polled", flagsObserved: 2, flagsChanged: 0 });
+
+    // The expunged row keeps the flags and revision it already had.
+    const guarded = (await occurrenceRows(accountId, folder.id)).find((row) => row.uid === 2)!;
+    expect(guarded.expungedAt).not.toBeNull();
+    expect([guarded.unread, guarded.flagged, guarded.revision]).toEqual([true, false, 1]);
+  });
+
+  it("marks a whole folder's expunges without crossing the statement parameter bound", async () => {
+    const { accountId, folderIds } = await setupAccount([{ name: "INBOX", role: "inbox" }]);
+    const folder = folderIds.get("INBOX")!;
+
+    // Seed history directly: 65,536 occurrences, one above PostgreSQL's
+    // 65,535-parameter statement limit, against a server that holds none.
+    // The occurrence rows go in page-sized slices: one giant statement queues
+    // three referential checks per row in one after-trigger batch, which this
+    // deployment's database grinds through far too slowly.
+    await pool.query(
+      "insert into messages (account_id, subject) select $1, 'bulk' from generate_series(1, 65536) g",
+      [accountId],
+    );
+    for (let offset = 0; offset < 65_536; offset += 8_192) {
+      await pool.query(
+        `
+        insert into message_occurrences (account_id, message_id, folder_id, uidvalidity, uid, internal_date)
+        select account_id, id, $2, 1, $3 + row_number() over (order by id), now()
+        from (
+          select id, account_id from messages
+          where account_id = $1 and subject = 'bulk'
+          order by id offset $4 limit 8192
+        ) page
+        `,
+        [accountId, folder.id, offset, offset],
+      );
+    }
+    await pool.query(
+      `
+      update folders set uidvalidity = 1, backfill_upper_uid = 65536,
+        backfill_before_uid = 65537, backfill_complete = true, arrival_scanned_uid = 65536
+      where id = $1
+      `,
+      [folder.id],
+    );
+
+    const session = new FakeMailboxSession();
+    session.load("INBOX", []);
+    session.uidNext = 65_537;
+
+    const { steady } = services();
+    const poll = await steady.pollFolder(session, accountId, folder.id);
+    expect(poll).toMatchObject({ state: "polled", expunged: 65_536 });
+
+    const marked = await pool.query(
+      "select count(*)::int as count from message_occurrences where folder_id = $1 and expunged_at is not null",
+      [folder.id],
+    );
+    expect(marked.rows[0].count).toBe(65_536);
+  }, 120_000);
+
+  it("logs the reason a contained folder failure was contained", async () => {
+    const { accountId, folderIds } = await setupAccount([{ name: "INBOX", role: "inbox" }]);
+    const folder = folderIds.get("INBOX")!;
+    // No mailbox is loaded, so the folder's select fails inside the cycle.
+    const session = new FakeMailboxSession();
+
+    const warns: string[] = [];
+    const { db, backfill, bodies, steady, reconcile } = services();
+    const runner = new SyncRunner(db, backfill, bodies, new ThreadService(db), steady, reconcile, {
+      logger: { warn: (message) => { warns.push(message); } },
+    });
+    const summary = await runner.runAccountCycle(session, accountId);
+
+    // The failure was contained and the cycle still closed.
+    expect(summary.folderErrors).toBe(1);
+    expect(await eventsOf("sync.status", accountId)).toHaveLength(1);
+    // The diagnostic names the folder without credentials or content.
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain(folder.name);
+    expect(warns[0]).toContain(folder.id);
+    expect(warns[0]).toContain("contained");
   });
 });

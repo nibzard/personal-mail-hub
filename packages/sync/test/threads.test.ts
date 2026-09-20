@@ -12,6 +12,7 @@ import {
   folders,
   messages,
   runMigrations,
+  threads as threadsTable,
   type Folder,
   type Message,
   type Storage,
@@ -498,5 +499,39 @@ suite("ThreadService", () => {
 
     const second = await runner.runAccountCycle(session, accountId);
     expect(second).toMatchObject({ threadsResolved: 0, threadLinksChanged: 0 });
+  });
+
+  it("prunes thread rows nothing references anymore", async () => {
+    const { accountId, folderIds } = await setupAccount(["INBOX"]);
+    const folder = folderIds.get("INBOX")!;
+    const session = new FakeMailboxSession();
+    session.load("INBOX", [
+      mail({ uid: 1, id: "prune-root", subject: "Prune me not" }),
+      mail({ uid: 2, id: "prune-child", inReplyTo: ["prune-root"], references: ["prune-root"] }),
+    ]);
+
+    const { db, backfill, bodies, threads } = services();
+    await drain(backfill, session, accountId, folder);
+    await drainBodies(bodies, session, accountId);
+    await threads.reconcileAccount(accountId);
+
+    // Root and child share one thread; that row has members.
+    const live = new Set((await accountMessages(accountId)).map((row) => row.threadId));
+    expect(live.size).toBe(1);
+    expect(live.has(null)).toBe(false);
+
+    // A thread row nothing references: an unlink stranded it, or it never had
+    // members. It must not survive the next pass.
+    const [orphan] = await db.insert(threadsTable).values({ accountId }).returning();
+
+    const summary = await threads.reconcileAccount(accountId);
+    expect(summary.threadsPruned).toBe(1);
+    expect(await threads.pendingCount(accountId)).toBe(0);
+
+    const remaining = await pool.query("select id from threads where account_id = $1", [accountId]);
+    expect(remaining.rows.map((row: { id: string }) => row.id).sort()).toEqual([...live].sort());
+    expect(remaining.rows.some((row: { id: string }) => row.id === orphan!.id)).toBe(false);
+    // The prune itself is on the audit trail, with no rows examined.
+    expect(await eventCount(accountId, "sync.thread_reconciliation")).toBe(2);
   });
 });

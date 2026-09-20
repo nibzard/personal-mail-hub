@@ -1,12 +1,14 @@
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull } from "drizzle-orm";
 import {
   folders,
   messageOccurrences,
   type Folder,
   type MailHubDatabase,
 } from "@mail-hub/database";
+import { markThreadJobsDirty } from "@mail-hub/ingestion";
 import { SyncError } from "./errors.ts";
 import type { MailboxSession } from "./mailbox.ts";
+import { OCCURRENCE_SLICE } from "./steady.ts";
 import {
   importHeaderRecord,
   lastFolderEventAt,
@@ -44,6 +46,9 @@ export const INVENTORY_INTERVAL_MS = 24 * 60 * 60_000;
 
 /** Repairs one inventory imports; the rest wait for the next run. */
 export const DEFAULT_REPAIR_LIMIT = 200;
+
+/** Occurrence rows one inventory page reads, keyset-paginated on the UID. */
+const INVENTORY_PAGE = 5_000;
 
 /** What one generation reset did. */
 export type ResetOutcome =
@@ -221,31 +226,55 @@ export class ReconciliationService {
     const present = bound >= 1 ? await session.searchUids(1, bound) : [];
     const presentSet = new Set(present);
 
-    const rows = await this.db
-      .select({
-        id: messageOccurrences.id,
-        uid: messageOccurrences.uid,
-        expungedAt: messageOccurrences.expungedAt,
-        invalidatedAt: messageOccurrences.invalidatedAt,
-      })
-      .from(messageOccurrences)
-      .where(
-        and(
-          eq(messageOccurrences.accountId, accountId),
-          eq(messageOccurrences.folderId, folderId),
-          eq(messageOccurrences.uidvalidity, generation),
-        ),
-      );
-    const active = rows.filter((row) => row.expungedAt === null && row.invalidatedAt === null);
-    // A UID above the snapshot bound arrived after the search: this snapshot
-    // never judged it, so it stays for the poll that covers its range.
-    const absent = active.filter((row) => row.uid <= bound && !presentSet.has(row.uid));
+    // The occurrence read is keyset-paginated on the UID: one folder can hold
+    // every message an account ever kept, and no unbounded row list may cross
+    // that boundary on its way to one statement either.
+    const known = new Set<number>();
+    const absentIds: string[] = [];
+    let uidAfter = 0;
+    let active = 0;
+    for (;;) {
+      const page = await this.db
+        .select({
+          id: messageOccurrences.id,
+          uid: messageOccurrences.uid,
+          expungedAt: messageOccurrences.expungedAt,
+          invalidatedAt: messageOccurrences.invalidatedAt,
+        })
+        .from(messageOccurrences)
+        .where(
+          and(
+            eq(messageOccurrences.accountId, accountId),
+            eq(messageOccurrences.folderId, folderId),
+            eq(messageOccurrences.uidvalidity, generation),
+            gt(messageOccurrences.uid, uidAfter),
+          ),
+        )
+        .orderBy(messageOccurrences.uid)
+        .limit(INVENTORY_PAGE);
+      if (page.length === 0) {
+        break;
+      }
+      uidAfter = page[page.length - 1]!.uid;
+      for (const row of page) {
+        known.add(row.uid);
+        if (row.expungedAt !== null || row.invalidatedAt !== null) {
+          continue;
+        }
+        active += 1;
+        // A UID above the snapshot bound arrived after the search: this
+        // snapshot never judged it, so it stays for the poll that covers its
+        // range.
+        if (row.uid <= bound && !presentSet.has(row.uid)) {
+          absentIds.push(row.id);
+        }
+      }
+    }
 
     // Repairs only cover UIDs both scans should have reached: the arrivals
     // zone above the backfill bound, plus the whole folder once backfill
     // completes. Below an incomplete backfill, missing UIDs are unscanned
     // history, not misses.
-    const known = new Set(rows.map((row) => row.uid));
     const covered = coveredRange(folder);
     const missed = present
       .filter((uid) => !known.has(uid) && covered.includes(uid))
@@ -266,38 +295,49 @@ export class ReconciliationService {
       }
       let repaired = 0;
       let skipped = 0;
+      const identifiers: string[] = [];
       for (const record of records) {
-        const wasImported = await importHeaderRecord(tx, accountId, folderId, generation, record);
-        if (wasImported) {
+        const outcome = await importHeaderRecord(tx, accountId, folderId, generation, record);
+        if (outcome.imported) {
           repaired += 1;
+          if (outcome.identifier !== null) {
+            identifiers.push(outcome.identifier);
+          }
         } else {
           skipped += 1;
         }
       }
-      const expunged = absent.length === 0 ? [] : await tx
-        .update(messageOccurrences)
-        .set({ expungedAt: new Date() })
-        .where(
-          and(
-            inArray(
-              messageOccurrences.id,
-              absent.map((row) => row.id),
+      // One marking call covers the whole repair window; the marks commit
+      // with the rows they describe (SPEC F2).
+      if (identifiers.length > 0) {
+        await markThreadJobsDirty(tx, accountId, { identifiers });
+      }
+      let expunged = 0;
+      for (let offset = 0; offset < absentIds.length; offset += OCCURRENCE_SLICE) {
+        const slice = absentIds.slice(offset, offset + OCCURRENCE_SLICE);
+        const rows = await tx
+          .update(messageOccurrences)
+          .set({ expungedAt: new Date() })
+          .where(
+            and(
+              inArray(messageOccurrences.id, slice),
+              isNull(messageOccurrences.expungedAt),
             ),
-            isNull(messageOccurrences.expungedAt),
-          ),
-        )
-        .returning({ id: messageOccurrences.id });
+          )
+          .returning({ id: messageOccurrences.id });
+        expunged += rows.length;
+      }
       await recordFolderEvent(tx, accountId, folderId, FOLDER_INVENTORY_EVENT, {
         uidvalidity: generation,
         bound,
         present: present.length,
-        active: active.length,
-        expunged: expunged.length,
+        active,
+        expunged,
         repaired,
         skipped,
         pendingRepairs: missed.length - repairs.length,
       });
-      return { repaired, skipped, expunged: expunged.length };
+      return { repaired, skipped, expunged };
     });
     if (committed === null) {
       return { state: "generation_changed", folderId, recorded: generation, observed: generation };
@@ -307,7 +347,7 @@ export class ReconciliationService {
       folderId,
       uidvalidity: generation,
       present: present.length,
-      active: active.length,
+      active,
       expunged: committed.expunged,
       repaired: committed.repaired,
       skipped: committed.skipped,

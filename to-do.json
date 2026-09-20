@@ -1845,7 +1845,7 @@
       "id": "T059",
       "title": "Fix sync scale and retry defects",
       "priority": 2,
-      "status": "todo",
+      "status": "done",
       "details": "The due-ness reads max(at) per folder and event type over an index that does not cover at (packages/sync/src/store.ts:98-114). Measured on 1M events: 52.6 ms per check; with a covering index (type, entity_id, at desc): 0.094 ms. Every cycle pays this for every folder, and the events table is never pruned. Add the covering index or store last_polled_at on folders. A body job whose stream aborts on the size policy, or whose original fails to parse, retries forever with no backoff and no event. The row stays fetched_body = false and each cycle re-downloads up to 50 MiB; the parse case re-downloads bytes already staged (packages/sync/src/bodies.ts:199-229). Route a size abort to skipOversized and record a bounded error state for parse failures. markExpunges and the nightly inventory pass the whole absent set to one inArray (packages/sync/src/steady.ts:329-341, reconcile.ts:277-289). More than 65535 absent rows exceeds the bind limit, the poll throws every cycle, and the folder stops syncing. Mark expunges in bounded slices. Also: enable condstoreWrites for the action executor session so the CONDSTORE write path is not dead code (packages/sync/src/imap-session.ts:37-70); batch the per-record markThreadJobsDirty calls inside the import transaction (store.ts:193-195); batch the flag-refresh UPDATE and guard it with expunged_at is null (steady.ts:427-438); page the occurrence reads in markExpunges and the inventory; prune detached thread rows nothing references; and give the runner a logger so contained folder and body failures leave a diagnostic.",
       "depends_on": [
         "T008",
@@ -1856,18 +1856,24 @@
         "sync",
         "database"
       ],
-      "updated_at": "2026-09-20T00:56:03Z",
+      "updated_at": "2026-09-20T10:35:00Z",
       "files": [
         "apps/worker/src/main.ts",
-        "packages/database/drizzle",
+        "packages/database/drizzle/0008_luxuriant_smasher.sql",
+        "packages/database/src/schema.ts",
+        "packages/ingestion/src/errors.ts",
+        "packages/ingestion/src/service.ts",
+        "packages/sync/src/backfill.ts",
         "packages/sync/src/bodies.ts",
-        "packages/sync/src/imap-session.ts",
         "packages/sync/src/reconcile.ts",
         "packages/sync/src/runner.ts",
         "packages/sync/src/steady.ts",
         "packages/sync/src/store.ts",
-        "packages/sync/src/threads.ts"
-      ]
+        "packages/sync/src/threads.ts",
+        "packages/sync/test/steady.test.ts",
+        "packages/sync/test/threads.test.ts"
+      ],
+      "notes": "Done. Seven regression tests, each proven to fail on the pre-fix code (git stash of the touched source, test run, restore):\n- Covering index: migration 0008 replaces events_type_entity_id_idx with events_type_entity_id_at_idx (type, entity_id, at desc). Test asserts the index definition and the old index gone; pre-fix (journal stashed) the query returns 0 rows.\n- Stream size crossing: fetchBody routes a message_too_large IngestionError from stageOriginal to skipOversized with the crossing byte count; IngestionError now carries sizeBytes. Pre-fix the error propagated out of fetchBody.\n- Parse failure: a parse_failed IngestionError from applyStagedOriginal sets messages.body_failed_at and records one message.body_failed event whose payload holds the reason code only, never parser text; the row stops qualifying as a body job. Pre-fix the error propagated out of fetchBody.\n- Flag refresh guard: the batched UPDATE skips occurrences whose expunged_at or invalidated_at moved between the page read and the commit. Pre-fix the test observed flagsChanged 1 written onto an expunged row; post-fix 0 with the row untouched.\n- Bind limit: markExpunges pages occurrence reads keyset-style and updates in OCCURRENCE_SLICE (5000) slices; the nightly inventory does the same. Test seeds 65,536 occurrences; pre-fix the single inArray update failed with 65,536 bound parameters, post-fix all 65,536 mark expunged.\n- Runner logger: contained folder and body failures log one warn line naming the folder or job, without credentials or content. Pre-fix the collecting logger stayed empty.\n- Thread pruning: reconcileAccount deletes thread rows nothing references (messages, drafts, outbound_messages) after each pass, bounded at 500, and reports threadsPruned; the reconciliation event fires for a prune-only pass. Pre-fix the summary field was undefined and the orphan row survived.\nTwo changes are proven by inspection, not by a fail-pre-fix test: the batched markThreadJobsDirty calls (backfill, arrivals, repairs) are a performance-only rewrite with identical marking semantics, and the worker now opens its account session with condstoreWrites: true, which is deployment wiring (the factory option and the CONDSTORE write path are covered by the harness suite).\nTest-seeding note: the 65,536-row occurrence seed goes in as eight sliced statements. One giant statement queues three referential checks per row in a single after-trigger batch, which this machine's PostgreSQL grinds through for minutes; eight slices finish in seconds.\nVerification: sync 70/70, ingestion 26/26, database 27/27, worker and api typechecks clean."
     },
     {
       "id": "T060",
