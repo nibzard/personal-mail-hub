@@ -266,7 +266,7 @@ export class PasskeyAuthService {
           "This sign-in request was already used. Start again.",
         );
       }
-      await requireLiveCredential(tx, credential.id);
+      await requireLiveCredential(tx, credential.id, authenticationInfo.newCounter);
       await updateCredentialAfterUse(tx, credential.id, authenticationInfo.newCounter, now);
       const opened = await insertSession(tx, ownerId, generation, kind, now, this.config.sessionTtlMs);
       await recordAuthEvent(tx, "auth.login", {
@@ -363,7 +363,7 @@ export class PasskeyAuthService {
           "This verification request was already used. Start again.",
         );
       }
-      await requireLiveCredential(tx, credential.id);
+      await requireLiveCredential(tx, credential.id, authenticationInfo.newCounter);
       await updateCredentialAfterUse(tx, credential.id, authenticationInfo.newCounter, now);
       const rows = await tx
         .update(ownerSessions)
@@ -781,20 +781,35 @@ async function updateCredentialAfterUse(
  * commits. The assertion was verified against a read taken before the
  * transaction opened, so a credential revoked in that window — a single
  * removal, or an emergency that revoked everything — must not open a
- * session afterward.
+ * session afterward. The locked row also re-checks the assertion counter:
+ * two ceremonies from a cloned passkey both pass clone detection against
+ * the stale pre-transaction counter, so only the ceremony whose counter
+ * advances past the locked row commits, and the stored counter never
+ * regresses. Counterless authenticators report zero on both sides.
  */
 async function requireLiveCredential(
   tx: MailHubTransaction,
   credentialId: string,
+  newCounter: number,
 ): Promise<void> {
   const rows = await tx
-    .select({ id: ownerCredentials.id, revokedAt: ownerCredentials.revokedAt })
+    .select({
+      id: ownerCredentials.id,
+      revokedAt: ownerCredentials.revokedAt,
+      counter: ownerCredentials.counter,
+    })
     .from(ownerCredentials)
     .where(eq(ownerCredentials.id, credentialId))
     .for("update");
   const row = rows[0];
   if (row === undefined || row.revokedAt !== null) {
     throw new AuthError("webauthn_invalid", "This passkey is no longer registered. Start again.");
+  }
+  if ((newCounter > 0 || row.counter > 0) && newCounter <= row.counter) {
+    throw new AuthError(
+      "webauthn_invalid",
+      "This passkey did not advance its counter and may be cloned. Start again with the original device.",
+    );
   }
 }
 

@@ -606,6 +606,59 @@ suite("passkey owner authentication", () => {
     expect(await liveSessionCount()).toBe(before);
   });
 
+  it("rejects a cloned passkey whose assertion repeats a committed counter", async () => {
+    const before = await liveSessionCount();
+    const stored = (
+      await db.select().from(ownerCredentials).where(eq(ownerCredentials.credentialId, heldPasskey.credentialId))
+    )[0]!;
+
+    // The original device signs twice; a clone replays the first signature's
+    // counter. Every assertion verifies against the same stale snapshot, so
+    // only the locked row inside the transaction can tell the clone apart.
+    const firstOptions = await service.startLogin();
+    heldPasskey.signCount = stored.counter;
+    const first = fakeAuthenticationResponse({
+      passkey: heldPasskey,
+      options: firstOptions,
+      rpId: RP_ID,
+      origin: ORIGIN,
+    });
+    const secondOptions = await service.startLogin();
+    heldPasskey.signCount = stored.counter + 1;
+    const second = fakeAuthenticationResponse({
+      passkey: heldPasskey,
+      options: secondOptions,
+      rpId: RP_ID,
+      origin: ORIGIN,
+    });
+    const cloneOptions = await service.startLogin();
+    heldPasskey.signCount = stored.counter;
+    const clone = fakeAuthenticationResponse({
+      passkey: heldPasskey,
+      options: cloneOptions,
+      rpId: RP_ID,
+      origin: ORIGIN,
+    });
+
+    // Both real uses commit between the clone's snapshot read and its
+    // transaction, so the stored counter the lock sees is two ahead of it.
+    const raced = raceAfterTableRead(db, ownerCredentials, async () => {
+      await service.completeLogin(first);
+      await service.completeLogin(second);
+    });
+    const racing = new PasskeyAuthService(raced, config, await controlsForCurrentGeneration());
+    await expect(authCode(racing.completeLogin(clone))).resolves.toBe("webauthn_invalid");
+    expect(await liveSessionCount()).toBe(before + 2);
+
+    // The stored counter keeps the real device's advance; the clone's replay
+    // neither opens a session nor regresses it.
+    const after = (
+      await db.select().from(ownerCredentials).where(eq(ownerCredentials.credentialId, heldPasskey.credentialId))
+    )[0]!;
+    expect(after.counter).toBe(stored.counter + 2);
+    heldPasskey.signCount = after.counter;
+  });
+
   it("rejects a login whose credential was revoked mid-ceremony", async () => {
     // A second passkey must remain, so one credential can be revoked alone.
     const opened = await (await login()).complete();
