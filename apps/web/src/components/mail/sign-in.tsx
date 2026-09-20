@@ -1,9 +1,14 @@
-import { startAuthentication } from "@simplewebauthn/browser";
-import type { PublicKeyCredentialRequestOptionsJSON } from "@simplewebauthn/browser";
+import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
+import type {
+  PublicKeyCredentialCreationOptionsJSON,
+  PublicKeyCredentialRequestOptionsJSON,
+} from "@simplewebauthn/browser";
 import { useState } from "react";
 import type { AuthStatusResponse } from "@mail-hub/contracts";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Kbd } from "@/components/ui/kbd";
+import { Label } from "@/components/ui/label";
 import { apiPost, ApiError } from "@/lib/api";
 
 /*
@@ -28,6 +33,7 @@ export function SignInScreen({
 }: SignInScreenProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [token, setToken] = useState("");
 
   async function signIn(): Promise<void> {
     setBusy(true);
@@ -46,6 +52,42 @@ export function SignInScreen({
         setError("The passkey check was cancelled or timed out. Try again.");
       } else {
         setError("Sign-in did not complete. Try again.");
+      }
+      setBusy(false);
+    }
+  }
+
+  /*
+   * First-passkey enrollment (SPEC section 9): the operator prints a
+   * one-time grant on the server, then pastes it here. The ceremony runs
+   * against this origin, so `BASE_URL` must already match it.
+   */
+  async function enroll(): Promise<void> {
+    const grantToken = token.trim();
+    if (grantToken.length === 0) {
+      setError("Paste the enrollment token printed by the server first.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const start = await apiPost<{ options: object }>("/auth/enroll/start", { grantToken });
+      const attestation = await startRegistration({
+        optionsJSON: start.options as PublicKeyCredentialCreationOptionsJSON,
+      });
+      await apiPost("/auth/enroll/complete", {
+        grantToken,
+        label: "first passkey",
+        response: attestation,
+      });
+      onSignedIn();
+    } catch (failure) {
+      if (failure instanceof ApiError) {
+        setError(failure.message);
+      } else if (failure instanceof DOMException && failure.name === "NotAllowedError") {
+        setError("The passkey enrollment was cancelled or timed out. Try again.");
+      } else {
+        setError("Enrollment did not complete. Try again.");
       }
       setBusy(false);
     }
@@ -75,9 +117,37 @@ export function SignInScreen({
               <p className="mt-2">
                 <Kbd className="max-w-full break-all">npm run admin -- auth bootstrap</Kbd>
               </p>
-              <Button variant="outline" className="mt-3 w-full" onClick={onRetryStatus}>
-                Refresh status
-              </Button>
+              <div className="mt-4">
+                <Label htmlFor="enrollment-token">One-time enrollment token</Label>
+                <Input
+                  id="enrollment-token"
+                  className="mt-2"
+                  value={token}
+                  onChange={(event) => setToken(event.target.value)}
+                  autoComplete="off"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  placeholder="Paste the token here"
+                  disabled={busy}
+                />
+                <Button className="mt-3 w-full" onClick={() => void enroll()} pending={busy}>
+                  Register this device as the owner passkey
+                </Button>
+                {error !== null && (
+                  <p role="alert" className="mt-3 text-destructive">
+                    {error}
+                  </p>
+                )}
+                <Button
+                  variant="outline"
+                  className="mt-3 w-full"
+                  onClick={onRetryStatus}
+                  disabled={busy}
+                >
+                  Refresh status
+                </Button>
+              </div>
             </>
           ) : status.login !== "available" ? (
             <>
