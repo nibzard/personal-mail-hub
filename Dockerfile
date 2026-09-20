@@ -26,8 +26,10 @@ COPY apps/worker/package.json apps/worker/package.json
 COPY packages/accounts/package.json packages/accounts/package.json
 COPY packages/actions/package.json packages/actions/package.json
 COPY packages/auth/package.json packages/auth/package.json
+COPY packages/classification/package.json packages/classification/package.json
 COPY packages/compose/package.json packages/compose/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
+COPY packages/content/package.json packages/content/package.json
 COPY packages/database/package.json packages/database/package.json
 COPY packages/harness/package.json packages/harness/package.json
 COPY packages/ingestion/package.json packages/ingestion/package.json
@@ -37,6 +39,7 @@ COPY packages/reading/package.json packages/reading/package.json
 COPY packages/recovery/package.json packages/recovery/package.json
 COPY packages/search/package.json packages/search/package.json
 COPY packages/send/package.json packages/send/package.json
+COPY packages/settings/package.json packages/settings/package.json
 COPY packages/sync/package.json packages/sync/package.json
 COPY packages/transport/package.json packages/transport/package.json
 RUN npm ci
@@ -65,8 +68,10 @@ COPY apps/worker/package.json apps/worker/package.json
 COPY packages/accounts/package.json packages/accounts/package.json
 COPY packages/actions/package.json packages/actions/package.json
 COPY packages/auth/package.json packages/auth/package.json
+COPY packages/classification/package.json packages/classification/package.json
 COPY packages/compose/package.json packages/compose/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
+COPY packages/content/package.json packages/content/package.json
 COPY packages/database/package.json packages/database/package.json
 COPY packages/harness/package.json packages/harness/package.json
 COPY packages/ingestion/package.json packages/ingestion/package.json
@@ -76,6 +81,7 @@ COPY packages/reading/package.json packages/reading/package.json
 COPY packages/recovery/package.json packages/recovery/package.json
 COPY packages/search/package.json packages/search/package.json
 COPY packages/send/package.json packages/send/package.json
+COPY packages/settings/package.json packages/settings/package.json
 COPY packages/sync/package.json packages/sync/package.json
 COPY packages/transport/package.json packages/transport/package.json
 RUN npm ci

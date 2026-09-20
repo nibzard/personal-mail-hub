@@ -2215,13 +2215,13 @@
       "id": "T076",
       "title": "Copy the missing workspace manifests into the image",
       "priority": 3,
-      "status": "todo",
+      "status": "done",
       "details": "The npm ci layers of both stages run while packages/classification, packages/content, and packages/settings are absent from the image (Dockerfile:26-41 and 65-80), although apps/worker and apps/api import classification and settings, and packages/reading and packages/compose import content. npm 11 tolerates the missing targets by leaving dangling @mail-hub/* symlinks that the later package COPY restores, so the build works by accident; the arrangement contradicts the file's own comment that every workspace manifest must be present before npm ci, and an npm release that fails on lockfile targets with no directory breaks both stages. Add the three COPY lines to both stages.",
       "tags": [
         "deployment",
         "hygiene"
       ],
-      "updated_at": "2026-09-20T02:52:12Z",
+      "updated_at": "2026-09-20T12:59:25Z",
       "files": [
         "Dockerfile"
       ]
