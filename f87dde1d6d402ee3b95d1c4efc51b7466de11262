@@ -1,0 +1,27 @@
+# Context
+
+## Why This Way
+The README follows progressive disclosure on purpose: pitch, features,
+and quickstart sit above the fold; exhaustive detail (environment table,
+the 19-package map) folds into <details> blocks; everything else links
+to SPEC.md and deploy/README.md instead of duplicating them.
+
+Choices a future editor should keep:
+
+- The quickstart writes a fresh .env with `cat >` rather than appending
+  to a copy of env.example. That avoids relying on Docker Compose
+  duplicate-key precedence inside one .env file.
+- The development section tells readers to export the environment
+  (`set -a; . ./.env; set +a`). Verified: tsx does not auto-load .env,
+  and apps read process.env directly. Without that step the dev path
+  dead-ends.
+- Screenshots come from the e2e fixture server against the production
+  build: real UI, synthetic fixture data, no real mail. Regenerate with
+  `npm run build --workspace=@mail-hub/web`, `node e2e/fixture-server.mjs`,
+  then drive the cached Playwright Chromium at 1280x800, scale 2.
+- The status section claims only what DEVICE-MATRIX.md records. Safari
+  on macOS and a real iPhone stay listed as unverified.
+
+## Gotchas
+- The screenshot images are 2560px wide at 2x scale; keep new captures
+  at the same scale so the header layout stays balanced.
