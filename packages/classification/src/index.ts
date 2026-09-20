@@ -46,7 +46,7 @@ export {
   type RoutingGateVerdict,
   type SenderCorrectionRate,
 } from "./evaluation.ts";
-export { MAX_INPUT_CHARS, minimizeMessageInput, stripQuotedChains, type MessageInputSource, type MinimizedMessageInput } from "./input.ts";
+export { MAX_INPUT_CHARS, MAX_SENDER_CHARS, MAX_SUBJECT_CHARS, minimizeMessageInput, stripQuotedChains, type MessageInputSource, type MinimizedMessageInput } from "./input.ts";
 export { matchDeterministicRules, type DeterministicRuleMatch, type RuleInput } from "./rules.ts";
 export {
   CLASS_ERROR_EVENT,

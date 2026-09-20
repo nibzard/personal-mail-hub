@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { MAX_INPUT_CHARS, minimizeMessageInput, stripQuotedChains } from "../src/index.ts";
+import { MAX_INPUT_CHARS, MAX_SENDER_CHARS, MAX_SUBJECT_CHARS, minimizeMessageInput, stripQuotedChains } from "../src/index.ts";
 
 /**
  * Input minimization acceptance (SPEC F8): sender, subject, and the first
@@ -57,5 +57,34 @@ describe("minimized input", () => {
     expect(input.text.length).toBe(MAX_INPUT_CHARS);
     expect(input.truncated).toBe(true);
     expect(input.text.startsWith("From: s@x.example\nSubject: long\n\n")).toBe(true);
+  });
+
+  it("bounds the whole text when the header fields alone overflow the window", () => {
+    // A folded subject and a long display name arrive from the wire with no
+    // length bound; the composed text must still respect the window the
+    // token estimate assumes.
+    const input = minimizeMessageInput({
+      senderText: `${"n".repeat(MAX_INPUT_CHARS * 3)} <s@x.example>`,
+      subject: `${"u".repeat(MAX_INPUT_CHARS * 3)}`,
+      bodyText: `${"b".repeat(MAX_INPUT_CHARS * 3)}`,
+    });
+    expect(input.text.length).toBe(MAX_INPUT_CHARS);
+    expect(input.truncated).toBe(true);
+    expect(input.text.startsWith(`From: ${"n".repeat(MAX_SENDER_CHARS)}\n`)).toBe(true);
+    expect(input.text).toContain(`Subject: ${"u".repeat(MAX_SUBJECT_CHARS)}`);
+    expect(input.text.endsWith("bbb")).toBe(true);
+  });
+
+  it("cuts an oversized header field and reports it with a short body", () => {
+    const input = minimizeMessageInput({
+      senderText: "Sam Rivera <sam@personal.example>",
+      subject: `${"s".repeat(MAX_SUBJECT_CHARS + 10)}`,
+      bodyText: "Short body.",
+    });
+    expect(input.truncated).toBe(true);
+    expect(input.text).toBe(
+      `From: Sam Rivera <sam@personal.example>\nSubject: ${"s".repeat(MAX_SUBJECT_CHARS)}\n\nShort body.`,
+    );
+    expect(input.inputHash).toBe(createHash("sha256").update(input.text, "utf8").digest("hex"));
   });
 });

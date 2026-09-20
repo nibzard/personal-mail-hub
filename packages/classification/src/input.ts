@@ -12,13 +12,23 @@ import { createHash } from "node:crypto";
 /** The most text one call carries: the spec's 2–4 KB window (SPEC F8). */
 export const MAX_INPUT_CHARS = 4096;
 
+/**
+ * The most sender text one input carries. Display names arrive from the
+ * wire with no length bound, so the header is cut field by field before
+ * composing; the window then bounds the whole text, not just the body.
+ */
+export const MAX_SENDER_CHARS = 256;
+
+/** The most subject text one input carries, cut for the same reason. */
+export const MAX_SUBJECT_CHARS = 512;
+
 /** The minimized text one classification carries, with its hash. */
 export interface MinimizedMessageInput {
   /** The exact text sent to Jev. */
   text: string;
   /** SHA-256 of `text`, hex; the decisions row stores it (SPEC section 8). */
   inputHash: string;
-  /** True when the body slice was cut at the window edge. */
+  /** True when any field — sender, subject, or body — was cut to fit. */
   truncated: boolean;
 }
 
@@ -69,11 +79,15 @@ export function stripQuotedChains(bodyText: string): string {
 
 /**
  * Compose the minimized input for one message. Whitespace collapses, the
- * body sheds quoted chains, and the whole text stops at the window edge.
+ * body sheds quoted chains, sender and subject are cut to their field
+ * bounds, and the whole text stops at the window edge — so the composed
+ * text is never longer than the window the token estimate assumes.
  */
 export function minimizeMessageInput(source: MessageInputSource): MinimizedMessageInput {
-  const sender = collapse(source.senderText);
-  const subject = collapse(source.subject ?? "");
+  const senderCollapsed = collapse(source.senderText);
+  const subjectCollapsed = collapse(source.subject ?? "");
+  const sender = senderCollapsed.slice(0, MAX_SENDER_CHARS);
+  const subject = subjectCollapsed.slice(0, MAX_SUBJECT_CHARS);
   const body = collapse(stripQuotedChains(source.bodyText ?? ""));
 
   const header = `From: ${sender}\nSubject: ${subject}\n\n`;
@@ -83,7 +97,10 @@ export function minimizeMessageInput(source: MessageInputSource): MinimizedMessa
   return {
     text,
     inputHash: createHash("sha256").update(text, "utf8").digest("hex"),
-    truncated: body.length > bodySlice.length,
+    truncated:
+      senderCollapsed.length > sender.length ||
+      subjectCollapsed.length > subject.length ||
+      body.length > bodySlice.length,
   };
 }
 

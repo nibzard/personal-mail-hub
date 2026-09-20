@@ -2082,19 +2082,18 @@
       "id": "T070",
       "title": "Bound the Jev input window over the whole composed text",
       "priority": 2,
-      "status": "todo",
-      "details": "minimizeMessageInput clamps only the body: bodyRoom = Math.max(0, MAX_INPUT_CHARS - header.length) (packages/classification/src/input.ts:70-85). The header holds the sender display name and subject with no length bound at ingestion, so a large folded subject or display name pushes the composed text far past the 4096-character window. Every call for that mail then bills far above the fixed 2000-token estimate behind the monthly cost cap (ESTIMATED_INPUT_TOKENS_PER_CALL in packages/classification/src/service.ts), so real spend can exceed classificationMonthlyCostCapUsd by the same factor. Bound the header inside the window by truncating sender and subject before composing, or make the cap estimate track the actual input length.",
+      "status": "done",
+      "details": "Done 2026-09-20. minimizeMessageInput now cuts the header fields before composing: the collapsed sender is sliced to MAX_SENDER_CHARS (256) and the subject to MAX_SUBJECT_CHARS (512), so the composed text can never exceed MAX_INPUT_CHARS (4096) the way an unbounded folded subject or display name made it (packages/classification/src/input.ts). The truncated flag now reports any cut field, not only the body slice, and the hash still covers the exact text sent. Two regression tests were verified to fail on the pre-fix code (24,608 characters of composed text where 4,096 were assumed). The ESTIMATED_INPUT_TOKENS_PER_CALL cost-cap estimate stays honest because the window it assumes now bounds the real input.",
       "tags": [
         "classification",
         "jev",
         "cost"
       ],
-      "updated_at": "2026-09-20T02:52:12Z",
+      "updated_at": "2026-09-20T09:15:00Z",
       "files": [
         "packages/classification/src/input.ts",
-        "packages/classification/src/service.ts",
-        "packages/classification/test/input.test.ts",
-        "packages/classification/test/service.test.ts"
+        "packages/classification/src/index.ts",
+        "packages/classification/test/input.test.ts"
       ]
     },
     {
@@ -2229,5 +2228,5 @@
       ]
     }
   ],
-  "updated_at": "2026-09-20T09:12:00Z"
+  "updated_at": "2026-09-20T09:15:00Z"
 }
