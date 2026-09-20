@@ -77,6 +77,12 @@ export function SettingsProvider({
   const failedPatches = useRef<SettingsUpdateBody[]>([]);
   const savesInFlight = useRef(0);
   const lastFailure = useRef<ApiError | null>(null);
+  // Every key carries the ticket of the newest patch that wrote it. A
+  // response adopts a key's stored value only while its own ticket is still
+  // that key's newest, so a late answer cannot repaint an older value over a
+  // newer edit — the same-key counterpart of the different-key rule below.
+  const keyTickets = useRef(new Map<keyof AppSettings, number>());
+  const nextTicket = useRef(0);
 
   /** Records where the saves stand once every in-flight request settled. */
   const settleSave = useCallback(() => {
@@ -135,6 +141,11 @@ export function SettingsProvider({
       );
       setSettings((current) => ({ ...current, ...patch }));
       applyLocally(patch);
+      const ticket = (nextTicket.current += 1);
+      const keys = Object.keys(patch) as (keyof AppSettings)[];
+      for (const key of keys) {
+        keyTickets.current.set(key, ticket);
+      }
       savesInFlight.current += 1;
       setSavePhase("saving");
       apiPut<SettingsResponse>(
@@ -146,12 +157,16 @@ export function SettingsProvider({
       ).then(
         (response) => {
           savesInFlight.current -= 1;
-          // Adopt only the keys this patch carries, so a response that
-          // lands after a newer edit cannot revert what that edit shows.
-          setSettings((current) => ({
-            ...current,
-            ...pickPatched(response.settings, patch),
-          }));
+          // Adopt only the keys this patch still owns: a newer edit of the
+          // same key — settled or still in flight — keeps its value, and
+          // this older answer must not repaint it.
+          const owned = keys.filter((key) => keyTickets.current.get(key) === ticket);
+          if (owned.length > 0) {
+            setSettings((current) => ({
+              ...current,
+              ...pickPatched(response.settings, owned),
+            }));
+          }
           settleSave();
         },
         (cause: unknown) => {
@@ -206,29 +221,14 @@ function applyLocally(patch: SettingsUpdateBody): void {
   }
 }
 
-/** The stored values for exactly the keys one patch carries. */
-function pickPatched(settings: AppSettings, patch: SettingsUpdateBody): Partial<AppSettings> {
-  const picked: Partial<AppSettings> = {};
-  if (patch.theme !== undefined) {
-    picked.theme = settings.theme;
-  }
-  if (patch.density !== undefined) {
-    picked.density = settings.density;
-  }
-  if (patch.singleKeyShortcuts !== undefined) {
-    picked.singleKeyShortcuts = settings.singleKeyShortcuts;
-  }
-  if (patch.cleanViewDefault !== undefined) {
-    picked.cleanViewDefault = settings.cleanViewDefault;
-  }
-  if (patch.classificationEnabled !== undefined) {
-    picked.classificationEnabled = settings.classificationEnabled;
-  }
-  if (patch.classificationMonthlyCostCapUsd !== undefined) {
-    picked.classificationMonthlyCostCapUsd = settings.classificationMonthlyCostCapUsd;
-  }
-  if (patch.backfillClassification !== undefined) {
-    picked.backfillClassification = settings.backfillClassification;
+/** The stored values for exactly the keys named. */
+function pickPatched<K extends keyof AppSettings>(
+  settings: AppSettings,
+  keys: K[],
+): Pick<AppSettings, K> {
+  const picked = {} as Pick<AppSettings, K>;
+  for (const key of keys) {
+    picked[key] = settings[key];
   }
   return picked;
 }

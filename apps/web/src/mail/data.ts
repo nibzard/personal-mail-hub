@@ -14,6 +14,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { apiGet, apiGetBlob, toApiError, type ApiError } from "@/lib/api";
 
 import { offlineStore } from "@/offline/store.ts";
+import { normalizeContentId } from "./render";
 import { useResource, type Resource } from "./use-resource";
 import { filterCachedRows, folderForRole, scopeKey, type MailScope } from "./view";
 
@@ -247,7 +248,9 @@ export function useInlineImages(message: MessageDetailView | null): InlineImages
               `/messages/${message.id}/attachments/${attachment.id}`,
               controller.signal,
             );
-            loaded.set(attachment.contentId!, await blobToDataUrl(blob));
+            // The reference and the header may disagree about the angle
+            // brackets; both normalize, so the part resolves either way.
+            loaded.set(normalizeContentId(attachment.contentId!), await blobToDataUrl(blob));
           } catch {
             // One failed image stays a placeholder; the rest still render.
           }
@@ -504,6 +507,14 @@ export function useMessageList(
   // Counts the server reads that replaced the rows; only the live fetch
   // path raises it, so an aborted attempt never advances the counter.
   const serverReads = useRef(0);
+  // What ran the fetch effect last: only a page-count rise loads one more
+  // page, while a refresh nonce or a new scope reads the whole window again.
+  const lastPages = useRef(1);
+  const lastNonce = useRef(0);
+  // How many rows the current window covers — the offset the next appended
+  // page continues from. A refresh the request limit capped rewrites it, so
+  // paging after a capped window never skips rows.
+  const windowLength = useRef(0);
 
   // A new scope or query restarts the list from its first page. The reset
   // happens during render so the fetch effect never sees a stale page count.
@@ -537,8 +548,13 @@ export function useMessageList(
       }
       const controller = new AbortController();
       let live = true;
-      const loadingMore = pages > 1;
-      if (loadingMore) {
+      // Only a page-count rise appends; anything else that reruns the effect
+      // — a refresh nonce, a new scope — reloads the window and replaces the
+      // rows from their first row.
+      const appendRun = pages === lastPages.current + 1 && nonce === lastNonce.current;
+      lastPages.current = pages;
+      lastNonce.current = nonce;
+      if (appendRun) {
         setEntry((current) => ({ ...current, loadingMore: true }));
       } else {
         // A read of the same view refreshes it: the rows already on screen
@@ -594,6 +610,7 @@ export function useMessageList(
               // The unified inbox refetches its whole window, so every read
               // replaces the rows from the first row.
               const readId = (serverReads.current += 1);
+              windowLength.current = Math.min(pages * PAGE_SIZE, merged.length);
               setEntry({
                 identity,
                 phase: "ready",
@@ -621,27 +638,40 @@ export function useMessageList(
               q: trimmed,
               accountIds,
               folderId,
-              limit: PAGE_SIZE,
-              offset: (pages - 1) * PAGE_SIZE,
+              // An appended page continues after the window the rows cover;
+              // every other read reloads the whole window the pages asked
+              // for, within the per-request limit.
+              limit: appendRun
+                ? PAGE_SIZE
+                : Math.min(pages * PAGE_SIZE, REQUEST_LIMIT_CAP),
+              offset: appendRun ? windowLength.current : 0,
             },
             controller.signal,
           );
           if (live) {
-            // A first page replaces the rows; a later page appends to them.
-            const readId = pages === 1 ? (serverReads.current += 1) : serverReads.current;
-            setEntry((current) => ({
-              identity,
-              phase: "ready",
-              rows:
-                pages === 1 ? response.results : dedupe([...current.rows, ...response.results]),
-              total: response.total,
-              indexing: response.indexing,
-              error: null,
-              loadingMore: false,
-              refreshing: false,
-              offlineFromCache: false,
-              serverReadId: readId,
-            }));
+            // An appended page extends the rows; every other read — the
+            // first page, a refresh, a new window — replaces them from
+            // their first row, so serverReadId rises and the pending
+            // overlays retire on a paged view too.
+            const readId = appendRun ? serverReads.current : (serverReads.current += 1);
+            setEntry((current) => {
+              const rows = appendRun
+                ? dedupe([...current.rows, ...response.results])
+                : response.results;
+              windowLength.current = rows.length;
+              return {
+                identity,
+                phase: "ready",
+                rows,
+                total: response.total,
+                indexing: response.indexing,
+                error: null,
+                loadingMore: false,
+                refreshing: false,
+                offlineFromCache: false,
+                serverReadId: readId,
+              };
+            });
           }
           cacheRowsLive(response.results);
         } catch (error: unknown) {
@@ -668,6 +698,7 @@ export function useMessageList(
                   return;
                 }
                 const rows = filterCachedRows(cached, scope, folderIndex, trimmed);
+                windowLength.current = rows.length;
                 setEntry({
                   identity,
                   phase: "ready",

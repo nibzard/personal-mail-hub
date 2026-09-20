@@ -31,6 +31,13 @@ export interface ComposedPreview {
 const REMOTE_BLOCKED_LABEL = "Remote image not loaded";
 
 /**
+ * The note a plain-`http:` image leaves in its place. The frame policy
+ * allows `https:` images only, so this one can never load, whatever the
+ * preview decided about remote images.
+ */
+const INSECURE_IMAGE_LABEL = "Insecure image not loaded";
+
+/**
  * Renders one Markdown source into a sanitized preview fragment. The same
  * source always produces the same document, so "Load images" simply reruns
  * this with remote loading on.
@@ -73,6 +80,12 @@ function applyImagePolicy(document: Document, allowRemoteImages: boolean): numbe
       continue;
     }
     if (isRemoteSource(source)) {
+      if (isInsecureSource(source)) {
+        // The frame policy allows `https:` images only, so a plain-http
+        // link can never load and says so instead of vanishing.
+        replaceWithPlaceholder(image, alt, INSECURE_IMAGE_LABEL);
+        continue;
+      }
       remoteImageCount += 1;
       if (allowRemoteImages) {
         image.setAttribute("referrerpolicy", "no-referrer");
@@ -89,12 +102,16 @@ function isRemoteSource(source: string): boolean {
   return /^(?:https?:)?\/\//i.test(source);
 }
 
+/** `http:` references; the frame's image policy allows `https:` only. */
+function isInsecureSource(source: string): boolean {
+  return /^http:\/\//i.test(source);
+}
+
 /** Puts one labeled box where the source placed an image we do not load. */
-function replaceWithPlaceholder(image: Element, alt: string): void {
+function replaceWithPlaceholder(image: Element, alt: string, label = REMOTE_BLOCKED_LABEL): void {
   const placeholder = image.ownerDocument!.createElement("span");
   placeholder.className = "mail-image-note";
-  placeholder.textContent =
-    alt.length > 0 ? `${REMOTE_BLOCKED_LABEL}: ${alt}` : REMOTE_BLOCKED_LABEL;
+  placeholder.textContent = alt.length > 0 ? `${label}: ${alt}` : label;
   image.replaceWith(placeholder);
 }
 

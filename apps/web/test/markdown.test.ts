@@ -63,6 +63,17 @@ describe("preparePreviewDocument", () => {
     expect(preview.html).not.toContain("Remote image not loaded");
   });
 
+  it("keeps a plain-http image a labeled placeholder even when allowed", () => {
+    const preview = preparePreviewDocument("![chart](http://tracker.example/pixel.gif)", {
+      allowRemoteImages: true,
+    });
+    // The frame policy allows https images only, so this one can never load;
+    // it says so instead of vanishing, and it never advertises the button.
+    expect(preview.remoteImageCount).toBe(0);
+    expect(preview.html).not.toContain("tracker.example");
+    expect(preview.html).toContain("Insecure image not loaded: chart");
+  });
+
   it("hardens every anchor against the app origin", () => {
     const preview = preparePreviewDocument("[notes](https://example.com/notes)", {
       allowRemoteImages: false,

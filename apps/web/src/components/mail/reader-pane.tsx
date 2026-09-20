@@ -229,7 +229,13 @@ export function ReaderPane({ message, onBack, onSessionLost, className }: Reader
           </div>
 
           <p role="status" aria-live="polite" className="sr-only">
-            {readerStatus(detailResource.phase, detail?.fetchedBody ?? null, inline.map, cleanEnabled)}
+            {readerStatus(
+              detailResource.phase,
+              detail?.fetchedBody ?? null,
+              body !== null,
+              inline.map,
+              cleanEnabled,
+            )}
           </p>
         </>
       )}
@@ -430,9 +436,15 @@ function addressList(addresses: { address: string; name?: string | null }[]): st
   return addresses.map((address) => senderLabel(address)).join(", ");
 }
 
-function readerStatus(
+/**
+ * What the polite region says about one message. A plain-text message never
+ * runs the frame's inline-image pass, so no inline map ever arrives for it;
+ * its status must not wait on one.
+ */
+export function readerStatus(
   phase: "loading" | "ready" | "error",
   fetchedBody: boolean | null,
+  htmlBody: boolean,
   inlineMap: Map<string, string> | null,
   cleanView: boolean,
 ): string {
@@ -444,6 +456,9 @@ function readerStatus(
   }
   if (fetchedBody !== true) {
     return "Only the stored header exists for this message so far.";
+  }
+  if (!htmlBody) {
+    return "Message loaded.";
   }
   if (inlineMap === null) {
     return "Loading the message with its inline images.";

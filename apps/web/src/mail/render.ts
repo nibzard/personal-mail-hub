@@ -39,6 +39,25 @@ const REMOTE_BLOCKED_LABEL = "Remote image not loaded";
 /** The note an unresolved inline reference leaves in its place. */
 const INLINE_MISSING_LABEL = "Inline image not shown";
 
+/**
+ * The note a plain-`http:` image leaves in its place. The frame policy
+ * allows `https:` images only, so this one can never load, whatever the
+ * reader decided about remote images.
+ */
+const INSECURE_IMAGE_LABEL = "Insecure image not loaded";
+
+/**
+ * Normalizes one side of an inline lookup: `cid:` references and Content-ID
+ * headers may carry the RFC 5322 angle brackets or not, and the two sides of
+ * the map must agree before a part can resolve.
+ */
+export function normalizeContentId(value: string): string {
+  const trimmed = value.trim();
+  return trimmed.startsWith("<") && trimmed.endsWith(">")
+    ? trimmed.slice(1, -1)
+    : trimmed;
+}
+
 export function prepareMessageDocument(input: {
   html: string;
   inlineImages: ReadonlyMap<string, string> | null;
@@ -71,7 +90,7 @@ function transformImages(
     const alt = image.getAttribute("alt")?.trim() ?? "";
 
     if (source.toLowerCase().startsWith("cid:")) {
-      const contentId = source.slice(4).trim();
+      const contentId = normalizeContentId(source.slice(4));
       const resolved = inlineImages?.get(contentId);
       if (resolved !== undefined) {
         image.setAttribute("src", resolved);
@@ -82,6 +101,12 @@ function transformImages(
     }
 
     if (isRemoteSource(source)) {
+      if (isInsecureSource(source)) {
+        // The frame policy allows `https:` images only, so a plain-http
+        // link can never load and says so instead of vanishing.
+        replaceWithPlaceholder(image, INSECURE_IMAGE_LABEL, alt);
+        continue;
+      }
       remoteImageCount += 1;
       if (allowRemoteImages) {
         image.setAttribute("referrerpolicy", "no-referrer");
@@ -100,6 +125,11 @@ function transformImages(
 /** `http`, `https`, and protocol-relative references all count as remote. */
 function isRemoteSource(source: string): boolean {
   return /^(?:https?:)?\/\//i.test(source);
+}
+
+/** `http:` references; the frame's image policy allows `https:` only. */
+function isInsecureSource(source: string): boolean {
+  return /^http:\/\//i.test(source);
 }
 
 /** Puts one labeled box where the sender placed an image we do not load. */

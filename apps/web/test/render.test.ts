@@ -53,6 +53,31 @@ describe("prepareMessageDocument", () => {
     expect(prepared.remoteImageCount).toBe(0);
   });
 
+  it("resolves a cid reference that arrives with angle brackets", () => {
+    const prepared = prepare('<p><img src="cid:<chart@reports>" alt="Chart"></p>', {
+      inlineImages: new Map([["chart@reports", "data:image/png;base64,QUJD"]]),
+    });
+
+    // The reference and the Content-ID header may disagree about the angle
+    // brackets; both normalize, so the part resolves either way.
+    expect(bodyOf(prepared.document)).toContain('src="data:image/png;base64,QUJD"');
+  });
+
+  it("keeps a plain-http image a labeled placeholder even after Load images", () => {
+    const html = '<p><img src="http://tracker.example/pixel.gif" alt="Pixel"></p>';
+    const loaded = prepare(html, { allowRemoteImages: true });
+    const loadedBody = bodyOf(loaded.document);
+    // The frame policy allows https images only, so this one can never load;
+    // it says so instead of vanishing, and it never advertises the button.
+    expect(loadedBody).not.toContain("tracker.example");
+    expect(loadedBody).toContain("Insecure image not loaded: Pixel");
+    expect(loaded.remoteImageCount).toBe(0);
+
+    const blocked = prepare(html);
+    expect(bodyOf(blocked.document)).toContain("Insecure image not loaded: Pixel");
+    expect(blocked.remoteImageCount).toBe(0);
+  });
+
   it("blocks remote images until the reader loads them", () => {
     const blocked = prepare(
       '<p><img src="https://tracker.example/pixel.gif" alt="Pixel"></p>',
