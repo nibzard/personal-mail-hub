@@ -88,6 +88,7 @@ interface ServiceCalls {
   replyModes: string[];
   resentOutbounds: string[];
   updatedIds: string[];
+  updatedMarkdowns: (string | null | undefined)[];
   deletedIds: string[];
   uploadedAccounts: (string | null)[];
   uploadedBytes: Uint8Array[];
@@ -106,6 +107,7 @@ function fakeService(
     replyModes: [],
     resentOutbounds: [],
     updatedIds: [],
+    updatedMarkdowns: [],
     deletedIds: [],
     uploadedAccounts: [],
     uploadedBytes: [],
@@ -148,9 +150,14 @@ function fakeService(
       calls.resentOutbounds.push(outboundId);
       return { ...DRAFT, subject: "Re-sent copy" };
     },
-    async updateDraft(context: MutationContext, id: string, input: { baseRevision: number; markdown?: string }) {
+    async updateDraft(
+      context: MutationContext,
+      id: string,
+      input: { baseRevision: number; markdown?: string | null },
+    ) {
       track(context);
       calls.updatedIds.push(id);
+      calls.updatedMarkdowns.push(input.markdown);
       if (input.baseRevision !== DRAFT.revision) {
         throw new ComposeError("draft_stale", "This draft changed elsewhere.", DRAFT.revision);
       }
@@ -502,6 +509,47 @@ describe("compose routes", () => {
       payload: Buffer.from(bytes),
     });
     expect(anonymous.statusCode).toBe(401);
+  });
+
+  it("keeps text and JSON upload bodies as raw bytes", async () => {
+    const service = fakeService();
+    const app = await makeApp(service);
+
+    // The Fastify built-in parsers for these two media types win over a
+    // wildcard parser; the upload scope must take them back as buffers or
+    // the durable store records zero bytes for .txt and .json files.
+    for (const [filename, mediaType, payload] of [
+      ["notes.txt", "text/plain", "plain notes"],
+      ["data.json", "application/json", '{"a":1}'],
+    ] as const) {
+      const upload = await app.inject({
+        method: "POST",
+        url: `/uploads?accountId=${ACCOUNT_ID}&filename=${filename}`,
+        headers: { ...originHeaders, "content-type": mediaType },
+        payload,
+      });
+      expect(upload.statusCode).toBe(201);
+      const body = upload.json<UploadResponse>().upload;
+      expect(body.sizeBytes).toBe(payload.length);
+    }
+    expect(service.calls.uploadedBytes.map((bytes) => Buffer.from(bytes).toString("utf8"))).toEqual([
+      "plain notes",
+      '{"a":1}',
+    ]);
+  });
+
+  it("forwards a null markdown as a clear, not as an absent field", async () => {
+    const service = fakeService();
+    const app = await makeApp(service);
+
+    const cleared = await app.inject({
+      method: "PATCH",
+      url: `/drafts/${DRAFT_ID}`,
+      headers: { ...originHeaders, "content-type": "application/json" },
+      payload: { baseRevision: DRAFT.revision, markdown: null },
+    });
+    expect(cleared.statusCode).toBe(200);
+    expect(service.calls.updatedMarkdowns).toEqual([null]);
   });
 
   it("lists, attaches, and verifies draft uploads", async () => {

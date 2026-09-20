@@ -265,7 +265,9 @@ export async function registerComposeRoutes(
             identity: request.body.identity,
             recipients: request.body.recipients,
             subject: request.body.subject,
-            markdown: request.body.markdown ?? undefined,
+            // Null is the contract for clearing the body; collapsing it to
+            // absent would make a clear silently no-op.
+            markdown: request.body.markdown,
           }),
         ),
       }),
@@ -330,10 +332,19 @@ export async function registerComposeRoutes(
     /**
      * Raw upload bodies. One nested scope owns a buffer parser for every
      * media type, so one route can receive any file type verbatim while the
-     * JSON routes around it keep their usual parser.
+     * JSON routes around it keep their usual parser. The built-in parsers
+     * for `application/json` and `text/plain` win over the wildcard, so the
+     * scope must take those two back as buffer parsers too; without them a
+     * `.json` or `.txt` upload arrives as a parsed string and stores zero
+     * bytes.
      */
     await scope.register(
       async function uploadRoutes(uploadScope) {
+        for (const mediaType of ["application/json", "text/plain"]) {
+          uploadScope.addContentTypeParser(mediaType, { parseAs: "buffer" }, (_request, body, done) => {
+            done(null, body);
+          });
+        }
         uploadScope.addContentTypeParser("*", { parseAs: "buffer" }, (_request, body, done) => {
           done(null, body);
         });
@@ -359,6 +370,11 @@ export async function registerComposeRoutes(
           },
           async (request, reply) => {
             const bytes = request.body as Buffer;
+            if (!Buffer.isBuffer(bytes)) {
+              // Unreachable while every media type parses to a buffer; kept
+              // so a parser regression cannot silently store empty bytes.
+              throw new Error("The upload body did not parse to raw bytes.");
+            }
             const contentType = request.headers["content-type"];
             const upload = await service.createUpload(readContext(request), {
               accountId: request.query.accountId,
