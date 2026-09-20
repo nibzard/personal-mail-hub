@@ -1817,7 +1817,7 @@
       "title": "Fix offline draft replay and list overlay defects",
       "priority": 2,
       "status": "done",
-      "details": "Queued draft-saves freeze the base revision at enqueue time, and the autosaver advances its revision only on a saved outcome (apps/web/src/mail/compose-data.ts:596). The second offline edit replays against the revision the first edit moved. The server rejects draft_stale (packages/compose/src/service.ts:309), so every save after the first lands in manual review although no competing change exists. Chain the base revision through queued saves of one draft during replay (settleSynced, packages/offline/src/sync.ts:523-551). The flagPatches and movedAside overlays are only added, never cleared on a fresh server read (apps/web/src/components/mail/app-shell.tsx:120-198). An archived message stays hidden from All Mail and search for the whole session, against the SPEC rule that nothing is hidden. A single-page reload blanks the list to a skeleton instead of keeping stale rows (apps/web/src/mail/data.ts:519-527). The send action lacks a double-submit guard. The API client sets no request timeout, so a stalled connection never falls back to the offline cache (apps/web/src/lib/api.ts).",
+      "details": "Done in 1e07ad5 and re-verified 2026-09-20 against the code: settleSynced chains the base revision through queued saves of one draft during replay (packages/offline/src/sync.ts:542-561); the app shell retires flagPatches and movedAside overlays when a server read rises (apps/web/src/components/mail/app-shell.tsx); the list keeps stale rows visible during same-identity reloads through the refreshing and serverReadId state (apps/web/src/mail/data.ts); the send panel guards double submits with the sendInFlight ref and sending state (apps/web/src/components/mail/draft-editor.tsx:146); and the API client sets REQUEST_TIMEOUT_MS and TRANSFER_TIMEOUT_MS so a stalled connection falls back to the offline cache (apps/web/src/lib/api.ts). The loop had reset the status; this pass made no code changes. Original defects: queued draft-saves freeze the base revision at enqueue time, and the autosaver advances its revision only on a saved outcome (apps/web/src/mail/compose-data.ts:596). The second offline edit replays against the revision the first edit moved. The server rejects draft_stale (packages/compose/src/service.ts:309), so every save after the first lands in manual review although no competing change exists. Chain the base revision through queued saves of one draft during replay (settleSynced, packages/offline/src/sync.ts:523-551). The flagPatches and movedAside overlays are only added, never cleared on a fresh server read (apps/web/src/components/mail/app-shell.tsx:120-198). An archived message stays hidden from All Mail and search for the whole session, against the SPEC rule that nothing is hidden. A single-page reload blanks the list to a skeleton instead of keeping stale rows (apps/web/src/mail/data.ts:519-527). The send action lacks a double-submit guard. The API client sets no request timeout, so a stalled connection never falls back to the offline cache (apps/web/src/lib/api.ts).",
       "depends_on": [
         "T023",
         "T036",
@@ -1827,7 +1827,7 @@
         "offline",
         "ui"
       ],
-      "updated_at": "2026-09-20T02:21:37Z",
+      "updated_at": "2026-09-20T08:31:21Z",
       "files": [
         "apps/web/e2e/flows.browser.ts",
         "apps/web/src/components/mail/app-shell.tsx",
@@ -1957,6 +1957,271 @@
       "files": [
         "AGENTS.md",
         "apps/web/e2e"
+      ]
+    },
+    {
+      "id": "T064",
+      "title": "Close the revocation race in authentication ceremonies",
+      "priority": 1,
+      "status": "todo",
+      "details": "consumeChallenge and consumeGrant check only consumedAt is null, never revokedAt (packages/auth/src/state.ts:162 and 204). completeLogin and completeEnrollment read the credential and challenge before their transactions and never re-read revokedAt inside them (packages/auth/src/service.ts:249-276 and 655-687). A ceremony in flight while auth recover or recovery begin commits can still consume the now-revoked challenge and insert a live session or credential afterward, so an owner looping logins with a stolen passkey keeps a working session after the emergency revocation; revokeAllAuthState sets revokedAt on challenges and grants (state.ts:227-259) but nothing reads it on the consumption path. Make consumption require revokedAt is null as well, re-read the credential under the transaction lock before the session or credential insert, and cover the interleaving with a test that revokes all auth state between the ceremony read and its commit.",
+      "tags": [
+        "security",
+        "auth"
+      ],
+      "updated_at": "2026-09-20T02:52:12Z",
+      "files": [
+        "packages/auth/src/service.ts",
+        "packages/auth/src/state.ts",
+        "packages/auth/test/service.test.ts"
+      ]
+    },
+    {
+      "id": "T065",
+      "title": "Fix upload body parsing and the draft clear contract",
+      "priority": 1,
+      "status": "todo",
+      "details": "Two compose-route defects. The upload scope registers only a wildcard buffer parser (apps/api/src/compose-routes.ts:337), but the Fastify built-in text/plain and application/json parsers win over the wildcard, so those two media types arrive as a string and new Uint8Array(string) at line 367 yields zero bytes: the durable store records a zero-byte upload, its hash verifies, and the sent message ships an empty attachment. The web client sends the file's own media type, so .txt and .json attachments trigger it on the normal path. Register buffer parsers for both types in the upload scope, or reject a body that is not a Buffer. Also PATCH /drafts/:id collapses markdown: null into field-absent (compose-routes.ts:268) although the service defines null as clear and subject: null clears, so clearing the draft body silently no-ops.",
+      "tags": [
+        "api",
+        "compose",
+        "storage"
+      ],
+      "updated_at": "2026-09-20T02:52:12Z",
+      "files": [
+        "apps/api/src/compose-routes.ts",
+        "apps/api/test/compose-routes.test.ts",
+        "packages/compose/src/service.ts"
+      ]
+    },
+    {
+      "id": "T066",
+      "title": "Chain the offline send path and gate sends on attachments",
+      "priority": 2,
+      "status": "todo",
+      "details": "Three defects in the offline send path. settleSynced chains the base revision only for draft-save payloads (packages/offline/src/sync.ts:542-561), so a queued send keeps the revision frozen at queue time; the send replays against a revision its own preceding edit moved, the server answers draft_stale, and the send lands in manual review. resolveReview's send branch mints a new idempotency key but never advances baseRevision either (sync.ts:316). A draft-save and its send queued in the same millisecond tie on queuedAt, so the send can replay first and mail the pre-edit content; order one draft's save deterministically before its send. And enqueueSend gates only on upload.serverId (sync.ts:394-399): the attach step is never checked and the caller swallows a failed attach (apps/web/src/mail/compose-data.ts:354), so the send can leave without its attachment. Chain sends the way saves chain, break the ordering tie, gate the send on the draft's upload links, and surface the attach failure.",
+      "depends_on": [
+        "T058"
+      ],
+      "tags": [
+        "offline",
+        "send",
+        "compose"
+      ],
+      "updated_at": "2026-09-20T02:52:12Z",
+      "files": [
+        "apps/web/src/mail/compose-data.ts",
+        "packages/offline/src/sync.ts",
+        "packages/offline/test/sync.test.ts",
+        "apps/web/e2e/flows.browser.ts"
+      ]
+    },
+    {
+      "id": "T067",
+      "title": "Harden the offline replay controller and local store",
+      "priority": 3,
+      "status": "todo",
+      "details": "Five defects in the offline wiring. resolve and retry start a second replay pass while one runs (apps/web/src/offline/sync-context.tsx:106; OfflineSync has no re-entrancy lock), so two concurrent passes double-run port calls and a duplicate draft-save PATCH returns draft_stale that lands a good edit in review. refresh drops a generation change observed mid-pass (sync-context.tsx:60) because it returns while a pass is running, so every pending item then fails the generation check on the next pass instead of a clean stop. refresh has no catch (sync-context.tsx:65), so a Dexie failure becomes an unhandled rejection with a null snapshot. cacheMessageRow and cacheMessageDetail do an unlocked read-modify-write (packages/offline/src/store.ts:86) that can drop the cached detail half. And local draft rows and acknowledged upload rows are never deleted (store.ts:135; deleteLocalDraft has no caller), so Dexie grows without bound. Add a re-entrancy guard, observe a generation change after the pass ends, catch refresh failures, make cache updates atomic, and prune settled local records.",
+      "tags": [
+        "offline",
+        "pwa",
+        "reliability"
+      ],
+      "updated_at": "2026-09-20T02:52:12Z",
+      "files": [
+        "apps/web/src/offline/sync-context.tsx",
+        "packages/offline/src/store.ts",
+        "packages/offline/src/sync.ts",
+        "apps/web/test/offline.test.ts",
+        "packages/offline/test/store.test.ts"
+      ]
+    },
+    {
+      "id": "T068",
+      "title": "Stop startup recovery from flipping live sends",
+      "priority": 2,
+      "status": "todo",
+      "details": "recoverAbandonedAttempts holds every same-generation sending row with no age or lease check on sendingStartedAt (packages/send/src/service.ts:1004-1030), and the send queue is not exclusive, so a rolling restart or a second worker flips a live in-flight submission to outcome_unknown. The live worker's commitAcceptance then matches zero rows under its status guard and returns the flipped row (service.ts:1130-1165), so accepted mail is recorded unknown, the draft stays locked, and no Sent copy is scheduled; a definitive refusal instead throws in releaseDraftLock with no per-row catch in executeQueued (service.ts:500), so one poisoned row aborts every sweep. Require an age or lease threshold before startup holds a sending row, make the claim and the hold agree, and contain per-row sweep failures. Also appendDueSentCopies and reconcileUnknownOutcomes select the oldest rows with a bounded limit (service.ts:661-671 and 905-910), so permanently failing appends and evidence-less unknowns occupy the whole window and starve every newer row; page past stuck rows or bound retries per row.",
+      "tags": [
+        "send",
+        "reliability",
+        "safety"
+      ],
+      "updated_at": "2026-09-20T02:52:12Z",
+      "files": [
+        "packages/send/src/service.ts",
+        "packages/send/test/service.test.ts",
+        "apps/worker/src/main.ts"
+      ]
+    },
+    {
+      "id": "T069",
+      "title": "Revalidate folder generations inside bulk action loops",
+      "priority": 2,
+      "status": "todo",
+      "details": "executeFolderGroup compares the folder generation once when it selects the group (packages/actions/src/service.ts:404-407) and then performs up to 500 remote writes against frozen UIDs with no recheck. A UIDVALIDITY change during the batch can retarget a later write onto a different message, and a move with no condition can expunge the wrong local occurrence (service.ts:492). The mailbox port already exposes revalidate (packages/actions/src/mailbox.ts:47-48) and sync calls it before every mutation window (packages/sync/src/steady.ts:243), but no actions path calls it. Recheck the generation through the loop, at a bounded interval or before each write, and stop the group as conflicted when the folder moved. This covers the execution window; T061 covers the freeze-time race in the same file.",
+      "depends_on": [
+        "T061"
+      ],
+      "tags": [
+        "actions",
+        "safety"
+      ],
+      "updated_at": "2026-09-20T02:52:12Z",
+      "files": [
+        "packages/actions/src/service.ts",
+        "packages/actions/src/mailbox.ts",
+        "packages/actions/test/service.test.ts"
+      ]
+    },
+    {
+      "id": "T070",
+      "title": "Bound the Jev input window over the whole composed text",
+      "priority": 2,
+      "status": "todo",
+      "details": "minimizeMessageInput clamps only the body: bodyRoom = Math.max(0, MAX_INPUT_CHARS - header.length) (packages/classification/src/input.ts:70-85). The header holds the sender display name and subject with no length bound at ingestion, so a large folded subject or display name pushes the composed text far past the 4096-character window. Every call for that mail then bills far above the fixed 2000-token estimate behind the monthly cost cap (ESTIMATED_INPUT_TOKENS_PER_CALL in packages/classification/src/service.ts), so real spend can exceed classificationMonthlyCostCapUsd by the same factor. Bound the header inside the window by truncating sender and subject before composing, or make the cap estimate track the actual input length.",
+      "tags": [
+        "classification",
+        "jev",
+        "cost"
+      ],
+      "updated_at": "2026-09-20T02:52:12Z",
+      "files": [
+        "packages/classification/src/input.ts",
+        "packages/classification/src/service.ts",
+        "packages/classification/test/input.test.ts",
+        "packages/classification/test/service.test.ts"
+      ]
+    },
+    {
+      "id": "T071",
+      "title": "Contain thread-pass failures and prevent parent cycles",
+      "priority": 2,
+      "status": "todo",
+      "details": "The thread pass is the one uncontained step of runAccountCycle: a bare await of reconcileAccount (packages/sync/src/runner.ts:160-178) means a throw skips recordStatus, so the per-account sync.status event never lands and the account shows no cycle at all. A concurrent merge can trigger the throw through the self-foreign-key check in decideLink (packages/sync/src/threads.ts:344) or a deadlock abort, and nothing catches either. Contain the pass the way folders and bodies are contained, and record the status event regardless. Also reconcileRow locks only its own row (threads.ts:223-228) while decideLink reads the parent rows unlocked, so two concurrent passes can commit A.parent_message_id = B and B.parent_message_id = A; the schema forbids only self-parents, both rows clear thread_dirty, and membership stays permanently wrong with nothing that repairs it. Serialize the decision, for example by locking both rows in a stable order or rechecking the pair after commit.",
+      "depends_on": [
+        "T059"
+      ],
+      "tags": [
+        "sync",
+        "threading"
+      ],
+      "updated_at": "2026-09-20T02:52:12Z",
+      "files": [
+        "packages/sync/src/runner.ts",
+        "packages/sync/src/threads.ts",
+        "packages/sync/test/threads.test.ts"
+      ]
+    },
+    {
+      "id": "T072",
+      "title": "Handle empty and multi-role folder imports",
+      "priority": 3,
+      "status": "todo",
+      "details": "importFolders inserts with .values(normalized.map(...)) even when discovery returns no folders (packages/accounts/src/service.ts:339), and the route schema allows an empty folders array, so drizzle throws \"values() must be called with at least one value\" and the client sees a 500; skip the insert on an empty list or require minItems in the route schema. And a folder whose hints map to two roles is assigned both in the returned result while the last role update wins on the rows (service.ts:362-373), because the candidate list is read before the loop mutates it; pick one role deliberately and report the assigned role honestly.",
+      "tags": [
+        "accounts",
+        "api"
+      ],
+      "updated_at": "2026-09-20T02:52:12Z",
+      "files": [
+        "packages/accounts/src/service.ts",
+        "packages/accounts/test/service.test.ts",
+        "apps/api/src/account-routes.ts"
+      ]
+    },
+    {
+      "id": "T073",
+      "title": "Stop domain filters matching spoofed display names",
+      "priority": 3,
+      "status": "todo",
+      "details": "The domain operator and the domain chips match recipients_text with a pattern over the joined display text (packages/search/src/service.ts:457-464), and recipientsIndexText stores 'display-name address' pairs (packages/ingestion/src/text.ts:126-135), so a display name such as joe@bank.example inside Cc matches domain:bank.example although no address holds that domain; NFKC folding lets a fullwidth at-sign through the same way. T061 fixes this spoofing class for from:. Extend the fix to domain matching, for example by matching stored address columns or a normalized address-only index text instead of the joined display text.",
+      "depends_on": [
+        "T061"
+      ],
+      "tags": [
+        "search",
+        "security"
+      ],
+      "updated_at": "2026-09-20T02:52:12Z",
+      "files": [
+        "packages/search/src/service.ts",
+        "packages/ingestion/src/text.ts",
+        "packages/search/test/service.test.ts"
+      ]
+    },
+    {
+      "id": "T074",
+      "title": "Fix the compose surface state defects",
+      "priority": 2,
+      "status": "todo",
+      "details": "Three defects in the compose surface. A reply request without accountId that the server answers identity_choice_required makes the client offer the identities of accounts[0] (apps/web/src/components/mail/compose-screen.tsx:108), so a reply to mail in a later account lists identities that all fail with identity_invalid; send the row's accountId with the retry, or offer the account choice the server describes. The editor's dispose path drops the autosaver without a flush (apps/web/src/components/mail/draft-editor.tsx:215), so an edit inside the two-second debounce window is lost on close or draft switch, and any pending edit while saves error is lost too; flush on dispose. And an in-flight draft creation outranks navigation: creating renders ahead of activeDraftId (compose-screen.tsx:349), so the draft the user clicked never opens and a resolved creation overwrites the choice, while startIntent never clears a visible choice step or a stale createError (compose-screen.tsx:129-136).",
+      "tags": [
+        "ui",
+        "compose"
+      ],
+      "updated_at": "2026-09-20T02:52:12Z",
+      "files": [
+        "apps/web/src/components/mail/compose-screen.tsx",
+        "apps/web/src/components/mail/draft-editor.tsx",
+        "apps/web/e2e/flows.browser.ts"
+      ]
+    },
+    {
+      "id": "T075",
+      "title": "Fix the reader, list, and settings interface defects",
+      "priority": 3,
+      "status": "todo",
+      "details": "Five interface defects. A plain-text message leaves the live region announcing the inline-image load forever (apps/web/src/components/mail/reader-pane.tsx:448). After Load images, an http: URL counts as loaded although the frame CSP allows https: only, so the image vanishes with no explanation (apps/web/src/mail/render.ts:165 with markdown.ts:119). A cid: reference that arrives with angle brackets never resolves its part (render.ts:74). Two rapid saves of one settings key can apply out of order, and the late pickPatched repaints the older value over the newer edit (apps/web/src/settings/settings-context.tsx:153); the queued-save fix in T052 protects only different keys. And a manual refresh with more than one fetched page reloads only the last page (apps/web/src/mail/data.ts:540), so serverReadId never rises and the pending overlays never retire; this is the paged counterpart of the single-page defect under T058.",
+      "depends_on": [
+        "T058"
+      ],
+      "tags": [
+        "ui",
+        "reading",
+        "settings"
+      ],
+      "updated_at": "2026-09-20T02:52:12Z",
+      "files": [
+        "apps/web/src/components/mail/reader-pane.tsx",
+        "apps/web/src/mail/render.ts",
+        "apps/web/src/mail/data.ts",
+        "apps/web/src/settings/settings-context.tsx",
+        "apps/web/src/mail/markdown.ts"
+      ]
+    },
+    {
+      "id": "T076",
+      "title": "Copy the missing workspace manifests into the image",
+      "priority": 3,
+      "status": "todo",
+      "details": "The npm ci layers of both stages run while packages/classification, packages/content, and packages/settings are absent from the image (Dockerfile:26-41 and 65-80), although apps/worker and apps/api import classification and settings, and packages/reading and packages/compose import content. npm 11 tolerates the missing targets by leaving dangling @mail-hub/* symlinks that the later package COPY restores, so the build works by accident; the arrangement contradicts the file's own comment that every workspace manifest must be present before npm ci, and an npm release that fails on lockfile targets with no directory breaks both stages. Add the three COPY lines to both stages.",
+      "tags": [
+        "deployment",
+        "hygiene"
+      ],
+      "updated_at": "2026-09-20T02:52:12Z",
+      "files": [
+        "Dockerfile"
+      ]
+    },
+    {
+      "id": "T077",
+      "title": "Watch disk space and collect unreferenced objects",
+      "priority": 3,
+      "status": "todo",
+      "details": "Two spec-level operations gaps. SPEC section 10 requires monitoring free disk space and pausing imports and uploads before durable writes become unsafe; nothing measures free space, so a full disk surfaces only as per-object write failures, and the short-write assert from T048 catches corruption but nothing pauses the pipeline. And SPEC section 8 requires garbage collection that removes only unreferenced durable objects after a grace period longer than the backup window; nothing implements it, so originals stranded by logical-message merges and uploads left by discarded drafts accumulate forever (packages/ingestion/src/service.ts:444-445 notes the stranded duplicates). Add a free-space check that pauses body fetches and uploads under a threshold with an honest event, and a sweep that deletes only objects no table references, behind the collection pause hook the backup script already defines (T053).",
+      "tags": [
+        "storage",
+        "operations",
+        "worker"
+      ],
+      "updated_at": "2026-09-20T02:52:12Z",
+      "files": [
+        "apps/worker/src/main.ts",
+        "packages/database/src/storage/fs-object-store.ts",
+        "packages/database/src/storage/object-store.ts",
+        "deploy/backup.sh"
       ]
     }
   ]
