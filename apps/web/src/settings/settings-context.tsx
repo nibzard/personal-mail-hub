@@ -31,6 +31,7 @@ export const DEFAULT_APPLICATION_SETTINGS: AppSettings = {
   singleKeyShortcuts: true,
   cleanViewDefault: false,
   classificationEnabled: false,
+  homeEnabled: true,
   classificationMonthlyCostCapUsd: null,
   backfillClassification: false,
 };

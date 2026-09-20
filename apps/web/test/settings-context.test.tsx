@@ -62,6 +62,7 @@ const BASE: AppSettings = {
   singleKeyShortcuts: true,
   cleanViewDefault: false,
   classificationEnabled: false,
+  homeEnabled: true,
   classificationMonthlyCostCapUsd: null,
   backfillClassification: false,
 };

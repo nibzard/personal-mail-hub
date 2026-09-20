@@ -15,6 +15,7 @@ import { OutboundService } from "@mail-hub/send";
 import { SearchService } from "@mail-hub/search";
 import { IngestionService } from "@mail-hub/ingestion";
 import { ReadingService } from "@mail-hub/reading";
+import { HomeService } from "@mail-hub/home";
 import { runConnectionTest } from "@mail-hub/transport";
 import { HealthService } from "@mail-hub/observability";
 import { SettingsService } from "@mail-hub/settings";
@@ -25,6 +26,7 @@ import { registerClassificationRoutes } from "./classification-routes.ts";
 import { registerComposeRoutes } from "./compose-routes.ts";
 import { registerConnectionTestRoutes } from "./connection-test-routes.ts";
 import { registerHealthRoutes } from "./health-routes.ts";
+import { registerHomeRoutes } from "./home-routes.ts";
 import { registerMessageRoutes } from "./message-routes.ts";
 import { registerSearchRoutes } from "./search-routes.ts";
 import { registerSendRoutes } from "./send-routes.ts";
@@ -178,6 +180,22 @@ if (authConfig === null) {
     verifySession: (token) => authService.verifySession(token),
   });
   app.log.info("Reading ready: message detail and attachment downloads.");
+
+  // Home assembles the overview from stored records only: no model call and
+  // no mailbox mutation happen on a read (SPEC F13). The sections restate
+  // stored choices, saved work, and classification answers, so the service
+  // reads settings and the classification circuit from the same durable
+  // state every other screen does.
+  const homeService = new HomeService(db, controls, {
+    settings: settingsService,
+    circuit: classificationService,
+  });
+  await registerHomeRoutes(app, {
+    service: homeService,
+    origin: authConfig.origin,
+    verifySession: (token) => authService.verifySession(token),
+  });
+  app.log.info("Home ready: overview sections, saved work, and priorities.");
 
   // Corrections choose their own scope — one message, one sender, or the
   // deterministic rule that answered — and record one event each (SPEC F8).
