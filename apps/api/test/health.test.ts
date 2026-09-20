@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.ts";
 
+/**
+ * `GET /health` is gone. It answered a constant and checked nothing, while
+ * `/healthz` runs the database round trip the SPEC, the container health
+ * check, and `deploy/README.md` all monitor. The real check stays covered by
+ * `health-routes.test.ts`.
+ */
 describe("GET /health", () => {
   const app = buildApp();
 
@@ -8,10 +14,9 @@ describe("GET /health", () => {
     await app.close();
   });
 
-  it("returns the API health contract", async () => {
+  it("is not served; /healthz is the only health check", async () => {
     const response = await app.inject({ method: "GET", url: "/health" });
 
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ service: "api", status: "ok", version: "v1" });
+    expect(response.statusCode).toBe(404);
   });
 });

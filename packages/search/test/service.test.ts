@@ -583,6 +583,30 @@ suite("SearchService", () => {
       await expect(blockedService.search({ query: "quarterly" })).resolves.toBeDefined();
       await expect(blockedService.listSavedSearches()).resolves.toBeDefined();
     });
+
+    it("answers a stale generation before malformed input is parsed", async () => {
+      const blocked: MutationGate = {
+        gateMutation: async () => {
+          throw new RecoveryBlockedError("recovery_required", "22222222-2222-4222-8222-222222222222");
+        },
+      };
+      const blockedService = new SearchService(db, blocked);
+      // The name, query, and identifier would each answer 400 after
+      // parsing; the stale generation answers first, so the client reviews
+      // the restore instead of fixing input the restore invalidated.
+      await expect(
+        blockedService.createSavedSearch(
+          { requestGeneration: "00000000-0000-4000-8000-000000000000" },
+          { name: "   ", query: "color:red" },
+        ),
+      ).rejects.toMatchObject({ code: "recovery_required", httpStatus: 409 });
+      await expect(
+        blockedService.deleteSavedSearch(
+          { requestGeneration: "00000000-0000-4000-8000-000000000000" },
+          "not-a-uuid",
+        ),
+      ).rejects.toMatchObject({ code: "recovery_required", httpStatus: 409 });
+    });
   });
 
   it("matches from: and to: against addresses, not display names", async () => {

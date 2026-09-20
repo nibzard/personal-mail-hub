@@ -401,18 +401,19 @@ export class SearchService {
   }
 
   /**
-   * Store one saved search. The query must parse and the scope must be
-   * valid before anything is written; the recovery generation gate runs
-   * before the insert, like every durable client mutation. The row and its
-   * audit event commit in one transaction, so a crash between them cannot
-   * leave an untracked mutation.
+   * Store one saved search. The recovery generation gate runs before any
+   * input is parsed, so a stale-generation client hears `recovery_required`
+   * even when its input is malformed; then the query must parse and the
+   * scope must be valid before anything is written. The row and its audit
+   * event commit in one transaction, so a crash between them cannot leave
+   * an untracked mutation.
    */
   async createSavedSearch(context: MutationContext, input: CreateSavedSearchInput): Promise<SavedSearchRecord> {
+    await this.gate.gateMutation(context.requestGeneration);
+
     const name = readSavedSearchName(input.name);
     parseSearchQuery(readQueryText(input.query));
     const scope = readSavedSearchScope(input.scope);
-
-    await this.gate.gateMutation(context.requestGeneration);
 
     return await this.db
       .transaction(async (tx) => {
@@ -439,15 +440,18 @@ export class SearchService {
   }
 
   /**
-   * Remove one saved search. Unknown identifiers report `not_found`. The
-   * delete and its audit event commit in one transaction, so the event can
-   * never go missing behind a mutation that happened.
+   * Remove one saved search. The recovery generation gate runs before the
+   * identifier check, so a stale-generation client hears `recovery_required`
+   * even with a malformed identifier. Unknown identifiers report
+   * `not_found`. The delete and its audit event commit in one transaction,
+   * so the event can never go missing behind a mutation that happened.
    */
   async deleteSavedSearch(context: MutationContext, id: string): Promise<void> {
+    await this.gate.gateMutation(context.requestGeneration);
+
     if (!UUID_PATTERN.test(id)) {
       throw new SearchError("invalid_request", `Saved-search identifier must be a UUID: ${id}`);
     }
-    await this.gate.gateMutation(context.requestGeneration);
 
     await this.db.transaction(async (tx) => {
       const deleted = await tx.delete(savedSearches).where(eq(savedSearches.id, id)).returning();
