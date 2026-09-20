@@ -1,3 +1,5 @@
+import { realpathSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { parseCredentialsKey, createCredentialCipher, AccountService } from "@mail-hub/accounts";
 import { ActionService, TwoWayActionExecutor } from "@mail-hub/actions";
 import { ClassificationService, jevAdapterFromEnv } from "@mail-hub/classification";
@@ -9,6 +11,7 @@ import {
   createStorage,
   durableMinFreeBytesFromEnv,
   events,
+  type MailHubDatabase,
   StorageError,
   sweepTempFiles,
   TEMP_FILE_STALE_MS,
@@ -24,7 +27,12 @@ import {
 import { OutboundService } from "@mail-hub/send";
 import { SettingsService } from "@mail-hub/settings";
 import { submitSmtpMessage } from "@mail-hub/transport";
-import { stopWorker } from "./shutdown.ts";
+import {
+  stopWorker,
+  type EndablePool,
+  type ShutdownReporter,
+  type StoppableQueue,
+} from "./shutdown.ts";
 import {
   BackfillService,
   BodyFetchService,
@@ -79,9 +87,16 @@ async function main(databaseUrl: string): Promise<void> {
     deploymentGeneration: process.env.RECOVERY_GENERATION,
   });
 
-  const shutdown = new AbortController();
-  process.once("SIGINT", () => shutdown.abort());
-  process.once("SIGTERM", () => shutdown.abort());
+  // SIGTERM stops the worker in two steps: the cycle signal aborts so no
+  // account beyond the current one starts, and the queue stops gracefully so
+  // the in-flight cycle transaction commits first. A rejected queue stop is
+  // reported and fails the exit instead of passing silently. One listener
+  // pair serves the whole process lifetime; a signal that arrives during
+  // setup, while no queue exists yet, runs its stop once setup completes.
+  const { shutdown, armStop } = installWorkerSignals({
+    pool,
+    report: (message) => console.error(message),
+  });
 
   // Startup control check (SPEC section 10, step 2): stay blocked without
   // crashing, so workers resume without a restart once recovery completes.
@@ -286,7 +301,7 @@ async function main(databaseUrl: string): Promise<void> {
         break;
       }
       try {
-        await runAccountCycle(accounts, runner, actions, sessions, account.id, shutdown.signal);
+        await runAccountCycle(db, accounts, runner, actions, sessions, account.id, shutdown.signal);
       } catch (cause) {
         if (cause instanceof StorageError && cause.code === "insufficient_space") {
           // A full volume pauses the cycle without failing the job (SPEC
@@ -411,36 +426,82 @@ async function main(databaseUrl: string): Promise<void> {
   await armSchedule(queue, ready.generation, CLASSIFY_CYCLE_QUEUE, classifyCycleCron);
   console.log(`Classify cycles scheduled (${classifyCycleCron}).`);
 
-  // SIGTERM stops the worker in two steps: the cycle signal aborts so no
-  // account beyond the current one starts, and the queue stops gracefully so
-  // the in-flight cycle transaction commits first. A rejected queue stop is
-  // reported and fails the exit instead of passing silently. One signal pair
-  // runs the sequence once; a second signal while it runs changes nothing.
-  let stopping = false;
-  const stop = () => {
-    if (stopping) {
-      return;
-    }
-    stopping = true;
-    void stopWorker({
-      queue,
-      pool,
-      shutdown,
-      report: (message) => console.error(message),
-    }).then((code) => {
-      process.exitCode = code;
-    });
+  // A signal that arrived during setup was consumed while no stop gate
+  // existed, so nothing would ever run the stop: the queue stays started and
+  // the entrypoint wait hangs until SIGKILL. armStop installs the gate and
+  // runs the stop itself when the signal already aborted; setup returns then
+  // instead of running cycles on a process that was asked to stop.
+  if (armStop(queue)) {
+    return;
+  }
+}
+
+/**
+ * The worker's signal path for one process lifetime (SPEC section 10). One
+ * listener per signal serves startup and the running worker alike. Before
+ * `armStop` installs the stop gate a signal only aborts the controller: the
+ * startup wait rejects on the abort and closes the pool itself. Once the
+ * gate exists, the same signal also runs the graceful stop, and a repeated
+ * signal changes nothing while the stop runs.
+ *
+ * A signal that arrives between those points is consumed while no gate
+ * exists, so `armStop` runs the stop itself when the signal already
+ * aborted and reports it: without that step a SIGTERM during setup leaves
+ * the started queue behind and the entrypoint wait hangs until SIGKILL.
+ */
+export function installWorkerSignals(input: {
+  pool: EndablePool;
+  report?: ShutdownReporter;
+  /** Where the exit code lands; the process object in production. */
+  setExitCode?: (code: number) => void;
+  /** Installs the signal listener; `process.on` in production. */
+  onSignal?: (listener: () => void) => void;
+}): { shutdown: AbortController; armStop: (queue: StoppableQueue) => boolean } {
+  const shutdown = new AbortController();
+  const setExitCode = input.setExitCode ?? ((code: number) => {
+    process.exitCode = code;
+  });
+  let stop: (() => void) | undefined;
+  const listener = () => {
+    shutdown.abort();
+    stop?.();
   };
-  process.once("SIGINT", stop);
-  process.once("SIGTERM", stop);
+  if (input.onSignal === undefined) {
+    process.on("SIGINT", listener);
+    process.on("SIGTERM", listener);
+  } else {
+    input.onSignal(listener);
+  }
+  return {
+    shutdown,
+    armStop: (queue) => {
+      let stopping = false;
+      stop = () => {
+        if (stopping) {
+          return;
+        }
+        stopping = true;
+        void stopWorker({ queue, pool: input.pool, shutdown, report: input.report }).then(
+          setExitCode,
+        );
+      };
+      if (shutdown.signal.aborted) {
+        stop();
+        return true;
+      }
+      return false;
+    },
+  };
 }
 
 /**
  * Run one bounded cycle for one account over one connection (SPEC F2). A
  * mailbox failure is logged without credentials or content and never stops
- * the accounts that follow.
+ * the accounts that follow; one `sync.failed` event keeps each failure in
+ * the durable audit trail.
  */
-async function runAccountCycle(
+export async function runAccountCycle(
+  db: MailHubDatabase,
   accounts: AccountService,
   runner: SyncRunner,
   actions: ActionService,
@@ -487,8 +548,26 @@ async function runAccountCycle(
       // is a state to report, not a failure to contain.
       throw cause;
     }
-    const detail = cause instanceof SyncError ? cause.message : "unexpected failure";
+    // Contained failures stay visible on both surfaces: the log carries the
+    // cause (the stack too when it is not a classified sync failure), and
+    // one event per failure lands in the audit trail the same way the
+    // classification cycle records its `class.error` events.
+    const kind = cause instanceof SyncError ? cause.code : "unexpected_failure";
+    const detail = cause instanceof Error ? `${cause.name}: ${cause.message}` : String(cause);
     console.error(`Sync cycle for account ${accountId} failed: ${detail}`);
+    if (!(cause instanceof SyncError) && cause instanceof Error && cause.stack !== undefined) {
+      console.error(cause.stack);
+    }
+    await db
+      .insert(events)
+      .values({
+        actor: "system",
+        type: "sync.failed",
+        entityType: "account",
+        entityId: accountId,
+        payload: { accountId, kind },
+      })
+      .catch(() => undefined);
   } finally {
     await session?.logout().catch(() => undefined);
   }
@@ -553,4 +632,27 @@ async function armSchedule(
   await queue.schedule(queueName, cron, { generation });
 }
 
-await main(connectionString);
+/**
+ * Whether Node loaded this module as the entry script. The worker starts
+ * only then; the test suite imports the helpers this module exports without
+ * running a startup it would have to unwind.
+ */
+function invokedAsEntryScript(): boolean {
+  const script = process.argv[1];
+  if (script === undefined) {
+    return false;
+  }
+  if (pathToFileURL(script).href === import.meta.url) {
+    return true;
+  }
+  // A bin path can carry a symlink component while the module URL does not.
+  try {
+    return pathToFileURL(realpathSync(script)).href === import.meta.url;
+  } catch {
+    return false;
+  }
+}
+
+if (invokedAsEntryScript()) {
+  await main(connectionString);
+}
