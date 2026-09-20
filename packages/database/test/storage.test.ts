@@ -1,7 +1,7 @@
-import { mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, open, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -10,6 +10,8 @@ import {
   originalMessageKey,
   outboundMimeKey,
   StorageError,
+  sweepTempFiles,
+  TEMP_FILE_STALE_MS,
   uploadKey,
   type ObjectStore,
   type Storage,
@@ -90,6 +92,18 @@ describe("durable object store", () => {
     // The failed write never became visible: the object under the key keeps
     // the bytes the earlier test stored and verified.
     await expect(storage.durable.verify(key, sha256Hex(BINARY_BYTES))).resolves.toBe(true);
+  });
+
+  it("leaves no temp file behind when the caller's stream fails", async () => {
+    const refusal = new Error("policy refusal");
+    async function* refusing(): AsyncIterable<Uint8Array> {
+      throw refusal;
+    }
+    const refusalKey = originalMessageKey("99999998-9999-4999-8999-999999999998");
+    await expect(storage.durable.putStream(refusalKey, refusing())).rejects.toBe(refusal);
+    const objectDir = dirname(join(root, "durable", ...refusalKey.split("/")));
+    const entries = await readdir(objectDir);
+    expect(entries.filter((name) => name.startsWith(".tmp-"))).toEqual([]);
   });
 
   it("loops past short filesystem writes and publishes complete bytes", async () => {
@@ -225,5 +239,42 @@ describe("key safety", () => {
     const objectPath = join(root, "durable", ...key.split("/"));
     await writeFile(objectPath, new TextEncoder().encode("tampered"));
     await expect(storage.durable.verify(key, metadata.sha256)).resolves.toBe(false);
+  });
+});
+
+describe("temp file sweep", () => {
+  it("clears crash debris and keeps temp files a live write may still fill", async () => {
+    const dir = join(root, "durable", "uploads");
+    await mkdir(dir, { recursive: true });
+    const debris = join(dir, ".tmp-crashed-write");
+    const inFlight = join(dir, ".tmp-live-write");
+    await writeFile(debris, new TextEncoder().encode("left by a crash"));
+    await writeFile(inFlight, new TextEncoder().encode("still streaming"));
+    const stale = new Date(Date.now() - 2 * TEMP_FILE_STALE_MS);
+    await utimes(debris, stale, stale);
+
+    await expect(sweepTempFiles(root)).resolves.toBe(1);
+    await expect(access(debris)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(access(inFlight)).resolves.toBeUndefined();
+
+    // Once a skipped file ages past the bound, the next sweep collects it.
+    await utimes(inFlight, stale, stale);
+    await expect(sweepTempFiles(root)).resolves.toBe(1);
+    await expect(access(inFlight)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("never removes stored objects or their sidecars", async () => {
+    const key = uploadKey("cccccccc-cccc-4ccc-8ccc-cccccccccccc");
+    const metadata = await storage.durable.put(key, BINARY_BYTES);
+    const objectDir = dirname(join(root, "durable", ...key.split("/")));
+    await writeFile(join(objectDir, ".tmp-crashed-write"), new TextEncoder().encode("debris"));
+
+    // A zero bound makes every temp file debris, and still nothing else moves.
+    await expect(sweepTempFiles(root, { olderThanMs: 0 })).resolves.toBe(1);
+
+    await expect(storage.durable.get(key)).resolves.toEqual(Buffer.from(BINARY_BYTES));
+    await expect(storage.durable.verify(key, metadata.sha256)).resolves.toBe(true);
+    const sidecar = await readFile(`${join(root, "durable", ...key.split("/"))}.meta.json`);
+    expect(JSON.parse(sidecar.toString())).toMatchObject({ key, sha256: metadata.sha256 });
   });
 });

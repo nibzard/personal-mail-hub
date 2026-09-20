@@ -1743,20 +1743,21 @@
         "deployment",
         "recovery"
       ],
-      "updated_at": "2026-09-20T01:03:47Z",
+      "updated_at": "2026-09-20T01:04:30Z",
       "files": [
-        "deploy/backup.sh",
         "deploy/README.md",
+        "deploy/backup.sh",
         "deploy/docker-compose.yml",
         "deploy/env.example",
-        "deploy/restore.sh"
+        "deploy/restore.sh",
+        "to-do.json"
       ]
     },
     {
       "id": "T056",
       "title": "Keep empty streams from destroying durable originals",
       "priority": 1,
-      "status": "todo",
+      "status": "done",
       "details": "writeObject renames the temp file over the final path before any caller inspects the result (packages/database/src/storage/fs-object-store.ts:155). The streaming path of stageOriginal then tests sizeBytes === 0, removes the key, and throws (packages/ingestion/src/service.ts:149-164). The rename has already replaced the durable original under that key. A truncated server stream therefore destroys the stored bytes while the database still references them. The docstring falsely claims stored bytes stay untouched. Enforce the size policy before the rename, or complete the object before it becomes visible. Also sweep stray .tmp-* files after a crash, because the durable tree keeps them and the backup copies them.",
       "depends_on": [
         "T002",
@@ -1766,8 +1767,10 @@
         "storage",
         "ingestion"
       ],
-      "updated_at": "2026-09-20T00:56:03Z",
+      "updated_at": "2026-09-20T01:21:57Z",
       "files": [
+        "apps/api/src/main.ts",
+        "apps/worker/src/main.ts",
         "packages/database/src/storage/fs-object-store.ts",
         "packages/database/test/storage.test.ts",
         "packages/ingestion/src/service.ts",

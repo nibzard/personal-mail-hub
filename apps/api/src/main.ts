@@ -1,4 +1,4 @@
-import { createDatabase, createPool, createStorage } from "@mail-hub/database";
+import { createDatabase, createPool, createStorage, sweepTempFiles } from "@mail-hub/database";
 import { RecoveryControls, describeControlStatus } from "@mail-hub/recovery";
 import { ActionService, TwoWayActionExecutor } from "@mail-hub/actions";
 import { PasskeyAuthService, parseAuthConfig } from "@mail-hub/auth";
@@ -101,7 +101,16 @@ if (authConfig === null) {
   // files persist in durable storage before the database acknowledges them
   // (SPEC F6). No mailbox credentials are involved, so they open without
   // CREDENTIALS_KEY. Send snapshots persist in the same durable volume.
-  const storage = createStorage(process.env.STORAGE_ROOT ?? DEFAULT_STORAGE_ROOT);
+  const storageRoot = process.env.STORAGE_ROOT ?? DEFAULT_STORAGE_ROOT;
+  const storage = createStorage(storageRoot);
+  // Every failure path a write survives removes its own temp file, so
+  // anything left is debris from a crashed write; clear it before the tree
+  // serves requests again. The staleness bound keeps temp files the worker
+  // process may still be filling.
+  const sweptTempFiles = await sweepTempFiles(storageRoot);
+  if (sweptTempFiles > 0) {
+    app.log.info(`Cleared ${sweptTempFiles} temp file(s) that a crashed write left behind.`);
+  }
   const composeService = new ComposeService(db, storage, controls);
   await registerComposeRoutes(app, {
     service: composeService,

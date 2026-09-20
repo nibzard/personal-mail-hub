@@ -13,4 +13,4 @@ export {
   outboundMimeKey,
   uploadKey,
 } from "./keys.ts";
-export { createStorage } from "./fs-object-store.ts";
+export { createStorage, sweepTempFiles, TEMP_FILE_STALE_MS } from "./fs-object-store.ts";

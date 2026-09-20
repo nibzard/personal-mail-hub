@@ -1,7 +1,14 @@
 import { parseCredentialsKey, createCredentialCipher, AccountService } from "@mail-hub/accounts";
 import { ActionService, TwoWayActionExecutor } from "@mail-hub/actions";
 import { ClassificationService, jevAdapterFromEnv } from "@mail-hub/classification";
-import { createDatabase, createJobQueue, createPool, createStorage } from "@mail-hub/database";
+import {
+  createDatabase,
+  createJobQueue,
+  createPool,
+  createStorage,
+  sweepTempFiles,
+  TEMP_FILE_STALE_MS,
+} from "@mail-hub/database";
 import { IngestionService } from "@mail-hub/ingestion";
 import {
   RecoveryControls,
@@ -109,7 +116,30 @@ async function main(databaseUrl: string): Promise<void> {
     return;
   }
 
-  const storage = createStorage(process.env.STORAGE_ROOT ?? DEFAULT_STORAGE_ROOT);
+  const storageRoot = process.env.STORAGE_ROOT ?? DEFAULT_STORAGE_ROOT;
+  const storage = createStorage(storageRoot);
+  // Crash recovery for the storage tree: a killed write leaves its temp
+  // file behind, the durable tree keeps it, and the nightly backup would
+  // copy the debris. The staleness bound protects temp files the API
+  // process may still be filling, so the sweep repeats hourly and collects
+  // whatever a restart found too fresh.
+  const sweptAtStartup = await sweepTempFiles(storageRoot);
+  if (sweptAtStartup > 0) {
+    console.log(`Cleared ${sweptAtStartup} temp file(s) that a crashed write left behind.`);
+  }
+  const tempSweep = setInterval(() => {
+    void sweepTempFiles(storageRoot).then(
+      (removed) => {
+        if (removed > 0) {
+          console.log(`Cleared ${removed} temp file(s) that a crashed write left behind.`);
+        }
+      },
+      (cause) => {
+        console.error(`Storage temp sweep failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+      },
+    );
+  }, TEMP_FILE_STALE_MS);
+  tempSweep.unref();
   const accounts = new AccountService(db, createCredentialCipher(credentialsKey), controls);
   const ingestion = new IngestionService(db, storage);
 

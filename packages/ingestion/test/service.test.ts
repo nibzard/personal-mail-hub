@@ -333,6 +333,28 @@ suite("IngestionService", () => {
     expect(row.originalSha256).toBe(staged.sha256);
   });
 
+  it("keeps the staged original when a retried fetch streams nothing", async () => {
+    const { message } = await provisionalMessage();
+    const bytes = standardMessage();
+    async function* chunked(): AsyncIterable<Uint8Array> {
+      yield bytes;
+    }
+
+    const staged = await service.stageOriginal({ messageId: message.id, source: chunked() });
+
+    await expect(
+      service.stageOriginal({ messageId: message.id, source: emptyStream() }),
+    ).rejects.toMatchObject({ name: "IngestionError", code: "invalid_request" });
+
+    // The empty retry never replaced the staged bytes: the durable original
+    // still holds exactly what the first staging wrote and hashed.
+    await expect(storage.durable.get(staged.storageKey)).resolves.toEqual(Buffer.from(bytes));
+    await expect(storage.durable.verify(staged.storageKey, staged.sha256)).resolves.toBe(true);
+    await expect(storage.durable.stat(staged.storageKey)).resolves.toMatchObject({
+      sizeBytes: staged.sizeBytes,
+    });
+  });
+
   it("rejects an original the server already reported above the bound", async () => {
     const { message } = await provisionalMessage();
 

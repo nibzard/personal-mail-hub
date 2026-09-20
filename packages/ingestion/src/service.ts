@@ -142,9 +142,10 @@ export class IngestionService {
    * Stream one original into durable storage without buffering it whole
    * (SPEC section 10: stream originals to disk). The write finishes and the
    * hash is known before the caller applies anything, so the staged bytes are
-   * the record from this point on. A stream that crosses the maximum size
-   * aborts mid-write: the store never renames a partial object into place,
-   * and anything already stored under the key stays untouched.
+   * the record from this point on. A stream that crosses the maximum size or
+   * ends without any bytes aborts the store's write before it renames
+   * anything into place, so bytes already stored under the key stay
+   * untouched and a later fetch of the same message can stage again.
    */
   async stageOriginal(input: StageOriginalInput): Promise<StagedOriginal> {
     requireUuid("message id", input.messageId);
@@ -154,12 +155,6 @@ export class IngestionService {
 
     const storageKey = originalMessageKey(input.messageId);
     const stored = await this.storage.durable.putStream(storageKey, bounded(input.source));
-    if (stored.sizeBytes === 0) {
-      // Nothing the server answered was usable; an empty object must not
-      // masquerade as this message's original.
-      await this.storage.durable.remove(storageKey);
-      throw new IngestionError("invalid_request", "Original message bytes are empty.");
-    }
     return { messageId: input.messageId, storageKey, sha256: stored.sha256, sizeBytes: stored.sizeBytes };
   }
 
@@ -603,9 +598,11 @@ async function* oneChunk(bytes: Uint8Array): AsyncGenerator<Uint8Array> {
 }
 
 /**
- * Pass chunks through while they stay inside the maximum message size. The
- * first chunk that crosses the bound throws, which stops the download and
- * aborts the store's write before any partial object becomes visible.
+ * Pass chunks through while they stay inside the maximum message size, and
+ * refuse a source that ends without any bytes. The first chunk that crosses
+ * the bound throws mid-download, and an empty source throws at its end.
+ * Either refusal stops the store's write before any partial or empty object
+ * becomes visible, so the key keeps whatever it already held.
  */
 async function* bounded(source: AsyncIterable<Uint8Array>): AsyncGenerator<Uint8Array> {
   let streamed = 0;
@@ -615,6 +612,11 @@ async function* bounded(source: AsyncIterable<Uint8Array>): AsyncGenerator<Uint8
     }
     streamed += chunk.byteLength;
     yield chunk;
+  }
+  if (streamed === 0) {
+    // A truncated server stream must not masquerade as this message's
+    // original, and must not replace the bytes an earlier fetch stored.
+    throw new IngestionError("invalid_request", "Original message bytes are empty.");
   }
 }
 

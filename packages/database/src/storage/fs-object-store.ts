@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
-import { mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rename, stat, unlink } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Readable } from "node:stream";
@@ -14,6 +14,15 @@ import {
 } from "./object-store.ts";
 
 const SIDECAR_SUFFIX = ".meta.json";
+const TEMP_PREFIX = ".tmp-";
+
+/**
+ * How long a temp file must have sat untouched before a sweep may remove
+ * it. A live write holds its temp file only while one object streams to
+ * disk, so a file this old is debris from a crashed write, not a write
+ * another process is still filling.
+ */
+export const TEMP_FILE_STALE_MS = 60 * 60 * 1000;
 
 /** Filesystem object store for one storage class under one root directory. */
 class FsObjectStore implements ObjectStore {
@@ -117,7 +126,7 @@ class FsObjectStore implements ObjectStore {
     const finalPath = this.pathFor(key);
     const dir = dirname(finalPath);
     await mkdir(dir, { recursive: true });
-    const tempPath = join(dir, `.tmp-${randomUUID()}`);
+    const tempPath = join(dir, `${TEMP_PREFIX}${randomUUID()}`);
     const hash = createHash("sha256");
     let sizeBytes = 0;
 
@@ -169,7 +178,7 @@ class FsObjectStore implements ObjectStore {
 
   private async writeSidecar(sidecarPath: string, metadata: StoredObjectMetadata): Promise<void> {
     const dir = dirname(sidecarPath);
-    const tempPath = join(dir, `.tmp-${randomUUID()}`);
+    const tempPath = join(dir, `${TEMP_PREFIX}${randomUUID()}`);
     const handle = await open(tempPath, "wx");
     try {
       await writeAll(handle, new TextEncoder().encode(JSON.stringify(metadata)));
@@ -216,6 +225,54 @@ export function createStorage(root: string): Storage {
     durable: new FsObjectStore(join(root, "durable"), "durable"),
     disposable: new FsObjectStore(join(root, "cache"), "disposable"),
   };
+}
+
+/**
+ * Remove temp files that crashed writes left behind, and return how many
+ * were removed. Every failure path a write survives removes its own temp
+ * file, so what remains belongs to a process that died mid-write; the
+ * durable tree would keep that debris and the nightly backup would copy
+ * it. A temp file younger than the staleness bound stays, because another
+ * process may still be filling it. A crash can resurrect a removed file;
+ * the next sweep collects it again, so directories are not fsynced.
+ */
+export async function sweepTempFiles(
+  root: string,
+  options: { olderThanMs?: number } = {},
+): Promise<number> {
+  const olderThanMs = options.olderThanMs ?? TEMP_FILE_STALE_MS;
+  let removed = 0;
+  async function sweepDir(dir: string): Promise<void> {
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const entryPath = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await sweepDir(entryPath);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.startsWith(TEMP_PREFIX)) {
+        continue;
+      }
+      try {
+        const fileStat = await stat(entryPath);
+        if (Date.now() - fileStat.mtimeMs < olderThanMs) {
+          continue;
+        }
+        await unlink(entryPath);
+        removed += 1;
+      } catch {
+        // The file raced another sweep or refuses to read; the next sweep
+        // retries it.
+      }
+    }
+  }
+  await sweepDir(root);
+  return removed;
 }
 
 function sha256Hex(bytes: Uint8Array): string {
