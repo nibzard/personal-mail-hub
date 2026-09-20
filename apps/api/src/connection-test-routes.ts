@@ -36,7 +36,7 @@ export interface ConnectionTestRoutesOptions {
   verifySession(token: string): Promise<unknown>;
 }
 
-const UUID_PATTERN = "^[0-9a-fA-F-]{36}$";
+const UUID_PATTERN = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
 
 /** Register the connection-test route with its scoped error handler. */
 export async function registerConnectionTestRoutes(

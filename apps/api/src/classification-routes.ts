@@ -31,7 +31,7 @@ export interface ClassificationRoutesOptions {
   verifySession(token: string): Promise<unknown>;
 }
 
-const UUID_PATTERN = "^[0-9a-fA-F-]{36}$";
+const UUID_PATTERN = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
 
 /** The longest note one correction may carry; the service repeats the rule. */
 const MAX_NOTE_CHARS = 2_000;

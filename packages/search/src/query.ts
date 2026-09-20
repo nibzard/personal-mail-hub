@@ -13,7 +13,8 @@ import { SearchError } from "./errors.ts";
  * `is:action`, `has:attachment`, `type:`, `before:`, `after:`. Unknown
  * operators, empty values, and dates that are not real calendar dates
  * reject. Double quotes keep a span together as free text, so quoted text
- * may contain colons, for example URLs.
+ * may contain colons, for example URLs. A quote without its closing quote
+ * rejects, because no token could say what the writer meant.
  */
 
 /** The Jev message classes a `type:` operator may select (SPEC F8). */
@@ -102,9 +103,13 @@ const TOKEN_PATTERN = /([a-zA-Z]+):(?:"([^"]*)"|(\S*))|(?:"([^"]*)"|([^\s"]+))/g
 /**
  * Parse one query string. Throws `SearchError` with `invalid_query` on an
  * unknown operator, an empty operator value, an unknown `is:` or `has:`
- * value, an unknown Jev class, or an invalid date.
+ * value, an unknown Jev class, an invalid date, or a dangling double quote.
  */
 export function parseSearchQuery(raw: string): ParsedSearchQuery {
+  const quotes = raw.match(/"/g)?.length ?? 0;
+  if (quotes % 2 === 1) {
+    throw new SearchError("invalid_query", "A double quote is missing its closing quote.");
+  }
   const parsed = emptyQuery();
   const freeText: string[] = [];
 

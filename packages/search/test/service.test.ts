@@ -504,4 +504,43 @@ suite("SearchService", () => {
       await expect(blockedService.listSavedSearches()).resolves.toBeDefined();
     });
   });
+
+  it("matches from: and to: against addresses, not display names", async () => {
+    // A spoofed sender: the display name carries the bait, the address does
+    // not. The recipient list hides a mid-list address behind a name too.
+    const spoof = await seedMessage({
+      accountId: accountB,
+      subject: "Account suspended",
+      subjectText: "account suspended",
+      senderText: "paypal support support@phish.example",
+      sender: { address: "support@phish.example", name: "paypal support" },
+      recipients: { to: [{ address: "payroll@corp.example", name: null }] },
+      recipientsText: "main main@hub.example payrolldept payroll@corp.example",
+      fetchedBody: false,
+      sentAt: new Date("2026-09-17T10:00:00Z"),
+    });
+    await seedOccurrence(spoof, accountB, inboxB, "2026-09-17T10:01:00Z");
+
+    // The bait in a display name never satisfies the filter.
+    expect([...(await searchMap({ query: "from:paypal" })).keys()]).toEqual([]);
+    expect([...(await searchMap({ query: "to:payrolldept" })).keys()]).toEqual([]);
+    // The address answers: local part, domain, and full address.
+    expect([...(await searchMap({ query: "from:support" })).keys()]).toEqual([spoof]);
+    expect([...(await searchMap({ query: "from:@phish.example" })).keys()]).toEqual([spoof]);
+    expect([...(await searchMap({ query: "from:support@phish.example" })).keys()]).toEqual([spoof]);
+    // A mid-list address still answers a to: filter.
+    expect([...(await searchMap({ query: "to:payroll@corp.example" })).keys()]).toEqual([spoof]);
+  });
+
+  it("reports the true total on a page past the last match", async () => {
+    const pastEnd = await service.search({ query: "from:@phish.example", limit: 3, offset: 30 });
+    expect(pastEnd.results).toEqual([]);
+    // The page is out of range, not empty: the total still says one match
+    // exists, so a client can page back instead of showing "no results".
+    expect(pastEnd.total).toBe(1);
+
+    // A filter with no matches at all reports zero, not a phantom count.
+    const none = await service.search({ query: "from:ghost@nowhere.example", limit: 3, offset: 30 });
+    expect(none.total).toBe(0);
+  });
 });

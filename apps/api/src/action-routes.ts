@@ -35,7 +35,7 @@ export interface ActionRoutesOptions {
   verifySession(token: string): Promise<unknown>;
 }
 
-const UUID_PATTERN = "^[0-9a-fA-F-]{36}$";
+const UUID_PATTERN = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
 
 const actionParams = {
   type: "object",

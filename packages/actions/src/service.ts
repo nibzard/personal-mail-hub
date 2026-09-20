@@ -431,6 +431,23 @@ export class ActionService<M extends ActionMailbox = ActionMailbox> {
         await this.commitDisposition(action, item, this.conflict("invalidated"));
         continue;
       }
+      if (
+        occurrence.uidvalidity !== item.target.uidvalidity ||
+        occurrence.uidvalidity !== folder.uidvalidity
+      ) {
+        // The item was frozen against a generation the rows no longer hold.
+        // A UID from the old space can name any message in the new one, so
+        // the write refuses instead of guessing (SPEC F2).
+        await this.commitDisposition(
+          action,
+          item,
+          this.conflict("generation_changed", {
+            currentUidvalidity: occurrence.uidvalidity,
+            folderUidvalidity: folder.uidvalidity,
+          }),
+        );
+        continue;
+      }
 
       const desire = flagDesireOf(action.kind as ActionKind);
       if (desire !== null && remote[desire.flag] === desire.value) {

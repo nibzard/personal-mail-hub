@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { enrollmentGrants, type GrantPurpose } from "@mail-hub/database";
 import type { MailHubDatabase } from "@mail-hub/database";
 import type { MailHubTransaction, RecoveryControls, RecoveryHooks } from "@mail-hub/recovery";
@@ -106,6 +107,11 @@ export class ConsoleAuthService {
     }
 
     return this.db.transaction(async (tx) => {
+      // The same per-purpose lock as bootstrap: two concurrent recover
+      // commands must not both leave a live grant behind.
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtext(${`auth.grant_issue.recovery`})::bigint)`,
+      );
       const revoked = await revokeAllAuthState(tx);
       const grant = await insertGrantRow(tx, "recovery", deployment, this.grantTtlMs);
       await recordAuthEvent(tx, "auth.recovery_grant", {
@@ -122,6 +128,21 @@ export class ConsoleAuthService {
 
   private async insertGrant(purpose: GrantPurpose, generation: string): Promise<IssuedGrant> {
     return this.db.transaction(async (tx) => {
+      // Serialize grant issues per purpose: without the lock, two concurrent
+      // bootstraps each revoke nothing (the other's grant is uncommitted)
+      // and each insert a grant, leaving two live at once. Under the lock the
+      // second run's revoke sees the first run's committed grant instead.
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtext(${`auth.grant_issue.${purpose}`})::bigint)`,
+      );
+      // Re-check under the lock: an enrollment that completed meanwhile
+      // closes setup, and a second bootstrap grant must not open it again.
+      if ((await readOwner(tx)) !== null) {
+        throw new AuthError(
+          "owner_exists",
+          "An owner is already registered. Use 'auth recover' when all passkeys are lost.",
+        );
+      }
       // A new grant invalidates any earlier grant for the same purpose.
       await revokeGrantsForPurpose(tx, purpose);
       const grant = await insertGrantRow(tx, purpose, generation, this.grantTtlMs);

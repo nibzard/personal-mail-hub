@@ -94,6 +94,13 @@ describe("parseSearchQuery", () => {
     expect(() => parseSearchQuery("from:")).toThrowError(/needs a value/u);
   });
 
+  it("rejects a double quote without its closing quote", () => {
+    expect(() => parseSearchQuery('hello "world')).toThrowError(/closing quote/u);
+    expect(() => parseSearchQuery('from:"alice')).toThrowError(/closing quote/u);
+    // Balanced quotes keep parsing, whatever their position.
+    expect(parseSearchQuery('"hello world" from:alice').from).toEqual(["alice"]);
+  });
+
   it("rejects malformed domains and keeps the empty query empty", () => {
     expect(() => parseSearchQuery("domain:not_a_domain")).toThrowError(SearchError);
     expect(normalizeDomainValue("Example.COM")).toBe("example.com");

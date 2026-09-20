@@ -448,6 +448,31 @@ suite("ActionService", () => {
     expect((await occurrenceRow(occurrence.id)).revision).toBe(1);
   });
 
+  it("conflicts when the occurrence left the generation the item was frozen against", async () => {
+    const { accountId, inboxId } = await setupAccount();
+    const occurrence = await seedOccurrence(accountId, inboxId, 9, { unread: true });
+    const mailbox = mailboxOf([occurrence]);
+    const { service, executor } = newService();
+
+    const queued = await service.submit(submission(accountId, "mark_read", [occurrence.id]));
+    // The folder rebuilt between the freeze and the run, and the occurrence
+    // row moved to the new generation without going through invalidation:
+    // the frozen UID belongs to the old UID space, where it names anything.
+    await db
+      .update(messageOccurrences)
+      .set({ uidvalidity: 2 })
+      .where(eq(messageOccurrences.id, occurrence.id));
+
+    const result = await service.execute(queued.receipt.actionId, mailbox);
+    expect(result.receipt.items[0]).toMatchObject({
+      status: "conflicted",
+      outcome: { reason: "generation_changed", currentUidvalidity: 2 },
+    });
+    // The write refused to guess, so the executor and the row stayed idle.
+    expect(executor.calls).toHaveLength(0);
+    expect((await occurrenceRow(occurrence.id)).revision).toBe(1);
+  });
+
   it("conflicts a target the refreshed mailbox no longer holds", async () => {
     const { accountId, inboxId } = await setupAccount();
     const occurrence = await seedOccurrence(accountId, inboxId, 6);

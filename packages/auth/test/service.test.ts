@@ -230,6 +230,31 @@ suite("passkey owner authentication", () => {
     expect(status).toMatchObject({ ownerRegistered: true, login: "available", control: "ready" });
   });
 
+  it("answers every concurrent bootstrap cleanly and leaves one live grant", async () => {
+    // Reset to a fresh installation for this race; the next test re-registers
+    // its own owner anyway.
+    await db.delete(ownerSessions);
+    await db.delete(webauthnChallenges);
+    await db.delete(ownerCredentials);
+    await db.delete(owner);
+
+    // Without serialization, the racers revoke past each other and the
+    // later inserts hit the one-live-grant index as raw database errors.
+    // The issue lock serializes them: every command answers with a token,
+    // and only the last grant stays live.
+    const issued = await Promise.all([
+      consoleAuth.issueBootstrapGrant(),
+      consoleAuth.issueBootstrapGrant(),
+      consoleAuth.issueBootstrapGrant(),
+      consoleAuth.issueBootstrapGrant(),
+    ]);
+    const live = await pool.query(
+      "select id from enrollment_grants where purpose = 'bootstrap' and revoked_at is null and consumed_at is null and expires_at > now()",
+    );
+    expect(live.rows).toHaveLength(1);
+    expect(issued.map((grant) => grant.id)).toContain(live.rows[0].id);
+  });
+
   it("lets exactly one of two concurrent first registrations through", async () => {
     // Reset to a fresh installation for this race.
     await db.delete(ownerSessions);

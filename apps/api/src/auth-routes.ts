@@ -259,7 +259,7 @@ export async function registerAuthRoutes(app: FastifyInstance, options: AuthRout
           body: {
             type: "object",
             required: ["id"],
-            properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } },
+            properties: { id: { type: "string", pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" } },
           },
         },
         preHandler: [requireOrigin, requireSession],

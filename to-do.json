@@ -1905,7 +1905,7 @@
       "id": "T061",
       "title": "Close search, content, and route gaps",
       "priority": 3,
-      "status": "todo",
+      "status": "done",
       "details": "The from: operator matches the display name as well as the address, so a spoofed display name matches a from: sender filter (packages/search/src). A query with a dangling quote is accepted and silently matched as literals; reject it. The total on an out-of-range page reports the full count instead of clamping. One Defuddle diagnostic path console.logs extracted message content, against SPEC section 9, which forbids message bodies in logs; remove the leak first. The account routes validate ids with a loose pattern, so a malformed UUID reaches the database layer and surfaces a 500. The action refresh reads the folder generation after the work item is frozen; guard the write when uidvalidity changed in between. The bootstrap command can issue two enrollment grants under a race; make the grant issue idempotent.",
       "depends_on": [
         "T013",
@@ -1917,7 +1917,7 @@
         "content",
         "api"
       ],
-      "updated_at": "2026-09-20T00:56:03Z",
+      "updated_at": "2026-09-20T10:57:00Z",
       "files": [
         "apps/api/src/account-routes.ts",
         "packages/actions/src/service.ts",
@@ -1925,7 +1925,8 @@
         "packages/content/src/extract.ts",
         "packages/search/src/query.ts",
         "packages/search/src/service.ts"
-      ]
+      ],
+      "notes": "Done. Six code changes, five proven to fail on the pre-fix code (git stash of the touched source, test run, restore); one ledger item was already absent from the tree.\n- from:/to: now match addresses, not display names: three anchored LIKE arms (suffix of the final address, fragment before an @, full address before the next participant's space) replace the contains match. Test seeds a spoofed display name and asserts the bait never matches while local part, domain, full address, and mid-list recipient still do. Pre-fix failure: 'expected [ Array(1) ] to deeply equal []'.\n- parseSearchQuery rejects a query with an odd number of double quotes (invalid_query, 'closing quote'). Pre-fix the quote vanished into free text or rode inside an operator value. Pre-fix failure: the new query.test.ts case did not throw.\n- Out-of-range page totals: the ledger said the full count was reported; the observed defect was the reverse - the window total rides returned rows, so a page past the last match collapsed to 0 and read as an empty mailbox. An empty page at offset > 0 now re-counts the same joins and conditions and reports the true total; a genuine zero stays zero. Pre-fix failure: 'expected +0 to be 1'.\n- Route id validation: the loose 36-character pattern is replaced with the strict UUID shape in all nine route files that carried it (account, action, auth, classification, compose, connection-test, message, search, send - the ledger named account-routes only). A 36-character wrong-shape id now rejects with 400 at the boundary. Pre-fix failure: 'expected 404 to be 400' (with a real database the uuid cast turns the same input into a 500).\n- Action generation guard: the item loop re-checks the live occurrence's uidvalidity against both the frozen target and the folder row before any write, conflicting as generation_changed. Test moves an occurrence to a new generation after the freeze. Pre-fix failure: the item confirmed and wrote (status confirmed, executor called, revision bumped).\n- Bootstrap grant race: issueGrant now takes pg_advisory_xact_lock(hashtext('auth.grant_issue.<purpose>')) before revoke-and-insert, and re-checks the owner under the lock; issueRecoveryGrant takes the same per-purpose lock. Measured pre-fix shape (15 probe rounds): the enrollment_grants_live_purpose_uidx partial unique index already held the line at one live grant, but every round crashed at least one of four concurrent bootstraps with a raw 'Failed query: insert into enrollment_grants' unique violation - that crash is the defect, not two live grants. Under the lock all four commands answer and one grant stays live. Pre-fix failure: the four-racer Promise.all rejects with the raw insert error.\n- Defuddle console.log of extracted content: already absent. grep for console statements across packages/content/src returns nothing; redactDiagnostics already drops removed text. No change made; recorded because the ledger listed it.\nVerification: search 36/36, actions 38/38, auth 24/24, api 96/96, content 16/16; tsc --noEmit clean in search, actions, auth, api, content. Residual: a display name that itself contains address-shaped text (an at-sign inside the quoted name) can still surface in from:/to: - the same family T073 tracks for domain:; structured address columns retire it."
     },
     {
       "id": "T062",

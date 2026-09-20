@@ -219,10 +219,10 @@ export class SearchService {
       conditions.push(sql`m.search @@ q.tsq`);
     }
     for (const value of parsed.from) {
-      conditions.push(sql`m.sender_text like ${containsPattern(value)} escape '\\'`);
+      conditions.push(addressCondition(sql`m.sender_text`, value));
     }
     for (const value of parsed.to) {
-      conditions.push(sql`m.recipients_text like ${containsPattern(value)} escape '\\'`);
+      conditions.push(addressCondition(sql`m.recipients_text`, value));
     }
     for (const domain of [...parsed.domains, ...domains]) {
       conditions.push(domainCondition(domain));
@@ -297,6 +297,21 @@ export class SearchService {
         end`
       : sql`null::text`;
 
+    // The page query and the fallback count share one row source, so both
+    // always see the same joins and the same conditions.
+    const fromClause = sql`
+      from messages m
+      join accounts a on a.id = m.account_id
+      ${hasDates ? sql`left join (
+        select o.message_id, min(o.internal_date) as first_seen
+        from message_occurrences o
+        group by o.message_id
+      ) occ on occ.message_id = m.id` : sql``}
+      left join outbound_messages ob on ob.logical_message_id = m.id
+      ${hasText ? sql`cross join websearch_to_tsquery('simple', ${parsed.text}) as q(tsq)` : sql``}`;
+    const whereClause =
+      conditions.length > 0 ? sql` where ${sql.join(conditions, sql` and `)}` : sql``;
+
     const rows = await this.db.execute<SearchRow>(sql`
       select
         m.id,
@@ -332,25 +347,29 @@ export class SearchService {
         ${highlightSource} as highlight_source,
         ${highlight} as highlight,
         (count(*) over ())::int as total
-      from messages m
-      join accounts a on a.id = m.account_id
-      ${hasDates ? sql`left join (
-        select o.message_id, min(o.internal_date) as first_seen
-        from message_occurrences o
-        group by o.message_id
-      ) occ on occ.message_id = m.id` : sql``}
-      left join outbound_messages ob on ob.logical_message_id = m.id
-      ${hasText ? sql`cross join websearch_to_tsquery('simple', ${parsed.text}) as q(tsq)` : sql``}
-      ${conditions.length > 0 ? sql`where ${sql.join(conditions, sql` and `)}` : sql``}
+      ${fromClause}${whereClause}
       order by search_rank desc nulls last, effective_at desc nulls last, m.id
       limit ${limit} offset ${offset}
     `);
+
+    // The window total rides the returned rows, so a page past the last
+    // match carries none and the count would collapse to zero — an empty
+    // mailbox where there is one. Re-count the same conditions instead, so
+    // an out-of-range page still reports the true total and the client can
+    // page back.
+    let total = rows.rows[0]?.total ?? 0;
+    if (rows.rows.length === 0 && offset > 0) {
+      const counted = await this.db.execute<{ total: number }>(
+        sql`select count(*)::int as total${fromClause}${whereClause}`,
+      );
+      total = counted.rows[0]?.total ?? 0;
+    }
 
     const indexing = await this.bodyIndexingProgress(accountIds);
 
     return {
       results: rows.rows.map(toHit),
-      total: rows.rows[0]?.total ?? 0,
+      total,
       indexing,
     };
   }
@@ -464,6 +483,29 @@ function domainCondition(domain: string): SQL {
   )`;
 }
 
+/**
+ * `from:` and `to:` match addresses, not display names (SPEC F5): a sender
+ * filter a spoofed display name satisfies is no filter. The indexed text
+ * keeps one `name address` pair per participant with the address last, so
+ * three anchors cover an address without touching a name: a suffix of the
+ * final address, a fragment directly before an `@` (a local part), and —
+ * only when the value itself carries an `@` — a full address followed by
+ * the space of the next participant. A display name that itself contains
+ * address-shaped text can still surface; structured address columns retire
+ * that residual.
+ */
+function addressCondition(column: SQL, value: string): SQL {
+  const escaped = value.replace(/([\\%_])/g, "\\$1");
+  const patterns = [`%${escaped}`, `%${escaped}@%`];
+  if (value.includes("@")) {
+    patterns.push(`%${escaped} `);
+  }
+  return sql`(${sql.join(
+    patterns.map((pattern) => sql`${column} like ${pattern} escape '\\'`),
+    sql` or `,
+  )})`;
+}
+
 /** One flag predicate over active occurrences in the requested scope. */
 function flagCondition(column: "unread" | "flagged", scopeClause: SQL): SQL {
   return sql`exists (
@@ -473,11 +515,6 @@ function flagCondition(column: "unread" | "flagged", scopeClause: SQL): SQL {
       and o.invalidated_at is null
       and o.${sql.raw(column)}${scopeClause}
   )`;
-}
-
-/** A `%value%` pattern with the LIKE wildcards escaped. */
-function containsPattern(value: string): string {
-  return `%${value.replace(/([\\%_])/g, "\\$1")}%`;
 }
 
 function toHit(row: SearchRow): SearchHit {

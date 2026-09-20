@@ -46,7 +46,7 @@ export interface SearchRoutesOptions {
   verifySession(token: string): Promise<unknown>;
 }
 
-const UUID_PATTERN = "^[0-9a-fA-F-]{36}$";
+const UUID_PATTERN = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
 
 /** A filter that may arrive once or repeated; both forms become one list. */
 function readList(value: string | string[] | undefined): string[] | null {

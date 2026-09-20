@@ -329,6 +329,21 @@ describe("the account routes", () => {
     });
     expect(badId.statusCode).toBe(400);
 
+    // Thirty-six characters of the wrong shape must reject at the boundary
+    // too; a loose length check would pass them to the database layer.
+    const wrongShape = await app.inject({
+      method: "GET",
+      url: `/accounts/${"z".repeat(36)}`,
+      headers: { cookie: `${SESSION_COOKIE}=${TOKEN}` },
+    });
+    expect(wrongShape.statusCode).toBe(400);
+    const undashed = await app.inject({
+      method: "GET",
+      url: "/accounts/123e4567e89b12d3a4564266141740000000",
+      headers: { cookie: `${SESSION_COOKIE}=${TOKEN}` },
+    });
+    expect(undashed.statusCode).toBe(400);
+
     const missingPassword = await app.inject({
       method: "POST",
       url: "/accounts",
