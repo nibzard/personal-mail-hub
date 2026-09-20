@@ -600,16 +600,31 @@ export class OfflineSync {
         }
       }
       const local = await this.store.getLocalDraft(payload.draftId);
-      const moreEditsPending = pending.some(
-        (entry) => draftIdOf(entry.payload) === payload.draftId,
-      );
       if (local !== null && local.baseRevision <= revision) {
         await this.store.putLocalDraft({
           ...local,
           baseRevision: revision,
           // The queue is the truth about unsynced edits: later queued
           // saves keep the draft dirty, otherwise the server owns it all.
-          dirty: moreEditsPending,
+          // A queued send is not an edit; it mails content the server
+          // already acknowledged, so it never holds the dirty flag up.
+          dirty: hasQueuedDraftSave(pending, payload.draftId),
+          recoveryGeneration: action.recoveryGeneration,
+        });
+      }
+    }
+    if (action.payload.kind === "send") {
+      const payload = action.payload;
+      const pending = await this.store.pendingActions();
+      const local = await this.store.getLocalDraft(payload.draftId);
+      // The revision a send synced against proves the server holds every
+      // edit the device based on that revision, so the draft stops counting
+      // its text as unsynchronized (SPEC F9). Only a still-queued save of
+      // that draft can leave it dirty.
+      if (local !== null && local.baseRevision <= payload.baseRevision) {
+        await this.store.putLocalDraft({
+          ...local,
+          dirty: hasQueuedDraftSave(pending, payload.draftId),
           recoveryGeneration: action.recoveryGeneration,
         });
       }
@@ -685,6 +700,13 @@ function draftIdOf(payload: QueuedPayload): string | null {
     default:
       return null;
   }
+}
+
+/** True while one draft still has a queued edit no server acknowledged. */
+function hasQueuedDraftSave(pending: QueuedAction[], draftId: string): boolean {
+  return pending.some(
+    (entry) => entry.payload.kind === "draft-save" && entry.payload.draftId === draftId,
+  );
 }
 
 /** The draft one action names, directly or through its upload record. */

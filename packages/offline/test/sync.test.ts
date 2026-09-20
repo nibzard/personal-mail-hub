@@ -263,6 +263,10 @@ describe("replay", () => {
     expect(report.synced).toBe(2);
     expect(seen).toEqual(["save:1", "send:2"]);
     expect((await sync.snapshot()).reviewActions).toHaveLength(0);
+    // The send is not an edit: once it leaves the device too, the draft's
+    // text counts as synchronized and stops holding the dirty flag.
+    expect((await sync.localDraft("d1"))?.dirty).toBe(false);
+    expect((await sync.snapshot()).dirtyDrafts).toBe(0);
   });
 
   it("replays one draft's save before its send when both tie on queuedAt", async () => {
@@ -302,6 +306,11 @@ describe("replay", () => {
     expect(saveAt).toBeGreaterThanOrEqual(0);
     expect(sendAt).toBeGreaterThan(saveAt);
     expect(seen.at(-1)).toBe("send:key-1:2");
+
+    // The queued send must not leave its own draft dirty: only queued
+    // saves count as unsynchronized edits.
+    expect((await sync.localDraft("d1"))?.dirty).toBe(false);
+    expect((await sync.snapshot()).dirtyDrafts).toBe(0);
   });
 
   it("never chains a save the queue already rebased past the synced revision", async () => {
@@ -457,6 +466,24 @@ describe("sends", () => {
     const snapshot = await sync.snapshot();
     expect(snapshot.waitingSends).toBe(1);
     expect(snapshot.pendingActions).toBe(1);
+  });
+
+  it("clears the draft's dirty flag when its queued send syncs", async () => {
+    // The revision a send synced against proves the server holds the edits
+    // based on it, so a dirty flag an earlier pass left on the draft cannot
+    // outlive the send: it would keep the Dexie record unprunable and the
+    // draft's generation stuck on the restore review (SPEC F9).
+    const port: OfflinePort = {
+      queueSend: async () => ({ state: "synced" }),
+    };
+    const { sync, store } = makeSync(port);
+    await sync.observeGeneration(GENERATION_A);
+    await store.putLocalDraft(draftRecord());
+    await sync.enqueueSend("d1", "key-1", 1);
+
+    await sync.sync();
+    expect((await sync.localDraft("d1"))?.dirty).toBe(false);
+    expect((await sync.snapshot()).dirtyDrafts).toBe(0);
   });
 
   it("holds an uncertain send for review and never replays it by itself", async () => {
@@ -627,6 +654,27 @@ describe("the restore review", () => {
     await sync.observeGeneration(GENERATION_A);
     await sync.observeGeneration(GENERATION_B);
     const snapshot = await sync.snapshot();
+    expect(snapshot.reviewRequired).toBe(false);
+    expect(snapshot.restore).toBeNull();
+  });
+
+  it("needs no review after a restore once the dirty draft's send synced", async () => {
+    // A queued send used to hold its draft's dirty flag up forever, so the
+    // draft kept the earlier generation and every later restore left
+    // reviewRequired true with no reviewable item left to resolve.
+    const port: OfflinePort = {
+      saveDraft: async (payload) => ({ state: "synced", revision: payload.baseRevision + 1 }),
+      queueSend: async () => ({ state: "synced" }),
+    };
+    const { sync, store } = makeSync(port);
+    await sync.observeGeneration(GENERATION_A);
+    await store.putLocalDraft(draftRecord());
+    await sync.enqueueDraftSave("d1", 1, { markdown: "Final text" });
+    await sync.enqueueSend("d1", "key-1", 1);
+    await sync.sync();
+    expect((await sync.snapshot()).dirtyDrafts).toBe(0);
+
+    const snapshot = await sync.observeGeneration(GENERATION_B);
     expect(snapshot.reviewRequired).toBe(false);
     expect(snapshot.restore).toBeNull();
   });
