@@ -1,4 +1,4 @@
-import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { and, eq, inArray, or, sql, type SQL, type SQLWrapper } from "drizzle-orm";
 import { messages } from "@mail-hub/database";
 import type { MailHubTransaction } from "@mail-hub/recovery";
 
@@ -54,8 +54,14 @@ export async function markThreadJobsDirty(
   if (identifiers.length === 0) {
     return;
   }
-  // Both lookups are index-supported: `in_reply_to` by btree and
-  // `reference_ids` by its GIN index. Marking is a superset of "its candidate
+  // Reference extraction reads the raw stored text, so an identifier stays
+  // referenced even when a comment folds around it: `<(note) <a@example.com>>`
+  // names `<a@example.com>` (`resolveParentReference` in sync). An extracted
+  // identifier holds no whitespace or brackets, which makes "extraction finds
+  // it here" plain substring containment over the raw value. The exact
+  // lookups stay index-supported — `in_reply_to` by btree and
+  // `reference_ids` by its GIN index — while the containment arms sweep the
+  // raw values beside them. Marking is a superset of "its candidate
   // changed"; re-deciding an unaffected row is idempotent.
   const identifierArray = sql.join(
     identifiers.map((identifier) => sql`${identifier}`),
@@ -69,8 +75,32 @@ export async function markThreadJobsDirty(
         eq(messages.accountId, accountId),
         or(
           inArray(messages.inReplyTo, identifiers),
+          rawContainsIdentifier(messages.inReplyTo, identifiers),
           sql`${messages.referenceIds} ?| array[${identifierArray}]::text[]`,
+          sql`exists (
+            select 1
+            from jsonb_array_elements_text(${messages.referenceIds}) as element(value)
+            where ${rawContainsIdentifier(sql`element.value`, identifiers)}
+          )`,
         ),
       ),
     );
+}
+
+/** Whether one operand's raw reference text holds any changed identifier. */
+function rawContainsIdentifier(operand: SQLWrapper, identifiers: string[]): SQL {
+  return sql`${operand} like any (array[${likePatterns(identifiers)}]::text[])`;
+}
+
+/** One `%identifier%` pattern per changed identifier. */
+function likePatterns(identifiers: string[]): SQL {
+  return sql.join(
+    identifiers.map((identifier) => sql`'%' || ${escapeLikeWildcards(identifier)} || '%'`),
+    sql`, `,
+  );
+}
+
+/** Keep a legal `%`, `_`, or `\` inside an identifier literal for LIKE. */
+function escapeLikeWildcards(identifier: string): string {
+  return identifier.replaceAll(/[\\%_]/g, (wildcard) => `\\${wildcard}`);
 }
