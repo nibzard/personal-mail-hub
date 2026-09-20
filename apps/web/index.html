@@ -9,6 +9,9 @@
     <link rel="icon" href="/icons/favicon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
     <title>Personal mail hub</title>
+    <!-- The gateway pins this script's sha256 in its Content-Security-Policy
+         (deploy/nginx-web.conf.template); editing it means re-pinning the
+         hash there. apps/web/test/gateway-csp.test.ts checks the pairing. -->
     <script>
       // Apply the stored theme before first paint. Keep in sync with
       // src/theme.ts.

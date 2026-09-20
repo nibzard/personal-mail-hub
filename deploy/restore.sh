@@ -5,6 +5,16 @@
 # that follow are operator commands, printed at the end and documented in
 # deploy/README.md; they are what make the restored deployment safe.
 #
+# The database restore is atomic and total. It drops the application schemas
+# (public and drizzle) instead of relying on per-object DROP statements: a
+# schema drop also removes objects a later migration added after the backup
+# was taken, which --clean cannot know about. Without that, restoring an
+# older bundle onto a newer schema rewinds the migration journal, the
+# entrypoint re-applies migrations, and the first one collides with the
+# leftover objects in a crash loop. The reset and the whole snapshot then
+# apply inside ONE transaction with ON_ERROR_STOP, so any failure rolls
+# back and leaves the previous database exactly as it was.
+#
 #   sh /app/deploy/restore.sh /backups/20260919T030000Z --yes
 #
 # Stop the API and the worker before restoring, and restore into the same
@@ -36,7 +46,7 @@ done
 
 : "${DATABASE_URL:?DATABASE_URL must name the database to restore into.}"
 
-for tool in pg_restore node; do
+for tool in pg_restore psql node; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "restore: $tool is required but was not found in PATH." >&2
     exit 1
@@ -52,8 +62,11 @@ if [ "$confirmed" != "--yes" ]; then
 Plan (not executed; repeat with --yes to apply):
   1. Stop the API and the worker. They must not run against a half-restored
      database, and an old process must not continue a remote operation.
-  2. Restore the snapshot with pg_restore --clean --if-exists into:
+  2. Restore the snapshot into:
      $DATABASE_URL
+     One transaction: drop the public and drizzle schemas (which also
+     removes objects later migrations added), then replay the snapshot.
+     Any error rolls the database back to its pre-restore state.
   3. Copy $source_dir/storage-durable back under $storage_root/durable.
   4. Delete $storage_root/cache: the disposable cache regenerates from the
      restored originals.
@@ -63,12 +76,31 @@ EOF
   exit 2
 fi
 
-echo "restore: applying the database snapshot."
-pg_restore \
-  --clean --if-exists \
-  --no-owner --no-privileges \
+# Stage the SQL first: a corrupt archive must abort before any of it runs.
+# The plain text can be several times the size of the custom-format dump.
+restore_sql="$(mktemp "${TMPDIR:-/tmp}/mail-hub-restore.XXXXXX.sql")"
+remove_staged_sql() {
+  rm -f -- "$restore_sql"
+}
+trap remove_staged_sql EXIT
+trap 'exit' INT TERM
+
+{
+  echo "DROP SCHEMA IF EXISTS public CASCADE;"
+  echo "DROP SCHEMA IF EXISTS drizzle CASCADE;"
+  echo "CREATE SCHEMA public;"
+  # --file - writes the plain SQL stream to stdout; --dbname is not used,
+  # so nothing touches the database while the stream is produced.
+  pg_restore --file - --no-owner --no-privileges "$source_dir/database.pgdump"
+} >"$restore_sql"
+
+echo "restore: applying the database snapshot in one transaction."
+psql \
+  --set=ON_ERROR_STOP=1 \
+  --single-transaction \
   --dbname "$DATABASE_URL" \
-  "$source_dir/database.pgdump"
+  --file "$restore_sql"
+remove_staged_sql
 
 echo "restore: copying durable objects back."
 mkdir -p "$storage_root/durable"

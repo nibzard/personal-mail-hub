@@ -8,6 +8,16 @@
 # proxy performs. Sessions use same-origin cookies, so the client and the API
 # must share this origin. The platform proxy (Coolify) terminates TLS in
 # front of this listener.
+#
+# Baseline security headers (server block below) ride on every response:
+# nosniff, no referrers, and a document CSP for the PWA shell. The CSP's
+# script hash covers exactly the inline theme bootstrap in
+# apps/web/index.html; apps/web/test/gateway-csp.test.ts fails when the two
+# drift apart, so editing that script means recomputing the hash here.
+# Inline styles are allowed because React sets style attributes and the
+# sandboxed reader frame (an about:srcdoc document that inherits this
+# policy) renders sender mail with inline styling; data: and https: images
+# cover inline message images and reader-requested remote images.
 
 server {
     listen 8080;
@@ -15,6 +25,13 @@ server {
 
     root /usr/share/nginx/html;
     index index.html;
+
+    # Baseline security headers. nginx drops inherited add_header directives
+    # in any location that sets its own, so every location below that adds
+    # Cache-Control repeats this block; keep the copies identical.
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "no-referrer" always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'sha256-KrF3YERYGpK83OR971bdVpx3o5FZTsPVJM69mQpjg/I='; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" always;
 
     # The client reads same-origin /api paths (apps/web/src/lib/api.ts).
     # The trailing slash on proxy_pass strips the /api prefix. Point
@@ -32,11 +49,17 @@ server {
 
     # Hashed build assets are immutable; the shell itself is not.
     location /assets/ {
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "no-referrer" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'sha256-KrF3YERYGpK83OR971bdVpx3o5FZTsPVJM69mQpjg/I='; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" always;
         add_header Cache-Control "public, max-age=31536000, immutable";
         try_files $uri =404;
     }
 
     location = /index.html {
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "no-referrer" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'sha256-KrF3YERYGpK83OR971bdVpx3o5FZTsPVJM69mQpjg/I='; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" always;
         add_header Cache-Control "no-cache";
     }
 
@@ -44,6 +67,9 @@ server {
     # types file predates the extension.
     location = /manifest.webmanifest {
         default_type application/manifest+json;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "no-referrer" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'sha256-KrF3YERYGpK83OR971bdVpx3o5FZTsPVJM69mQpjg/I='; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" always;
         add_header Cache-Control "no-cache";
     }
 
@@ -51,6 +77,9 @@ server {
     # over as soon as the browser looks.
     location = /sw.js {
         default_type text/javascript;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "no-referrer" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'sha256-KrF3YERYGpK83OR971bdVpx3o5FZTsPVJM69mQpjg/I='; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" always;
         add_header Cache-Control "no-cache";
     }
 

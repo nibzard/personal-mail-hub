@@ -6,27 +6,42 @@
 #
 # What it does, in order:
 #
-#   1. A consistent database snapshot with pg_dump. Custom format, one MVCC
-#      snapshot, online-safe while the app runs.
+#   1. Pause durable-object garbage collection (see "Collection pause"
+#      below), then take a consistent database snapshot with pg_dump.
+#      Custom format, one MVCC snapshot, online-safe while the app runs.
 #   2. A copy of the durable object tree (originals, uploads, outbound MIME
-#      bytes and their .meta.json sidecars). The snapshot runs first, so the
-#      object copy is a superset of everything the snapshot references:
-#      referenced durable objects are never deleted underneath a backup, and
-#      objects written afterwards are harmless orphans. The disposable cache
-#      is deliberately excluded; it regenerates.
+#      bytes and their .meta.json sidecars), taken while collection stays
+#      paused. The snapshot runs first, so the object copy is a superset of
+#      everything the snapshot references, and objects written afterwards
+#      are harmless orphans. The disposable cache is deliberately excluded;
+#      it regenerates.
 #   3. A manifest with the sha256 of every file, plus an integrity pass that
 #      re-hashes every file and cross-checks every sidecar against the copied
 #      bytes (deploy/verify-backup.mjs).
 #   4. Retention: keep the newest BACKUP_KEEP timestamp directories.
 #
-# The bundle never contains CREDENTIALS_KEY or RECOVERY_GENERATION. Back the
-# key up separately, and always set a new generation for a restore.
+# The bundle contains no CREDENTIALS_KEY: back the key up separately. The
+# database snapshot does carry the recovery generation last recorded in
+# service_state. That recorded value is history; it must never be reused.
+# A restore always sets a new generation from deployment configuration.
+#
+# Collection pause (SPEC.md section 10, step 6): the copy must not lose an
+# object the snapshot references. Nothing implements the sweep yet; when it
+# lands, it must honor the marker directory $STORAGE_ROOT/gc-pause. While
+# the marker exists, the sweep deletes no durable object; it resumes (and
+# observes its grace period) once the marker is gone. This script claims the
+# marker before the snapshot and releases it when the whole backup ends, so
+# the pause also covers verification and retention. A marker left behind by
+# a killed run is taken over once it is older than BACKUP_GC_STALE_SECONDS.
+# A run that fails anywhere removes its own incomplete bundle directory, so
+# retention and a later restore never see a half-written backup.
 set -eu
 
 app_root="${APP_ROOT:-/app}"
 storage_root="${STORAGE_ROOT:-$app_root/data/storage}"
 backups="${BACKUP_DIR:-/backups}"
 retain="${BACKUP_KEEP:-14}"
+stale_seconds="${BACKUP_GC_STALE_SECONDS:-43200}"
 
 : "${DATABASE_URL:?DATABASE_URL must be set for the database snapshot.}"
 
@@ -40,13 +55,44 @@ done
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 dest="$backups/$timestamp"
 mkdir -p "$dest"
+backup_complete=0
+
+# Collection pause: claim the marker before anything reads the durable tree.
+# mkdir is atomic, so two backup runs cannot both hold it. The marker sits
+# beside durable/, not inside it, so it never becomes bundle content.
+pause_dir="$storage_root/gc-pause"
+mkdir -p "$storage_root"
+if ! mkdir "$pause_dir" 2>/dev/null; then
+  if [ -n "$(find "$pause_dir" -maxdepth 0 -mmin +"$((stale_seconds / 60))" -print 2>/dev/null)" ]; then
+    echo "backup: taking over the collection pause at $pause_dir; the marker is older than ${stale_seconds}s." >&2
+    rm -rf -- "$pause_dir"
+    mkdir "$pause_dir"
+  else
+    echo "backup: $pause_dir exists, so another backup holds the collection pause." >&2
+    echo "backup: remove it by hand only after confirming no backup is running." >&2
+    exit 1
+  fi
+fi
+printf 'pid=%s started=%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$pause_dir/owner"
+
+finish() {
+  # A failed run must not leave a half-written bundle behind: retention would
+  # count it, and an operator in a restore must not mistake it for a backup.
+  if [ "$backup_complete" -ne 1 ]; then
+    rm -rf -- "${backups:?}/${timestamp:?}"
+    echo "backup: removed the incomplete bundle $timestamp." >&2
+  fi
+  rm -rf -- "$pause_dir"
+}
+trap finish EXIT
+trap 'exit' INT TERM
 
 # 1. Consistent database snapshot.
 pg_dump --format=custom --file "$dest/database.pgdump" "$DATABASE_URL"
 # A readable table of contents proves the dump parses and records what it holds.
 pg_restore --list "$dest/database.pgdump" >"$dest/database.catalog"
 
-# 2. Durable objects.
+# 2. Durable objects; the collection pause above covers this copy.
 mkdir -p "$dest/storage-durable"
 if [ -d "$storage_root/durable" ]; then
   cp -a "$storage_root/durable/." "$dest/storage-durable/"
@@ -66,9 +112,13 @@ fi
   echo "  storage-durable/    durable objects with .meta.json sidecars"
   echo "  manifest.sha256     sha256 of every file in this directory"
   echo
-  echo "This bundle does NOT contain CREDENTIALS_KEY or RECOVERY_GENERATION."
-  echo "The key is backed up separately from the database; a restore always"
-  echo "sets a new recovery generation in deployment configuration."
+  echo "This bundle does NOT contain CREDENTIALS_KEY. The key is backed up"
+  echo "separately from the database."
+  echo
+  echo "The database snapshot DOES contain the recovery generation last"
+  echo "recorded in service_state. That recorded value must never be reused:"
+  echo "a restore always sets a NEW recovery generation in deployment"
+  echo "configuration, generated outside the database and this bundle."
 } >"$dest/BACKUP-INFO.txt"
 
 node "$app_root/deploy/verify-backup.mjs" --write "$dest"
@@ -84,4 +134,5 @@ for old in $(ls -1 "$backups" | grep -E '^[0-9]{8}T[0-9]{6}Z$' | sort -r); do
   fi
 done
 
+backup_complete=1
 echo "backup: complete at $dest"

@@ -83,6 +83,7 @@ To manage the pieces as separate Coolify resources instead:
 | `TYPE_SAFE_API_KEY` | no | Jev classification key. Core mail never waits on it. |
 | `SYNC_CYCLE_CRON`, `SEND_CYCLE_CRON`, `SENT_COPY_CYCLE_CRON`, `CLASSIFY_CYCLE_CRON` | no | Worker schedule overrides. Set them only to a valid cron expression; an empty or missing value keeps the image default. |
 | `BACKUP_DIR`, `BACKUP_KEEP` | no | Backup destination (default `/backups`) and retention count (default 14). |
+| `BACKUP_GC_STALE_SECONDS` | no | Age at which a leftover collection-pause marker is taken over (default 43200). |
 | `PREFLIGHT_ALLOW_HTTP` | no | Set to `1` only for local trials, to accept an `http` `BASE_URL`. |
 
 `deploy/preflight.mjs` checks all of this before the container starts and
@@ -158,19 +159,37 @@ section 12). Suggestions never route mail before that.
 
 `deploy/backup.sh` runs inside the app container (`npm run backup`):
 
-1. `pg_dump` writes a consistent snapshot in custom format. The snapshot is
-   online-safe while the app runs.
-2. The durable object tree is copied after the snapshot, so the copy covers
-   everything the snapshot references. Objects written later are harmless
-   orphans.
+1. The script claims the collection pause (below), then `pg_dump` writes a
+   consistent snapshot in custom format. The snapshot is online-safe while
+   the app runs.
+2. The durable object tree is copied after the snapshot while collection
+   stays paused, so the copy covers everything the snapshot references.
+   Objects written later are harmless orphans.
 3. `deploy/verify-backup.mjs` writes `manifest.sha256` with the hash of every
    file, then re-hashes every file and cross-checks every storage sidecar
    against the copied bytes.
 4. Backups older than `BACKUP_KEEP` timestamp directories are removed.
 
-A bundle never contains `CREDENTIALS_KEY` or `RECOVERY_GENERATION`. Store the
-key in a password manager or a second secret store. A restore always sets a
-new generation.
+A bundle never contains `CREDENTIALS_KEY`. Store the key in a password
+manager or a second secret store. The database snapshot does carry the
+recovery generation last recorded in `service_state`; that recorded value
+must never be reused, and a restore always sets a new generation from
+deployment configuration.
+
+### Collection pause
+
+SPEC section 10 step 6 requires copying durable objects while garbage
+collection is paused. No sweep is implemented yet; the coordination it must
+honor when it lands is a marker directory at `$STORAGE_ROOT/gc-pause`.
+`deploy/backup.sh` creates the marker before the snapshot and removes it
+when the backup ends. A future sweep treats the marker the same way: while
+it exists, no durable object is deleted; the sweep resumes, and observes its
+grace period, once the marker is gone. `mkdir` makes the claim atomic, so
+two backup runs cannot hold the pause at once. A marker left by a killed
+run stops later backups with an error until it is older than
+`BACKUP_GC_STALE_SECONDS` (default 43200, twelve hours), after which the
+next backup takes it over. Remove the marker by hand only after confirming
+no backup is running.
 
 ### Schedule
 
@@ -203,6 +222,15 @@ Rehearse the full restore before you depend on it (SPEC.md section 10):
 durable objects back. The recovery commands after it are what make the
 restored deployment safe; a database restore alone never enables normal
 operation.
+
+The database restore is atomic and total: it drops the `public` and
+`drizzle` schemas and replays the snapshot inside one transaction. The
+schema drop also removes objects that a migration added after the backup was
+taken, which per-object `--clean` statements cannot know about; without it,
+restoring an older bundle onto a newer schema rewinds the migration journal
+and the entrypoint crash-loops re-applying migrations that collide with the
+leftovers. Any error rolls the whole restore back, leaving the database
+exactly as it was.
 
 1. Stop the API and the worker. Make sure the old process cannot continue a
    remote operation. Preserve any receipts newer than the backup.

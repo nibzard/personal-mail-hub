@@ -1672,7 +1672,7 @@
         "settings",
         "reading"
       ],
-      "updated_at": "2026-09-20T00:05:00Z",
+      "updated_at": "2026-09-20T00:01:45Z",
       "files": [
         "apps/web/e2e/flows.browser.ts",
         "apps/web/src/components/mail/app-shell.tsx",
@@ -1691,19 +1691,21 @@
       "id": "T053",
       "title": "Harden backup, restore, and the web gateway",
       "priority": 3,
-      "status": "todo",
+      "status": "done",
       "details": "Four deploy items. The backup copies the durable tree with no garbage-collection pause hook although SPEC section 10 step 6 requires copying referenced objects while collection is paused (deploy/backup.sh:49-55); nothing implements collection yet, so define the coordination, for example a lock the sweep honors, before any collection lands. The database restore runs pg_restore without exit-on-error or single-transaction while the clean mode cannot drop objects added after the backup (deploy/restore.sh:66-71), so restoring an older bundle onto a newer schema rewinds the migration journal and the entrypoint crash-loops on re-applied migrations; fail atomically instead. The backup manifest and README claim the bundle never contains RECOVERY_GENERATION (deploy/backup.sh:69, deploy/README.md:166) but the dump includes service_state.recovery_generation; reword to say the generation in the snapshot must never be reused. And the nginx gateway sends no X-Content-Type-Options, Referrer-Policy, or document CSP for the PWA shell (deploy/nginx-web.conf.template:12-47); add baseline headers.",
       "tags": [
         "deployment",
         "backup",
         "security"
       ],
-      "updated_at": "2026-09-19T17:39:46Z",
+      "updated_at": "2026-09-20T00:16:24Z",
       "files": [
         "deploy/backup.sh",
         "deploy/restore.sh",
         "deploy/nginx-web.conf.template",
-        "deploy/README.md"
+        "deploy/README.md",
+        "apps/web/index.html",
+        "apps/web/test/gateway-csp.test.ts"
       ]
     },
     {
