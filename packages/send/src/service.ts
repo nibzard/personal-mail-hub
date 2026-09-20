@@ -691,9 +691,9 @@ export class OutboundService {
    * send left `sent`, and rows from another recovery generation, stay put:
    * a restored database keeps its pending work until reconciliation
    * dispositions it. Two row classes never occupy the bounded window: a row
-   * that exhausted its append attempts, and a row whose unmapped-account
-   * failure is still unmapped — the sweep cannot progress either until the
-   * world changes, so neither may starve younger rows.
+   * that exhausted its append attempts, and a non-pending row in an account
+   * that maps no Sent folder — the sweep cannot progress with either until
+   * the world changes, so neither may starve younger rows.
    */
   async appendDueSentCopies(limit = DEFAULT_SEND_SWEEP_LIMIT): Promise<SentCopySweepSummary> {
     const status = await this.controls.readStatus();
@@ -708,13 +708,13 @@ export class OutboundService {
           eq(outboundMessages.status, "sent"),
           inArray(outboundMessages.sentCopyStatus, ["pending", "failed", "unknown"]),
           lt(outboundMessages.sentCopyAttempts, SEND_SWEEP_ATTEMPT_CAP),
-          // The recorded unmapped failure stays quiet only while the account
-          // still maps no Sent folder; a fresh mapping makes the row due
-          // again the moment it exists.
+          // A row past its first pass stays quiet only while the account
+          // still maps no Sent folder: failed or unknown, the sweep cannot
+          // progress without one. A pending row stays due even unmapped, so
+          // its one pass records the unmapped failure; a fresh mapping makes
+          // every quiet row due again the moment it exists.
           not(
-            sql`(${outboundMessages.sentCopyStatus} = 'failed'
-              and ${outboundMessages.lastError} ->> 'code' = 'sent_folder_unmapped'
-              and ${missingSentFolder()})`,
+            sql`(${outboundMessages.sentCopyStatus} <> 'pending' and ${missingSentFolder()})`,
           ),
         ),
       )
@@ -1212,6 +1212,10 @@ export class OutboundService {
    * to start from `pending`. Reconciliation of an uncertain send reuses this
    * transaction from `outcome_unknown` with the verified Sent copy attached,
    * so its sent state, local index, and append outcome commit together.
+   * Every part commits only with the status transition: a row that left
+   * `fromStatus` while the attempt ran — a slow submission its lease-aged
+   * hold moved to `outcome_unknown` — keeps the event and the local message
+   * out entirely, and the caller reads the row's current state instead.
    */
   private async commitAcceptance(
     row: OutboundMessage,
@@ -1260,13 +1264,21 @@ export class OutboundService {
             })
             .where(and(eq(outboundMessages.id, row.id), eq(outboundMessages.status, input.fromStatus)))
             .returning();
-          if (updated[0] !== undefined) {
-            // Acceptance ends the send lock in the same transaction: the
-            // snapshot is the record now, and the draft returns to plain
-            // list state — deletable, never wedged — while the outbound
-            // references keep its uploaded files alive (SPEC F6 and F7).
-            await unlockDraftAfterSend(tx, row.id);
+          const accepted = updated[0];
+          if (accepted === undefined) {
+            // The row left `fromStatus` while this attempt ran — a
+            // submission that outlived its lease was held as
+            // `outcome_unknown`. No part of the acceptance may commit
+            // without the status transition, so the throw rolls the local
+            // message back with everything else; the caller reads the
+            // state that actually holds instead.
+            throw new AcceptanceSupersededError();
           }
+          // Acceptance ends the send lock in the same transaction: the
+          // snapshot is the record now, and the draft returns to plain
+          // list state — deletable, never wedged — while the outbound
+          // references keep its uploaded files alive (SPEC F6 and F7).
+          await unlockDraftAfterSend(tx, row.id);
           await recordSendEvent(tx, "system", SEND_SENT_EVENT, row.id, {
             accountId: row.accountId,
             messageId,
@@ -1277,9 +1289,17 @@ export class OutboundService {
               ? {}
               : { evidence: input.evidence }),
           });
-          return updated[0] ?? row;
+          return accepted;
         });
       } catch (cause) {
+        if (cause instanceof AcceptanceSupersededError) {
+          const current = await this.db
+            .select()
+            .from(outboundMessages)
+            .where(eq(outboundMessages.id, row.id))
+            .limit(1);
+          return current[0] ?? row;
+        }
         if (attempt === 0 && isUniqueViolation(cause)) {
           continue;
         }
@@ -1840,6 +1860,14 @@ function isUniqueViolation(cause: unknown): boolean {
     (cause as { code?: unknown }).code === "23505"
   );
 }
+
+/**
+ * Thrown inside the acceptance transaction when its status guard matched no
+ * row, so the rollback discards the local message with everything else: the
+ * attempt lost the row — a lease-aged hold moved a slow submission to
+ * `outcome_unknown` — and no acceptance may commit without the transition.
+ */
+class AcceptanceSupersededError extends Error {}
 
 /**
  * The draft lock left with another request, the shape of a queue race the

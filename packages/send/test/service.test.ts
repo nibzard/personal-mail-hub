@@ -1109,6 +1109,74 @@ suite("outbound snapshots and SMTP sending", () => {
     expect(draftRow.lockedBySend).toBeNull();
   });
 
+  it("rolls a late acceptance back when a lease-aged hold already took the row", async () => {
+    const folder = new FakeSentFolder("Sent");
+    const draft = await makeDraft();
+    const outbound = await queueSendOf(draft.id);
+    const script = scriptedSubmitter(acceptedReport());
+    let held = false;
+    const service = new OutboundService(db, storage, controls, {
+      submit: async (request) => {
+        script.calls.push(request);
+        if (!held) {
+          held = true;
+          // The submission outlived its lease: recovery already held the row
+          // as unknown while SMTP was still talking.
+          await db
+            .update(outboundMessages)
+            .set({
+              status: "outcome_unknown",
+              lastError: {
+                code: "sending_abandoned",
+                message:
+                  "The submission attempt recorded no outcome before the process stopped; nothing was resubmitted.",
+              },
+            })
+            .where(and(eq(outboundMessages.id, outbound.id), eq(outboundMessages.status, "sending")));
+        }
+        return acceptedReport();
+      },
+      resolveCredentials: async () => ({
+        host: "smtp.example.com",
+        port: 587,
+        security: "starttls_required" as const,
+        username: "user@example.com",
+        password: "mailbox-secret",
+      }),
+      openSentCopy: async () => folder.session(),
+    });
+
+    const outcome = await service.executeOutbound(outbound.id);
+    expect(outcome.submitted).toBe(true);
+    // The caller reads the state that actually holds, not a phantom sent.
+    expect(outcome.status).toBe("outcome_unknown");
+
+    // No part of the acceptance committed: no sent event, no local sent
+    // record, and the draft keeps the lock only the transition releases.
+    const row = await loadRow(outbound.id);
+    expect(row.status).toBe("outcome_unknown");
+    expect(row.logicalMessageId).toBeNull();
+    expect(row.sentAt).toBeNull();
+    expect((await eventTypesOf(outbound.id)).filter((type) => type === "send.sent")).toHaveLength(0);
+    expect(
+      await db.select().from(messagesTable).where(eq(messagesTable.messageId, row.rfcMessageId)),
+    ).toHaveLength(0);
+    const locked = (
+      await db.select().from(draftsTable).where(eq(draftsTable.id, draft.id)).limit(1)
+    )[0]!;
+    expect(locked.lockedBySend).toBe(outbound.id);
+
+    // The evidence path stays open: the accepted submission's own copy
+    // resolves the held row through the same acceptance transaction.
+    folder.load(row.rfcMessageId, await storage.durable.get(row.mimeStorageKey));
+    const reconciled = await service.reconcileUnknownOutcomes(100);
+    expect(reconciled.resolved).toBeGreaterThanOrEqual(1);
+    const resolved = await loadRow(outbound.id);
+    expect(resolved.status).toBe("sent");
+    expect((await eventTypesOf(outbound.id)).filter((type) => type === "send.sent")).toHaveLength(1);
+    expect(script.calls).toHaveLength(1);
+  });
+
   it("contains one poisoned row and keeps the sweep moving", async () => {
     const folder = new FakeSentFolder("Sent");
     // The poisoned row is the older one; the sweep must reach the younger
@@ -1285,14 +1353,54 @@ suite("outbound snapshots and SMTP sending", () => {
       })
       .where(eq(outboundMessages.id, row.id));
 
-    const sweep = await service.appendDueSentCopies();
+    const outcome = await service.executeSentCopyAppend(row.id);
+    expect(outcome.attempted).toBe(false);
     const held = await loadRow(row.id);
     expect(held.sentCopyStatus).toBe("unknown");
     expect((held.lastError as { code: string }).code).toBe("append_uncertain");
     expect(folder.appendsOf(row.rfcMessageId)).toBe(0);
     // The unmapped answer recorded nothing over the unknown it found.
     expect((await eventTypesOf(row.id)).filter((type) => type === "send.sent_copy_failed")).toHaveLength(0);
-    expect(sweep.scanned).toBeGreaterThanOrEqual(1);
+  });
+
+  it("keeps an unmapped unknown out of the append window and re-dues it on mapping", async () => {
+    const folder = new FakeSentFolder("Sent");
+    const { service } = appendingService(acceptedReport(), folder);
+    const { row: stuck } = await acceptedSend(service, { accountId: await unmappedAccount() });
+
+    // The append attempt ended uncertain while the mapping existed. Both rows
+    // are backdated, so the window order is theirs alone whatever earlier
+    // tests left due.
+    await db
+      .update(outboundMessages)
+      .set({
+        sentCopyStatus: "unknown",
+        lastError: { code: "append_uncertain", message: "The Sent append response was lost." },
+        createdAt: new Date(Date.now() - 48 * 60 * 60 * 1000),
+      })
+      .where(eq(outboundMessages.id, stuck.id));
+    const { row: young } = await acceptedSend(service);
+    await db
+      .update(outboundMessages)
+      .set({ createdAt: new Date(Date.now() - 24 * 60 * 60 * 1000) })
+      .where(eq(outboundMessages.id, young.id));
+
+    // One window slot: the unmapped unknown may not fill it — the sweep can
+    // make no progress on that row — so the younger copy stores instead.
+    const windowed = await service.appendDueSentCopies(1);
+    expect(windowed.scanned).toBe(1);
+    expect(windowed.attempted).toBe(1);
+    expect((await loadRow(stuck.id)).sentCopyStatus).toBe("unknown");
+    expect((await loadRow(young.id)).sentCopyStatus).toBe("stored");
+    expect(folder.appendsOf(stuck.rfcMessageId)).toBe(0);
+    expect(folder.appendsOf(young.rfcMessageId)).toBe(1);
+
+    // A fresh mapping makes the row due again the moment it exists.
+    await db.insert(foldersTable).values({ accountId: stuck.accountId, name: "Sent", role: "sent" });
+    await service.appendDueSentCopies(100);
+    const stored = await loadRow(stuck.id);
+    expect(stored.sentCopyStatus).toBe("stored");
+    expect(folder.appendsOf(stuck.rfcMessageId)).toBe(1);
   });
 
   it("issues the deliberate resend copy of an unknown send without resubmitting it", async () => {
