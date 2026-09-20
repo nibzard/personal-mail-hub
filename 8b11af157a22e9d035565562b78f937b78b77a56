@@ -1,0 +1,16 @@
+The deployment's classifier failed because /v1/evaluations returned 404.
+The old request, response fixture, and pinned model did not match TypeSafe.
+
+Use https://docs.typesafe.ai/api and https://docs.typesafe.ai/models:
+POST /v1/systemone, model jev-1.13.0, state text, and named questions.
+Choice answers carry choice and confidence; Noul answers carry P(yes).
+Keep P(yes) in the existing confidence field so the positive action gate
+continues to require strong evidence. A tie at 0.5 maps to false. Routing
+remains subject to the existing evaluation gate. Questions are classify-2.
+
+Seven updated adapter tests failed before the fix; all 25 passed afterward.
+A live request from the deployment with synthetic text succeeded using its
+existing API key. No message content or credentials were printed.
+
+The release check also found an unused mailbox status state. Render that
+status and set it after the form reset so connection failures remain visible.
