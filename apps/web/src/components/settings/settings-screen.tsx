@@ -195,6 +195,7 @@ export function SettingsScreen({
                       recoveryGeneration={recoveryGeneration}
                       onAccountsChanged={onAccountsChanged}
                       onFoldersChanged={onFoldersChanged}
+                      onSessionLost={onSessionLost}
                     />
                   ))}
                 </ul>
@@ -207,7 +208,7 @@ export function SettingsScreen({
           </>
         )}
 
-        <SaveStateFooter />
+        <SaveStateFooter onSessionLost={onSessionLost} />
       </DialogContent>
     </Dialog>
   );
@@ -363,8 +364,12 @@ function SyncQueueSection({ sync }: { sync: ReturnType<typeof useSyncStatus> }) 
 }
 
 /** One stable line for where each preference save stands (SPEC F12). */
-function SaveStateFooter() {
+function SaveStateFooter({ onSessionLost }: { onSessionLost: () => void }) {
   const settings = useAppSettings();
+  // An ended session has the same recovery path the list and reader offer:
+  // signing back in, not another request that cannot succeed (SPEC F9).
+  const sessionEnded =
+    settings.savePhase === "error" && settings.saveError?.unauthorized === true;
   return (
     <footer
       role="status"
@@ -381,11 +386,20 @@ function SaveStateFooter() {
       {settings.savePhase === "error" && (
         <>
           <span className="min-w-0 flex-1 text-destructive-muted-foreground">
-            Could not save: {settings.saveError ?? "the mail service cannot be reached."}
+            Could not save:{" "}
+            {sessionEnded
+              ? "your session ended."
+              : (settings.saveError?.message ?? "the mail service cannot be reached.")}
           </span>
-          <Button variant="outline" size="sm" onClick={settings.retry}>
-            Try again
-          </Button>
+          {sessionEnded ? (
+            <Button size="sm" onClick={onSessionLost}>
+              Sign in again
+            </Button>
+          ) : (
+            <Button variant="outline" size="sm" onClick={settings.retry}>
+              Try again
+            </Button>
+          )}
         </>
       )}
     </footer>

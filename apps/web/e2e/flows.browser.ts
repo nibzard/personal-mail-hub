@@ -361,6 +361,28 @@ test.describe("offline", () => {
     await expect(page.locator("[data-message-row='m-001']")).toBeVisible();
   });
 
+  test("the offline fallback honors the active query", async ({ page, context }) => {
+    await openInbox(page);
+    // Download the rows of the scope first, then narrow while still online,
+    // so the server result and the offline filter can be told apart.
+    await page.locator("[data-message-row='m-001']").click();
+    await page.getByLabel("Search mail").fill("dinner");
+    await expect(page.locator("[data-message-row='m-001']")).toBeVisible();
+    await expect(page.locator("[data-message-row='m-002']")).toBeHidden();
+
+    await context.setOffline(true);
+    await page.getByRole("button", { name: "Refresh this view" }).click();
+    // The fallback narrows the downloaded rows by the query, and the notice
+    // states what an offline search can and cannot cover.
+    await expect(
+      page.getByText(
+        "Offline. Showing downloaded mail that matches the subject, sender, or snippet.",
+      ),
+    ).toBeVisible();
+    await expect(page.locator("[data-message-row='m-001']")).toBeVisible();
+    await expect(page.locator("[data-message-row='m-002']")).toBeHidden();
+  });
+
   test("a cold offline load opens the installed shell with downloaded mail", async ({
     page,
     context,
@@ -438,6 +460,44 @@ test.describe("clean view", () => {
     await reader.getByRole("button", { name: "Clean view" }).click();
     await expect(frame.locator("body")).toContainText("Meeting notes");
     expect(requests.count()).toBe(1);
+  });
+
+  test("a default-on clean view still turns off for one message", async ({ page }) => {
+    await openInbox(page);
+    // Turn the stored default on first (SPEC F10), so the reader starts in
+    // the extracted view; the per-message choice must still be able to turn
+    // it off (SPEC F3: the sanitized original stays one click away).
+    const dialog = await openSettings(page);
+    await dialog.getByRole("switch", { name: "Clean view by default" }).click();
+    await expect(dialog.locator("footer[role='status']")).toHaveText("Saved.");
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+
+    await page.locator("[data-message-row='m-005']").click();
+    const reader = page.getByRole("region", { name: "Message reader" });
+    await expect(reader.getByRole("heading", { level: 2 })).toHaveText(
+      "Weekly report with chart",
+    );
+    const frame = page.frameLocator("iframe[title='Message body']");
+    await expect(frame.locator("body")).toContainText("The latest answer sits on top");
+    const toggle = reader.getByRole("button", { name: "Clean view" });
+    await expect(toggle).toHaveAttribute("aria-pressed", "true");
+
+    // Switching off records the per-message choice, not the default again.
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-pressed", "false");
+    await expect(frame.locator("body")).toContainText("Meeting notes");
+    await expect(frame.locator("body")).toContainText("The oldest message of the chain.");
+
+    // The next message starts from the stored default again: its clean view
+    // is fetched and the fallback states itself.
+    await page.locator("[data-message-row='m-002']").click();
+    await expect(reader.getByRole("heading", { level: 2 })).toContainText(
+      "Quarterly budget",
+    );
+    await expect(
+      reader.getByText("Extraction found nothing to clean. Showing the sanitized original."),
+    ).toBeVisible();
   });
 
   test("a text-only message offers no clean view", async ({ page }) => {
@@ -713,6 +773,59 @@ test.describe("failure and pending states", () => {
     await dialog.getByRole("switch", { name: "Single-key shortcuts" }).click();
     await expect(footer).toHaveText("Saving…");
     await expect(footer).toHaveText("Saved.", { timeout: 10_000 });
+  });
+
+  test("a failed folder read surfaces in the unified inbox and recovers", async ({ page }) => {
+    // The unified inbox cannot query before its folder roles resolve, so a
+    // failed index read must state the failure instead of skeletoning
+    // forever, and the retry must retry the folder read itself.
+    const foldersPattern = /\/api\/accounts\/[^/]+\/folders$/u;
+    await page.route(foldersPattern, async (route) => {
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: { code: "internal", message: "The folder index is unavailable." },
+        }),
+      });
+    });
+    await page.goto("/");
+
+    await expect(page.getByText("This view cannot be loaded.")).toBeVisible();
+    await expect(page.locator("#message-list p.max-w-sm")).toHaveText(
+      "The folder index is unavailable.",
+    );
+
+    await page.unroute(foldersPattern);
+    await page.getByRole("button", { name: "Try again" }).click();
+    await expect(page.locator("#message-list [data-message-row]").first()).toBeVisible();
+  });
+
+  test("an ended session in settings offers sign-in, not a dead retry", async ({ page }) => {
+    await openInbox(page);
+    const settingsPattern = "**/api/settings";
+    await page.route(settingsPattern, async (route) => {
+      if (route.request().method() === "PUT") {
+        await route.fulfill({
+          status: 401,
+          contentType: "application/json",
+          body: JSON.stringify({
+            error: { code: "unauthorized", message: "The session has ended." },
+          }),
+        });
+        return;
+      }
+      await route.continue();
+    });
+    const dialog = await openSettings(page);
+    const footer = dialog.locator("footer[role='status']");
+
+    // A settings save that fails because the session ended offers the same
+    // recovery path the list and reader offer (SPEC F9).
+    await dialog.getByRole("switch", { name: "Clean view by default" }).click();
+    await expect(footer).toContainText("Could not save: your session ended.");
+    await expect(footer.getByRole("button", { name: "Sign in again" })).toBeVisible();
+    await expect(footer.getByRole("button", { name: "Try again" })).toBeHidden();
   });
 });
 

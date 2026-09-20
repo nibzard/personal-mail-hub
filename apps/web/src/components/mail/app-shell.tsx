@@ -98,7 +98,13 @@ export function AppShell({
   const [query, setQuery] = useState("");
   const debouncedQuery = useDebouncedValue(query, 300);
   const folders = useFolderIndex(accounts);
-  const list = useMessageList(scope, debouncedQuery, folders.data);
+  const folderIndexError = folders.phase === "error" ? folders.error : null;
+  const list = useMessageList(scope, debouncedQuery, folders.data, folderIndexError);
+  // While the unified inbox waits on a failed folder read, the list's retry
+  // must retry that read; reloading the list alone would never leave the
+  // failure, because the list cannot query without the folder roles.
+  const retryList =
+    scope.kind === "unified-inbox" && folderIndexError !== null ? folders.reload : list.reload;
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [pane, setPane] = useState<Pane>("list");
   const threePane = useMediaQuery(THREE_PANE_QUERY);
@@ -590,7 +596,7 @@ export function AppShell({
             scopeResetKey={scopeKey(scope)}
             state={listState}
             onLoadMore={list.loadMore}
-            onReload={list.reload}
+            onReload={retryList}
             query={query}
             onQueryChange={setQuery}
             selectedId={selectedId}

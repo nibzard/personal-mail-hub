@@ -7,7 +7,7 @@ import type {
   FolderRole,
   HealthzAccount,
 } from "@mail-hub/contracts";
-import { apiDelete, apiPatch, apiPut, toApiError } from "@/lib/api";
+import { apiDelete, apiPatch, apiPut, toApiError, type ApiError } from "@/lib/api";
 import { formatAge, formatCount } from "@/lib/format";
 import { orderFolders } from "@/mail/view";
 import { Button } from "@/components/ui/button";
@@ -57,6 +57,7 @@ export function AccountSettingsCard({
   recoveryGeneration,
   onAccountsChanged,
   onFoldersChanged,
+  onSessionLost,
 }: {
   account: AccountSummary;
   /** `null` while the folder index loads; `undefined` when the read failed. */
@@ -65,6 +66,8 @@ export function AccountSettingsCard({
   recoveryGeneration: string | null;
   onAccountsChanged: () => void;
   onFoldersChanged: () => void;
+  /** Re-probes the session after it ended, opening sign-in when needed. */
+  onSessionLost: () => void;
 }) {
   const generationHeaders =
     recoveryGeneration === null
@@ -76,7 +79,7 @@ export function AccountSettingsCard({
   const [busy, setBusy] = useState<"classify" | "role" | "identities" | null>(
     null,
   );
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ApiError | null>(null);
 
   const [identities, setIdentities] = useState<IdentityDraft[]>(() =>
     account.identities.map((identity) => ({
@@ -109,7 +112,7 @@ export function AccountSettingsCard({
     try {
       await action();
     } catch (cause: unknown) {
-      setError(toApiError(cause).message);
+      setError(toApiError(cause));
     } finally {
       setBusy(null);
     }
@@ -192,12 +195,21 @@ export function AccountSettingsCard({
         <p className="truncate text-muted-foreground">{account.username}</p>
 
         {error !== null && (
-          <p
+          <div
             role="alert"
-            className="mt-2 rounded bg-destructive-muted px-2 py-1.5 text-destructive-muted-foreground"
+            className="mt-2 flex flex-wrap items-center gap-2 rounded bg-destructive-muted px-2 py-1.5 text-destructive-muted-foreground"
           >
-            {error}
-          </p>
+            {/* An ended session recovers through sign-in, the same path the
+                list and reader offer (SPEC F9). */}
+            <span className="min-w-0 flex-1">
+              {error.unauthorized ? "Your session ended." : error.message}
+            </span>
+            {error.unauthorized && (
+              <Button size="sm" onClick={onSessionLost}>
+                Sign in again
+              </Button>
+            )}
+          </div>
         )}
 
         <AccountSyncLines sync={sync} />

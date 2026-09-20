@@ -15,7 +15,7 @@ import { apiGet, apiGetBlob, toApiError, type ApiError } from "@/lib/api";
 
 import { offlineStore } from "@/offline/store.ts";
 import { useResource, type Resource } from "./use-resource";
-import { folderForRole, scopeKey, type MailScope } from "./view";
+import { filterCachedRows, folderForRole, scopeKey, type MailScope } from "./view";
 
 /*
  * Reading data hooks over the existing routes: the session probe and folder
@@ -449,6 +449,7 @@ export function useMessageList(
   scope: MailScope,
   query: string,
   folderIndex: Map<string, FolderSummary[]> | null,
+  folderIndexError: ApiError | null,
 ): MessageList {
   const key = scopeKey(scope);
   const trimmed = query.trim();
@@ -494,6 +495,19 @@ export function useMessageList(
   useEffect(
     () => {
       if (scope.kind === "unified-inbox" && folderIndex === null) {
+        // The unified inbox cannot query before its folder roles resolve.
+        // A failed index read must not leave the initial skeletons up
+        // forever: the failure shows with a retry, and a retry that reloads
+        // the index brings the list back to loading (SPEC F12).
+        setEntry({
+          phase: folderIndexError === null ? "loading" : "error",
+          rows: [],
+          total: 0,
+          indexing: null,
+          error: folderIndexError,
+          loadingMore: false,
+          offlineFromCache: false,
+        });
         return;
       }
       const controller = new AbortController();
@@ -600,20 +614,22 @@ export function useMessageList(
               loadingMore: false,
             }));
             // With nothing on screen and no service, downloaded mail still
-            // reads (SPEC F9).
+            // reads, narrowed to this scope and query (SPEC F9).
             if (failure.network && !hadRows && pages === 1) {
               void readCachedRows().then((cached) => {
-                if (live && cached.length > 0) {
-                  setEntry({
-                    phase: "ready",
-                    rows: cached,
-                    total: cached.length,
-                    indexing: null,
-                    error: failure,
-                    loadingMore: false,
-                    offlineFromCache: true,
-                  });
+                if (!live || cached.length === 0) {
+                  return;
                 }
+                const rows = filterCachedRows(cached, scope, folderIndex, trimmed);
+                setEntry({
+                  phase: "ready",
+                  rows,
+                  total: rows.length,
+                  indexing: null,
+                  error: failure,
+                  loadingMore: false,
+                  offlineFromCache: true,
+                });
               });
             }
           }
@@ -626,8 +642,9 @@ export function useMessageList(
         controller.abort();
       };
     },
-    // The inputs are the scope identity, the page, and the reload nonce.
-    [identity, pages, nonce],
+    // The inputs are the scope identity, the page, the reload nonce, and
+    // the folder-index read the unified inbox waits on.
+    [identity, pages, nonce, folderIndexError],
   );
 
   const canLoadMore =

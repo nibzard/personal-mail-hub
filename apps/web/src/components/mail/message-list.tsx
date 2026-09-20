@@ -122,7 +122,9 @@ export function MessageListPane({
 
       {state.offlineFromCache && (
         <p role="status" className="shrink-0 bg-surface px-3 py-1.5 text-muted-foreground">
-          Offline. Showing downloaded mail.
+          {trimmed.length > 0
+            ? "Offline. Showing downloaded mail that matches the subject, sender, or snippet."
+            : "Offline. Showing downloaded mail."}
         </p>
       )}
 

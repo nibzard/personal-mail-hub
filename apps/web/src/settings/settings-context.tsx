@@ -44,11 +44,12 @@ export interface SettingsState {
   error: ApiError | null;
   /** Applies one patch locally, then persists it (SPEC F12). */
   update: (patch: SettingsUpdateBody) => void;
-  /** Sends the last failed patch again, after an explicit choice (SPEC F12). */
+  /** Sends every failed patch again, after an explicit choice (SPEC F12). */
   retry: () => void;
   reload: () => void;
   savePhase: SettingsSavePhase;
-  saveError: string | null;
+  /** The failure the footer states while patches wait for their retry. */
+  saveError: ApiError | null;
 }
 
 const SettingsContext = createContext<SettingsState | null>(null);
@@ -65,13 +66,31 @@ export function SettingsProvider({
   const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState<ApiError | null>(null);
   const [savePhase, setSavePhase] = useState<SettingsSavePhase>("idle");
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<ApiError | null>(null);
   const [nonce, setNonce] = useState(0);
   // The stored appearance choices are adopted once; afterwards the local
   // stores can hold newer edits that have not saved yet.
   const adopted = useRef(false);
-  // The last patch that failed to save, kept for the explicit retry.
-  const failedPatch = useRef<SettingsUpdateBody | null>(null);
+  // Every patch that failed to save, waiting together for the explicit
+  // retry. A newer edit of the same keys supersedes what it queued, so a
+  // retry never sends a value the owner already changed again.
+  const failedPatches = useRef<SettingsUpdateBody[]>([]);
+  const savesInFlight = useRef(0);
+  const lastFailure = useRef<ApiError | null>(null);
+
+  /** Records where the saves stand once every in-flight request settled. */
+  const settleSave = useCallback(() => {
+    if (savesInFlight.current > 0) {
+      setSavePhase("saving");
+      return;
+    }
+    if (failedPatches.current.length > 0) {
+      setSavePhase("error");
+      setSaveError(lastFailure.current);
+      return;
+    }
+    setSavePhase("saved");
+  }, []);
 
   const reload = useCallback(() => {
     setNonce((value) => value + 1);
@@ -111,10 +130,13 @@ export function SettingsProvider({
 
   const update = useCallback(
     (patch: SettingsUpdateBody) => {
+      failedPatches.current = failedPatches.current.filter(
+        (queued) => !Object.keys(patch).some((key) => key in queued),
+      );
       setSettings((current) => ({ ...current, ...patch }));
       applyLocally(patch);
+      savesInFlight.current += 1;
       setSavePhase("saving");
-      setSaveError(null);
       apiPut<SettingsResponse>(
         "/settings",
         patch,
@@ -123,27 +145,35 @@ export function SettingsProvider({
           : { headers: { "x-recovery-generation": recoveryGeneration } },
       ).then(
         (response) => {
-          failedPatch.current = null;
-          setSettings(response.settings);
-          setSavePhase("saved");
+          savesInFlight.current -= 1;
+          // Adopt only the keys this patch carries, so a response that
+          // lands after a newer edit cannot revert what that edit shows.
+          setSettings((current) => ({
+            ...current,
+            ...pickPatched(response.settings, patch),
+          }));
+          settleSave();
         },
         (cause: unknown) => {
-          // The patch stays entered and inspectable; only an explicit retry
-          // sends it again (SPEC F12).
-          failedPatch.current = patch;
-          setSavePhase("error");
-          setSaveError(toApiError(cause).message);
+          savesInFlight.current -= 1;
+          // The patch stays entered and inspectable; only an explicit
+          // retry sends it again (SPEC F12).
+          failedPatches.current.push(patch);
+          lastFailure.current = toApiError(cause);
+          settleSave();
         },
       );
     },
-    [recoveryGeneration],
+    [recoveryGeneration, settleSave],
   );
 
   const retry = useCallback(() => {
-    const patch = failedPatch.current;
-    if (patch !== null) {
-      update(patch);
+    if (failedPatches.current.length === 0) {
+      return;
     }
+    const merged = Object.assign({}, ...failedPatches.current) as SettingsUpdateBody;
+    failedPatches.current = [];
+    update(merged);
   }, [update]);
 
   const value = useMemo<SettingsState>(
@@ -174,4 +204,31 @@ function applyLocally(patch: SettingsUpdateBody): void {
   if (patch.singleKeyShortcuts !== undefined) {
     setSingleKeyShortcuts(patch.singleKeyShortcuts);
   }
+}
+
+/** The stored values for exactly the keys one patch carries. */
+function pickPatched(settings: AppSettings, patch: SettingsUpdateBody): Partial<AppSettings> {
+  const picked: Partial<AppSettings> = {};
+  if (patch.theme !== undefined) {
+    picked.theme = settings.theme;
+  }
+  if (patch.density !== undefined) {
+    picked.density = settings.density;
+  }
+  if (patch.singleKeyShortcuts !== undefined) {
+    picked.singleKeyShortcuts = settings.singleKeyShortcuts;
+  }
+  if (patch.cleanViewDefault !== undefined) {
+    picked.cleanViewDefault = settings.cleanViewDefault;
+  }
+  if (patch.classificationEnabled !== undefined) {
+    picked.classificationEnabled = settings.classificationEnabled;
+  }
+  if (patch.classificationMonthlyCostCapUsd !== undefined) {
+    picked.classificationMonthlyCostCapUsd = settings.classificationMonthlyCostCapUsd;
+  }
+  if (patch.backfillClassification !== undefined) {
+    picked.backfillClassification = settings.backfillClassification;
+  }
+  return picked;
 }

@@ -1646,37 +1646,45 @@
         "testing",
         "ui"
       ],
-      "updated_at": "2026-09-19T23:42:09Z",
+      "updated_at": "2026-09-19T23:42:27Z",
       "files": [
-        "apps/web/e2e/fixture-server.mjs",
+        "apps/web/e2e/__screenshots__/interface.browser.ts",
         "apps/web/e2e/fixture-data.mjs",
+        "apps/web/e2e/fixture-server.mjs",
         "apps/web/e2e/flows.browser.ts",
+        "apps/web/e2e/helpers.ts",
         "apps/web/e2e/interface.browser.ts",
         "apps/web/playwright.config.ts",
+        "apps/web/src/components/mail/compose-screen.tsx",
         "apps/web/src/components/mail/message-body.tsx",
         "apps/web/src/components/mail/reader-pane.tsx",
-        "apps/web/e2e/__screenshots__/interface.browser.ts",
-        "apps/web/src/components/mail/compose-screen.tsx"
+        "to-do.json"
       ]
     },
     {
       "id": "T052",
       "title": "Fix the reader and settings interface defects",
       "priority": 3,
-      "status": "todo",
-      "details": "Five small web defects. The Clean view toggle cannot be switched off when the clean-view default is on: the state falls back to the setting and the handler resets to the default instead of recording a per-message off choice (apps/web/src/components/mail/reader-pane.tsx:59-62 and 196-201), so the sanitized original stays unreachable against the F3 one-click rule. The unified inbox shows skeletons forever when the folder index read fails because the load never leaves the initial phase (apps/web/src/mail/data.ts:392-394); surface an error with a retry in the list pane. The offline fallback returns every cached row regardless of the active account, folder, and search query (apps/web/src/mail/data.ts:500-513); filter by scope and query or state the mismatch. A failed settings save keeps only the last patch and out-of-order responses can revert the display (apps/web/src/settings/settings-context.tsx:74 and 130-147); queue failed patches and reconcile on save. And settings mutations expose raw error text with no session-expiry path, unlike the list and reader; add the sign-in recovery message.",
+      "status": "done",
+      "details": "All five fixed. The Clean view toggle records the per-message choice in both directions, so a reader with the clean-view default on can still switch one message back to the sanitized original; the next message starts from the default again. The unified inbox no longer skeletons forever when the folder index read fails: useMessageList takes the folder-index error and surfaces the list failure with a retry, and while the inbox waits on a failed read the retry reloads the folder index itself, so the view recovers instead of re-running a query that cannot run. The offline fallback filters the downloaded rows by the active scope and query (new filterCachedRows in mail/view.ts: the unified inbox keeps rows an indexed inbox folder holds, an account scope keeps its account narrowed to the folder, and a query narrows by the subject, snippet, and sender a row carries), the offline notice states the query narrowing, and a downloaded set with no scope match shows the honest empty state instead of every cached row. Failed settings saves queue instead of keeping only the last patch: every failed patch waits together, a newer edit of the same keys supersedes what it queued, retry sends the merged queue in one request, and a success adopts only the keys its own patch carries (pickPatched), so an out-of-order response can no longer revert a newer edit on the display. Settings mutations carry the session-expiry path the list and reader already have: the save footer and each account card state the ended session with a Sign in again action instead of raw error text beside a retry that cannot succeed. Verified: npm run check clean in every workspace; the full suite with TEST_DATABASE_URL passes 761 tests across 69 test files in 21 workspaces with nothing failed or skipped; the web unit suite passes 90 tests including the new 7-test filterCachedRows suite; the browser suites pass 39 flows (new: a default-on clean view switches off for one message, the offline fallback honors the active query, a failed folder read recovers from the list pane, and a session-expired settings save offers sign-in) and 15 interface checks with the visual baselines unchanged.",
       "tags": [
         "ui",
         "settings",
         "reading"
       ],
-      "updated_at": "2026-09-19T17:39:46Z",
+      "updated_at": "2026-09-20T00:05:00Z",
       "files": [
-        "apps/web/src/components/mail/reader-pane.tsx",
-        "apps/web/src/mail/data.ts",
+        "apps/web/e2e/flows.browser.ts",
+        "apps/web/src/components/mail/app-shell.tsx",
         "apps/web/src/components/mail/message-list.tsx",
+        "apps/web/src/components/mail/reader-pane.tsx",
+        "apps/web/src/components/settings/account-settings.tsx",
+        "apps/web/src/components/settings/settings-screen.tsx",
+        "apps/web/src/mail/data.ts",
+        "apps/web/src/mail/view.ts",
         "apps/web/src/settings/settings-context.tsx",
-        "apps/web/src/components/settings"
+        "apps/web/test/view.test.ts",
+        "to-do.json"
       ]
     },
     {

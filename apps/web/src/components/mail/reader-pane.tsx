@@ -54,7 +54,9 @@ export function ReaderPane({ message, onBack, onSessionLost, className }: Reader
   // Clean view is one toggle per message (SPEC F3): Defuddle extraction,
   // then DOMPurify, then this same frame. The sanitized original stays one
   // click away, and the remote-image policy applies to both views. A message
-  // without its own choice yet starts from the stored default (SPEC F10).
+  // without its own choice yet starts from the stored default (SPEC F10),
+  // and the recorded choice covers both directions, so a reader with the
+  // default on can still turn the extraction off for one message.
   const { settings } = useAppSettings();
   const [cleanChoice, setCleanChoice] = useState<{ id: string; on: boolean } | null>(null);
   const cleanEnabled =
@@ -195,9 +197,7 @@ export function ReaderPane({ message, onBack, onSessionLost, className }: Reader
                           aria-pressed={cleanEnabled}
                           disabled={cleanEnabled && cleanView === null && cleanResource.phase === "loading"}
                           onClick={() =>
-                            setCleanChoice(
-                              cleanEnabled ? null : { id: message.messageId, on: true },
-                            )
+                            setCleanChoice({ id: message.messageId, on: !cleanEnabled })
                           }
                         >
                           <Sparkles aria-hidden="true" className="size-3.5" />

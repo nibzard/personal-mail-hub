@@ -1,4 +1,4 @@
-import type { AccountSummary, FolderSummary } from "@mail-hub/contracts";
+import type { AccountSummary, FolderSummary, SearchResultItem } from "@mail-hub/contracts";
 
 /*
  * The navigation model (SPEC F3): one unified inbox, one all-mail view, and
@@ -36,6 +36,64 @@ export function folderForRole(
   role: NonNullable<FolderSummary["role"]>,
 ): FolderSummary | null {
   return folders.find((folder) => folder.role === role) ?? null;
+}
+
+/**
+ * The downloaded rows one scope can show offline (SPEC F9). The scope filter
+ * reads each row's cached occurrences, so the fallback never mixes accounts
+ * or folders: the unified inbox keeps rows an indexed folder maps to inbox,
+ * and an account scope keeps its own account, narrowed to the folder when
+ * one is chosen. Without a folder index no role is known, so no row
+ * qualifies for the unified inbox. The server stays the only full-text
+ * index; a query narrows the downloaded rows by the text each row itself
+ * carries, which the offline notice states beside the list.
+ */
+export function filterCachedRows(
+  rows: SearchResultItem[],
+  scope: MailScope,
+  folderIndex: Map<string, FolderSummary[]> | null,
+  query: string,
+): SearchResultItem[] {
+  const inboxFolderIds = new Set<string>();
+  if (scope.kind === "unified-inbox" && folderIndex !== null) {
+    for (const folders of folderIndex.values()) {
+      const inbox = folderForRole(folders, "inbox");
+      if (inbox !== null) {
+        inboxFolderIds.add(inbox.id);
+      }
+    }
+  }
+  const needle = query.trim().toLowerCase();
+  return rows.filter((row) => {
+    if (scope.kind === "unified-inbox") {
+      if (!row.occurrences.some((occurrence) => inboxFolderIds.has(occurrence.folderId))) {
+        return false;
+      }
+    } else if (scope.kind === "account") {
+      if (row.accountId !== scope.accountId) {
+        return false;
+      }
+      const folderId = scope.folderId;
+      if (
+        folderId !== null &&
+        !row.occurrences.some((occurrence) => occurrence.folderId === folderId)
+      ) {
+        return false;
+      }
+    }
+    if (needle.length === 0) {
+      return true;
+    }
+    const haystack = [
+      row.subject ?? "",
+      row.snippet ?? "",
+      row.sender?.address ?? "",
+      row.sender?.name ?? "",
+    ]
+      .join("\n")
+      .toLowerCase();
+    return haystack.includes(needle);
+  });
 }
 
 /** Folders in navigation order: mapped roles first, then the rest by name. */
