@@ -40,9 +40,13 @@ export type CleanViewExtractor = Pick<ContentExtractor, "extractCleanView">;
 /**
  * Rebuilds one attachment's disposable copy from the verified original
  * (SPEC section 8). The ingestion service implements this; the type keeps the
- * reader independent of it.
+ * reader independent of it. The returned row is the one the bytes verified
+ * against: a concurrent re-ingest can rewrite the part between the reader's
+ * snapshot and the rebuild while the attachment id stays.
  */
-export type AttachmentRegenerator = (attachmentId: string) => Promise<{ bytes: Uint8Array }>;
+export type AttachmentRegenerator = (
+  attachmentId: string,
+) => Promise<{ attachment: Attachment; bytes: Uint8Array }>;
 
 /**
  * Rebuilds one message's sanitized body from the verified durable original
@@ -192,7 +196,11 @@ export class ReadingService {
    * stale — including an unknown version (SPEC section 8). The plain-text
    * part never passes through the sanitizer, so only an HTML derivative
    * can go stale. The refresh persists its result, so one rebuild serves
-   * every later read.
+   * every later read. A refresh that cannot complete — a missing or
+   * mismatched original, a parse failure after a partial restore — is one
+   * step that can never fail the read: the stored derivative is itself
+   * sanitized output, never the original, so it serves while the failure
+   * is logged for the operator.
    */
   private async currentSanitizedHtml(
     messageId: string,
@@ -202,7 +210,17 @@ export class ReadingService {
     if (htmlSanitized === null || sanitizerVersion === SANITIZER_VERSION) {
       return htmlSanitized;
     }
-    const refreshed = await this.refreshSanitizedBody(messageId);
+    let refreshed: SanitizedBody | null;
+    try {
+      refreshed = await this.refreshSanitizedBody(messageId);
+    } catch (cause) {
+      console.warn(
+        `Sanitized body refresh failed for message ${messageId}; serving the stored derivative: ${
+          cause instanceof Error ? cause.message : String(cause)
+        }`,
+      );
+      return htmlSanitized;
+    }
     return refreshed?.htmlSanitized ?? htmlSanitized;
   }
 
@@ -236,7 +254,19 @@ export class ReadingService {
       return { attachment: views[position]!, bytes: cached };
     }
     const regenerated = await this.regenerate(attachmentId);
-    return { attachment: views[position]!, bytes: regenerated.bytes };
+    // The bytes verified against the row the regeneration read, which a
+    // concurrent re-ingest may have renamed since the snapshot above; the
+    // served name and media type come from that row, and the inline decision
+    // from the snapshot stays — only the reader sees every part of the
+    // message, so only it can make that call.
+    return {
+      attachment: {
+        ...views[position]!,
+        filename: regenerated.attachment.filename,
+        contentType: regenerated.attachment.contentType,
+      },
+      bytes: regenerated.bytes,
+    };
   }
 
   /**
