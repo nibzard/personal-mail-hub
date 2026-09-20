@@ -1,0 +1,113 @@
+# Coolify variant of docker-compose.yml.
+# Coolify builds with --project-directory <repo-root>, so build contexts are "."
+# (the repo root) instead of ".." (the parent of this file's directory).
+# Everything else matches docker-compose.yml; see README.md.
+
+# Local or Coolify stack for the mail hub (SPEC.md section 10).
+#
+# Plain docker compose:
+#   cd deploy && cp env.example .env && edit .env
+#   docker compose up -d --build
+#
+# Coolify: create a Docker Compose resource from this file, then assign the
+# public domain to the `web` service. Coolify's proxy terminates TLS and
+# forwards to the gateway, which serves the PWA and proxies /api to the API.
+#
+# The stack keeps one HTTPS origin: session cookies are same-origin and the
+# API rejects requests whose Origin differs from BASE_URL.
+
+name: mail-hub
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mail_hub
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
+      POSTGRES_DB: mail_hub
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: app
+    restart: unless-stopped
+    environment:
+      APP_ROLE: api
+      # POSTGRES_PASSWORD is spliced into this URL verbatim, so the password
+      # must hold only URI-safe characters (@, :, /, %, #, ?, and space all
+      # break the string). Generate it with: openssl rand -hex 24.
+      DATABASE_URL: postgres://mail_hub:${POSTGRES_PASSWORD}@db:5432/mail_hub
+      RECOVERY_GENERATION: ${RECOVERY_GENERATION:?set RECOVERY_GENERATION in deploy/.env}
+      CREDENTIALS_KEY: ${CREDENTIALS_KEY:?set CREDENTIALS_KEY in deploy/.env}
+      BASE_URL: ${BASE_URL:?set BASE_URL in deploy/.env}
+      # Local trials only: allows an http BASE_URL (see deploy/env.example).
+      PREFLIGHT_ALLOW_HTTP: ${PREFLIGHT_ALLOW_HTTP:-}
+      # Optional: TYPE_SAFE_API_KEY for Jev classification.
+      TYPE_SAFE_API_KEY: ${TYPE_SAFE_API_KEY:-}
+    volumes:
+      - storage:/app/data/storage
+      - backups:/backups
+    depends_on:
+      db:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: app
+    restart: unless-stopped
+    environment:
+      APP_ROLE: worker
+      DATABASE_URL: postgres://mail_hub:${POSTGRES_PASSWORD}@db:5432/mail_hub
+      RECOVERY_GENERATION: ${RECOVERY_GENERATION:?set RECOVERY_GENERATION in deploy/.env}
+      CREDENTIALS_KEY: ${CREDENTIALS_KEY:?set CREDENTIALS_KEY in deploy/.env}
+      # The entrypoint runs the same preflight for every role, so the worker
+      # needs BASE_URL too.
+      BASE_URL: ${BASE_URL:?set BASE_URL in deploy/.env}
+      # Local trials only: allows an http BASE_URL (see deploy/env.example).
+      PREFLIGHT_ALLOW_HTTP: ${PREFLIGHT_ALLOW_HTTP:-}
+      TYPE_SAFE_API_KEY: ${TYPE_SAFE_API_KEY:-}
+      # Optional worker schedule overrides; blank keeps the image default.
+      SYNC_CYCLE_CRON: ${SYNC_CYCLE_CRON:-}
+      SEND_CYCLE_CRON: ${SEND_CYCLE_CRON:-}
+      SENT_COPY_CYCLE_CRON: ${SENT_COPY_CYCLE_CRON:-}
+      CLASSIFY_CYCLE_CRON: ${CLASSIFY_CYCLE_CRON:-}
+    volumes:
+      - storage:/app/data/storage
+      - backups:/backups
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    # The worker opens no listener; the image health check does not apply.
+    healthcheck:
+      test: ["NONE"]
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: web
+    restart: unless-stopped
+    environment:
+      MAIL_HUB_API_HOST: api:3000
+    ports:
+      - "${WEB_PORT:-8080}:8080"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  storage:
+  backups:
