@@ -7,13 +7,15 @@
     "admin": "tsx src/main.ts",
     "check": "tsc --noEmit --pretty false",
     "test": "vitest run",
-    "eval:classify": "tsx src/eval-classify.ts"
+    "eval:classify": "tsx src/eval-classify.ts",
+    "eval:home": "tsx src/eval-home.ts"
   },
   "dependencies": {
     "@mail-hub/actions": "0.1.0",
     "@mail-hub/auth": "0.1.0",
     "@mail-hub/classification": "0.1.0",
     "@mail-hub/database": "0.1.0",
+    "@mail-hub/home": "0.1.0",
     "@mail-hub/recovery": "0.1.0"
   },
   "devDependencies": {

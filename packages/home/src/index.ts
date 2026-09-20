@@ -1,5 +1,14 @@
 export { HomeError } from "./errors.ts";
 export {
+  evaluateHome,
+  parseHomeLabels,
+  type HomeAttentionMiss,
+  type HomeEvaluation,
+  type HomeLabel,
+  type HomeRoutineSuggestion,
+  type HomeUnansweredImportant,
+} from "./evaluation.ts";
+export {
   ACTION_BREAKOUT_CONFIDENCE,
   attentionKeyAfter,
   attentionReasons,
