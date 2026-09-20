@@ -10,6 +10,7 @@ import {
   outboundUploads,
   uploads,
   uploadKey,
+  StorageError,
   type AccountIdentity,
   type EmailAddress,
   type Message,
@@ -413,7 +414,24 @@ export class ComposeService {
     const id = randomUUID();
     const storageKey = uploadKey(id);
     const sha256 = sha256Hex(input.bytes);
-    const stored = await this.storage.durable.put(storageKey, input.bytes);
+    let stored;
+    try {
+      stored = await this.storage.durable.put(storageKey, input.bytes);
+    } catch (cause) {
+      if (cause instanceof StorageError && cause.code === "insufficient_space") {
+        // The pause is a system state, not a client fault (SPEC section 10):
+        // record it, then let the route answer 507 with the same detail.
+        await this.db
+          .insert(events)
+          .values({
+            actor: "system",
+            type: "storage.paused",
+            payload: { kind: "upload", detail: cause.message },
+          })
+          .catch(() => undefined);
+      }
+      throw cause;
+    }
     if (stored.sha256 !== sha256 || stored.sizeBytes !== input.bytes.byteLength) {
       throw new ComposeError(
         "upload_unverified",

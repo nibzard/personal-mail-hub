@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
-import { mkdir, open, readdir, readFile, rename, stat, unlink } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rename, stat, statfs, unlink } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Readable } from "node:stream";
@@ -24,14 +24,42 @@ const TEMP_PREFIX = ".tmp-";
  */
 export const TEMP_FILE_STALE_MS = 60 * 60 * 1000;
 
+/**
+ * The free-space pause threshold for durable writes (SPEC section 10): a
+ * disk that cannot hold one more object must surface as one clear pause,
+ * not as per-object write failures. 512 MiB leaves room for the largest
+ * accepted message plus metadata. Deployment configuration can override it
+ * through `STORAGE_MIN_FREE_BYTES`.
+ */
+export const DEFAULT_DURABLE_MIN_FREE_BYTES = 512 * 1024 * 1024;
+
+/**
+ * Read the pause threshold from `STORAGE_MIN_FREE_BYTES`. A blank value
+ * keeps the default; a value that is not a non-negative integer is a
+ * configuration error the process must refuse to start under.
+ */
+export function durableMinFreeBytesFromEnv(value: string | undefined): number {
+  const trimmed = value?.trim() ?? "";
+  if (trimmed === "") {
+    return DEFAULT_DURABLE_MIN_FREE_BYTES;
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error(`STORAGE_MIN_FREE_BYTES must be a non-negative integer byte count, not '${trimmed}'.`);
+  }
+  return parsed;
+}
+
 /** Filesystem object store for one storage class under one root directory. */
 class FsObjectStore implements ObjectStore {
   readonly storageClass: StorageClass;
   private readonly root: string;
+  private readonly minFreeBytes: number;
 
-  constructor(root: string, storageClass: StorageClass) {
+  constructor(root: string, storageClass: StorageClass, minFreeBytes = 0) {
     this.root = root;
     this.storageClass = storageClass;
+    this.minFreeBytes = minFreeBytes;
   }
 
   /** Durable objects fsync before their write resolves, so referencing transactions commit after them. */
@@ -119,10 +147,40 @@ class FsObjectStore implements ObjectStore {
     return join(this.root, ...key.split("/"));
   }
 
+  /**
+   * Refuse a durable write before it starts when the volume is too full
+   * (SPEC section 10). A refused write leaves nothing behind: no temp file,
+   * no partial object, no sidecar. Disposable writes skip the check; losing
+   * one costs nothing. When the measurement itself fails — a filesystem
+   * without the call, a root that cannot be created — the write proceeds and
+   * the short-write assert still guards the bytes.
+   */
+  private async assertWritable(): Promise<void> {
+    if (!this.durable || this.minFreeBytes <= 0) {
+      return;
+    }
+    let available: number;
+    try {
+      // The root may not exist yet on a fresh installation; create it so the
+      // measurement sees the real volume instead of skipping the check.
+      await mkdir(this.root, { recursive: true }).catch(() => undefined);
+      available = await freeBytes(this.root);
+    } catch {
+      return;
+    }
+    if (available < this.minFreeBytes) {
+      throw new StorageError(
+        "insufficient_space",
+        `The storage volume holds ${available} free bytes, below the ${this.minFreeBytes} byte pause threshold; the durable write was refused before it started.`,
+      );
+    }
+  }
+
   private async writeObject(
     key: string,
     source: Uint8Array | AsyncIterable<Uint8Array>,
   ): Promise<StoredObjectMetadata> {
+    await this.assertWritable();
     const finalPath = this.pathFor(key);
     const dir = dirname(finalPath);
     await mkdir(dir, { recursive: true });
@@ -217,14 +275,26 @@ class FsObjectStore implements ObjectStore {
 }
 
 /** Create the durable and disposable stores under one storage root. */
-export function createStorage(root: string): Storage {
+export function createStorage(
+  root: string,
+  options: { durableMinFreeBytes?: number } = {},
+): Storage {
   if (root.length === 0) {
     throw new TypeError("Storage root path is required.");
   }
   return {
-    durable: new FsObjectStore(join(root, "durable"), "durable"),
+    durable: new FsObjectStore(join(root, "durable"), "durable", options.durableMinFreeBytes ?? 0),
     disposable: new FsObjectStore(join(root, "cache"), "disposable"),
   };
+}
+
+/**
+ * Free bytes available to unprivileged writes on the filesystem that holds
+ * `path`. Callers use it to report disk state beside the pause threshold.
+ */
+export async function freeBytes(path: string): Promise<number> {
+  const stats = await statfs(path);
+  return stats.bavail * stats.bsize;
 }
 
 /**

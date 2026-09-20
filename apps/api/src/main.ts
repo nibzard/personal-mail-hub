@@ -1,4 +1,10 @@
-import { createDatabase, createPool, createStorage, sweepTempFiles } from "@mail-hub/database";
+import {
+  createDatabase,
+  createPool,
+  createStorage,
+  durableMinFreeBytesFromEnv,
+  sweepTempFiles,
+} from "@mail-hub/database";
 import { RecoveryControls, describeControlStatus } from "@mail-hub/recovery";
 import { ActionService, TwoWayActionExecutor } from "@mail-hub/actions";
 import { PasskeyAuthService, parseAuthConfig } from "@mail-hub/auth";
@@ -102,7 +108,11 @@ if (authConfig === null) {
   // (SPEC F6). No mailbox credentials are involved, so they open without
   // CREDENTIALS_KEY. Send snapshots persist in the same durable volume.
   const storageRoot = process.env.STORAGE_ROOT ?? DEFAULT_STORAGE_ROOT;
-  const storage = createStorage(storageRoot);
+  // A nearly full volume pauses uploads before they start (SPEC section 10);
+  // the compose service records the pause as an event and answers 507.
+  const storage = createStorage(storageRoot, {
+    durableMinFreeBytes: durableMinFreeBytesFromEnv(process.env.STORAGE_MIN_FREE_BYTES),
+  });
   // Every failure path a write survives removes its own temp file, so
   // anything left is debris from a crashed write; clear it before the tree
   // serves requests again. The staleness bound keeps temp files the worker

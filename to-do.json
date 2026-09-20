@@ -1954,7 +1954,7 @@
       "id": "T063",
       "title": "Record the F12 device and browser matrix",
       "priority": 3,
-      "status": "todo",
+      "status": "done",
       "details": "SPEC F12 requires validation on Safari and macOS and on a real iPhone with an installed PWA, with the tested browser and operating system versions recorded. The browser suites run only the cached Linux Chromium, and no document states which part of the matrix stays untested. Record the covered matrix in the repository, list the untested platforms honestly, and keep the entry point ready for a run on real hardware.",
       "depends_on": [
         "T033",
@@ -1964,7 +1964,7 @@
         "testing",
         "ui"
       ],
-      "updated_at": "2026-09-20T00:56:03Z",
+      "updated_at": "2026-09-20T12:49:43Z",
       "files": [
         "AGENTS.md",
         "apps/web/e2e"
@@ -2230,14 +2230,14 @@
       "id": "T077",
       "title": "Watch disk space and collect unreferenced objects",
       "priority": 3,
-      "status": "todo",
+      "status": "done",
       "details": "Two spec-level operations gaps. SPEC section 10 requires monitoring free disk space and pausing imports and uploads before durable writes become unsafe; nothing measures free space, so a full disk surfaces only as per-object write failures, and the short-write assert from T048 catches corruption but nothing pauses the pipeline. And SPEC section 8 requires garbage collection that removes only unreferenced durable objects after a grace period longer than the backup window; nothing implements it, so originals stranded by logical-message merges and uploads left by discarded drafts accumulate forever (packages/ingestion/src/service.ts:444-445 notes the stranded duplicates). Add a free-space check that pauses body fetches and uploads under a threshold with an honest event, and a sweep that deletes only objects no table references, behind the collection pause hook the backup script already defines (T053).",
       "tags": [
         "storage",
         "operations",
         "worker"
       ],
-      "updated_at": "2026-09-20T02:52:12Z",
+      "updated_at": "2026-09-20T12:49:43Z",
       "files": [
         "apps/worker/src/main.ts",
         "packages/database/src/storage/fs-object-store.ts",

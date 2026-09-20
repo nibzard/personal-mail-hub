@@ -2,10 +2,14 @@ import { parseCredentialsKey, createCredentialCipher, AccountService } from "@ma
 import { ActionService, TwoWayActionExecutor } from "@mail-hub/actions";
 import { ClassificationService, jevAdapterFromEnv } from "@mail-hub/classification";
 import {
+  collectUnreferencedDurableObjects,
   createDatabase,
   createJobQueue,
   createPool,
   createStorage,
+  durableMinFreeBytesFromEnv,
+  events,
+  StorageError,
   sweepTempFiles,
   TEMP_FILE_STALE_MS,
 } from "@mail-hub/database";
@@ -58,6 +62,9 @@ const DEFAULT_CLASSIFY_CYCLE_CRON = "*/60 * * * * *";
 
 /** Durable originals live under this root (SPEC section 8). */
 const DEFAULT_STORAGE_ROOT = "data/storage";
+
+/** How often unreferenced durable objects are collected (SPEC section 8). */
+const DURABLE_COLLECTION_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 const connectionString = process.env.DATABASE_URL;
 
@@ -118,7 +125,11 @@ async function main(databaseUrl: string): Promise<void> {
   }
 
   const storageRoot = process.env.STORAGE_ROOT ?? DEFAULT_STORAGE_ROOT;
-  const storage = createStorage(storageRoot);
+  // A nearly full volume pauses durable writes before they start (SPEC
+  // section 10); the sync cycle records the pause as an event.
+  const storage = createStorage(storageRoot, {
+    durableMinFreeBytes: durableMinFreeBytesFromEnv(process.env.STORAGE_MIN_FREE_BYTES),
+  });
   // Crash recovery for the storage tree: a killed write leaves its temp
   // file behind, the durable tree keeps it, and the nightly backup would
   // copy the debris. The staleness bound protects temp files the API
@@ -141,6 +152,36 @@ async function main(databaseUrl: string): Promise<void> {
     );
   }, TEMP_FILE_STALE_MS);
   tempSweep.unref();
+
+  // Durable-object collection (SPEC section 8): originals stranded by
+  // logical-message merges and uploads left by discarded drafts go only
+  // here, after the grace period, and never while the backup holds the
+  // collection pause marker.
+  const runDurableCollection = async (): Promise<void> => {
+    try {
+      const summary = await collectUnreferencedDurableObjects({ root: storageRoot, db });
+      if (summary.paused) {
+        console.log("Durable collection skipped: the backup holds the collection pause.");
+        return;
+      }
+      if (summary.removed > 0 || summary.retainedByGrace > 0) {
+        console.log(
+          `Durable collection: removed ${summary.removed} unreferenced object(s), freed ` +
+            `${summary.bytesFreed} bytes, kept ${summary.retainedByGrace} inside the grace period.`,
+        );
+      }
+    } catch (cause) {
+      console.error(
+        `Durable collection failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    }
+  };
+  await runDurableCollection();
+  const durableCollection = setInterval(() => {
+    void runDurableCollection();
+  }, DURABLE_COLLECTION_INTERVAL_MS);
+  durableCollection.unref();
+
   const accounts = new AccountService(db, createCredentialCipher(credentialsKey), controls);
   const ingestion = new IngestionService(db, storage);
 
@@ -244,7 +285,21 @@ async function main(databaseUrl: string): Promise<void> {
       if (shutdown.signal.aborted) {
         break;
       }
-      await runAccountCycle(accounts, runner, actions, sessions, account.id, shutdown.signal);
+      try {
+        await runAccountCycle(accounts, runner, actions, sessions, account.id, shutdown.signal);
+      } catch (cause) {
+        if (cause instanceof StorageError && cause.code === "insufficient_space") {
+          // A full volume pauses the cycle without failing the job (SPEC
+          // section 10): the next scheduled cycle retries once space returns.
+          console.warn(`Sync cycle paused: ${cause.message}`);
+          await db
+            .insert(events)
+            .values({ actor: "system", type: "storage.paused", payload: { detail: cause.message } })
+            .catch(() => undefined);
+          return;
+        }
+        throw cause;
+      }
     }
   });
 
@@ -427,6 +482,11 @@ async function runAccountCycle(
       );
     }
   } catch (cause) {
+    if (cause instanceof StorageError && cause.code === "insufficient_space") {
+      // The cycle handler records this pause and stops the account loop; it
+      // is a state to report, not a failure to contain.
+      throw cause;
+    }
     const detail = cause instanceof SyncError ? cause.message : "unexpected failure";
     console.error(`Sync cycle for account ${accountId} failed: ${detail}`);
   } finally {

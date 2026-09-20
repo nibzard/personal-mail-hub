@@ -65,7 +65,7 @@ export interface Storage {
   readonly disposable: ObjectStore;
 }
 
-export type StorageErrorCode = "invalid_key" | "not_found" | "io_failed";
+export type StorageErrorCode = "invalid_key" | "not_found" | "io_failed" | "insufficient_space";
 
 /** Failure raised by object stores. `code` separates expected cases from bugs. */
 export class StorageError extends Error {

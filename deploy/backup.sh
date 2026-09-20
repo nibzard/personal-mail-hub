@@ -26,13 +26,14 @@
 # A restore always sets a new generation from deployment configuration.
 #
 # Collection pause (SPEC.md section 10, step 6): the copy must not lose an
-# object the snapshot references. Nothing implements the sweep yet; when it
-# lands, it must honor the marker directory $STORAGE_ROOT/gc-pause. While
-# the marker exists, the sweep deletes no durable object; it resumes (and
-# observes its grace period) once the marker is gone. This script claims the
-# marker before the snapshot and releases it when the whole backup ends, so
-# the pause also covers verification and retention. A marker left behind by
-# a killed run is taken over once it is older than BACKUP_GC_STALE_SECONDS.
+# object the snapshot references. The worker's durable-object collection
+# (packages/database/src/storage/gc.ts) honors the marker directory
+# $STORAGE_ROOT/gc-pause. While the marker exists, the sweep deletes no
+# durable object; it resumes (and observes its grace period) once the marker
+# is gone. This script claims the marker before the snapshot and releases it
+# when the whole backup ends, so the pause also covers verification and
+# retention. A marker left behind by a killed run is taken over once it is
+# older than BACKUP_GC_STALE_SECONDS.
 # A run that fails anywhere removes its own incomplete bundle directory, so
 # retention and a later restore never see a half-written backup.
 set -eu

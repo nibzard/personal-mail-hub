@@ -280,6 +280,30 @@ suite("draft editing and durable uploads", () => {
     }))).code).toBe("invalid_request");
   });
 
+  it("refuses uploads while the volume is paused and records the event", async () => {
+    // A threshold no volume satisfies exercises the real pause path: the
+    // write is refused before it starts, and the refusal leaves an event an
+    // operator can find (SPEC section 10).
+    const pausedService = new ComposeService(
+      db,
+      createStorage(storageRoot, { durableMinFreeBytes: Number.MAX_SAFE_INTEGER }),
+      controls,
+    );
+    await expect(
+      pausedService.createUpload(readyContext, {
+        accountId,
+        filename: "big.bin",
+        contentType: "application/octet-stream",
+        bytes: new TextEncoder().encode("paused"),
+      }),
+    ).rejects.toMatchObject({ name: "StorageError", code: "insufficient_space" });
+
+    const rows = await db.select().from(events).where(eq(events.type, "storage.paused"));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.actor).toBe("system");
+    expect(rows[0]!.payload).toMatchObject({ kind: "upload" });
+  });
+
   it("attaches uploads in order and enforces account boundaries", async () => {
     const draft = await service.createDraft(readyContext, { accountId });
     const first = await service.createUpload(readyContext, {

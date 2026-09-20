@@ -1,4 +1,5 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
+import { StorageError } from "@mail-hub/database";
 
 /**
  * The fallback error answer every scoped route shares (SPEC section 7).
@@ -30,6 +31,13 @@ export function sendUnclassifiedError(
   request: FastifyRequest,
   reply: FastifyReply,
 ): FastifyReply {
+  // A full storage volume is a system state the client can distinguish from
+  // a bug (SPEC section 10): 507, with the measured numbers, no internals.
+  if (error instanceof StorageError && error.code === "insufficient_space") {
+    return reply.code(507).send({
+      error: { code: "insufficient_space", message: error.message },
+    });
+  }
   if (error instanceof Error) {
     const clientStatus = clientStatusOf(error);
     if (clientStatus !== null) {
