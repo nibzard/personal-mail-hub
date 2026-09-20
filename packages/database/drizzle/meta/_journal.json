@@ -64,6 +64,13 @@
       "when": 1789897785854,
       "tag": "0008_luxuriant_smasher",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1789904728797,
+      "tag": "0009_thankful_fenris",
+      "breakpoints": true
     }
   ]
 }

@@ -2155,8 +2155,8 @@
       "id": "T073",
       "title": "Stop domain filters matching spoofed display names",
       "priority": 3,
-      "status": "todo",
-      "details": "The domain operator and the domain chips match recipients_text with a pattern over the joined display text (packages/search/src/service.ts:457-464), and recipientsIndexText stores 'display-name address' pairs (packages/ingestion/src/text.ts:126-135), so a display name such as joe@bank.example inside Cc matches domain:bank.example although no address holds that domain; NFKC folding lets a fullwidth at-sign through the same way. T061 fixes this spoofing class for from:. Extend the fix to domain matching, for example by matching stored address columns or a normalized address-only index text instead of the joined display text.",
+      "status": "done",
+      "details": "Done 2026-09-20. The domain operator and the domain chips now read a new addresses_text column that holds addresses only, sender first, instead of the joined display text. ingestion, header import, and the send writer derive it through a new addressesIndexText helper beside the display-text ones, migration 0009 adds the column with its trigram index and backfills it from the stored jsonb sender and recipients, and the search harness seeds it the same way the writers do. Repairing the match exposed a second defect the old code hid: the mid-list LIKE pattern ended in a bare space, and PostgreSQL LIKE anchors the whole pattern, so it could never match the trimmed text; only the sender and the last recipient ever matched a domain. The patterns are now a suffix for the final address and an address followed by the space of the next one, over the address-only text. The regression test seeds a spoof whose display names carry a plain bank.example address and a fullwidth at-sign folded by NFKC, a real sender at the domain, and a middle recipient at the domain followed by another address: the filter returns the last two and never the spoof. Verified to fail on the pre-fix code (the middle recipient was missed); the spoof half guards the new pattern against matching display names, which the old code excluded only by the accident of name-first ordering.",
       "depends_on": [
         "T061"
       ],
@@ -2164,7 +2164,7 @@
         "search",
         "security"
       ],
-      "updated_at": "2026-09-20T02:52:12Z",
+      "updated_at": "2026-09-20T12:01:06Z",
       "files": [
         "packages/search/src/service.ts",
         "packages/ingestion/src/text.ts",

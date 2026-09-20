@@ -31,6 +31,7 @@ export {
   makeSnippet,
   normalizeIndexText,
   parseDateHeader,
+  addressesIndexText,
   recipientsIndexText,
   senderIndexText,
   toEmailAddress,

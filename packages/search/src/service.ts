@@ -468,18 +468,21 @@ export class SearchService {
 
 /**
  * `domain:` matches an address domain in the sender or any recipient
- * (SPEC F5). Addresses sit at the end of `sender_text` — names come first —
- * and inside the space-joined `recipients_text`, so two suffix patterns
- * cover every position and the trigram indexes serve them. The domain is
+ * (SPEC F5). The match reads `addresses_text`, which holds addresses only:
+ * a display name that carries address-shaped text — a plain spoof, or a
+ * fullwidth at-sign that NFKC folding turns into one — must not satisfy a
+ * domain filter, and display names never enter that text. `LIKE` anchors
+ * its whole pattern, so the two patterns are a suffix for the final
+ * address and an address followed by the space of the next one; a pattern
+ * ending in a bare space can never match the trimmed text. The domain is
  * validated to plain labels, so the patterns need no wildcard escaping.
  */
 function domainCondition(domain: string): SQL {
   const atEnd = `%@${domain}`;
-  const midList = `%@${domain} `;
+  const midList = `%@${domain} %`;
   return sql`(
-    m.sender_text like ${atEnd}
-    or m.recipients_text like ${atEnd}
-    or m.recipients_text like ${midList}
+    m.addresses_text like ${atEnd}
+    or m.addresses_text like ${midList}
   )`;
 }
 

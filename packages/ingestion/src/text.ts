@@ -134,6 +134,29 @@ export function recipientsIndexText(recipients: Recipients | null): string {
   return parts.join(" ");
 }
 
+/**
+ * Index text of addresses only, sender first (SPEC F5). `domain:` reads this
+ * text, never the joined display text: a display name that carries
+ * address-shaped text — a plain spoof or a fullwidth at-sign that NFKC folds
+ * into one — must not satisfy a domain filter, and parsed display names
+ * never enter this string.
+ */
+export function addressesIndexText(
+  sender: EmailAddress | null,
+  recipients: Recipients | null,
+): string {
+  const parts: string[] = [];
+  if (sender !== null) {
+    parts.push(sender.address);
+  }
+  if (recipients !== null) {
+    for (const address of [...recipients.to, ...(recipients.cc ?? []), ...(recipients.bcc ?? [])]) {
+      parts.push(address.address);
+    }
+  }
+  return parts.join(" ");
+}
+
 /** One whitespace-collapsed snippet from body text, or `null` when no text exists. */
 export function makeSnippet(text: string | null, maxChars = SNIPPET_MAX_CHARS): string | null {
   if (text === null) {

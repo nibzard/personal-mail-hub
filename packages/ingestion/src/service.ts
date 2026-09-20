@@ -21,6 +21,7 @@ import {
   BODY_INDEX_MAX_CHARS,
   makeSnippet,
   normalizeIndexText,
+  addressesIndexText,
   recipientsIndexText,
   senderIndexText,
 } from "./text.ts";
@@ -387,6 +388,7 @@ export class IngestionService {
         originalSha256: sha256,
         senderText: normalizeIndexText(senderIndexText(parsed.sender)),
         recipientsText: normalizeIndexText(recipientsIndexText(parsed.recipients)),
+        addressesText: normalizeIndexText(addressesIndexText(parsed.sender, parsed.recipients)),
         subjectText: normalizeIndexText(parsed.subject ?? ""),
         bodyIndexText: indexText,
       })

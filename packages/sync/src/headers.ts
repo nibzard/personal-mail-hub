@@ -1,6 +1,7 @@
 import { simpleParser, type ParsedMail } from "mailparser";
 import type { EmailAddress, Recipients } from "@mail-hub/database";
 import {
+  addressesIndexText,
   normalizeIndexText,
   parseDateHeader,
   recipientsIndexText,
@@ -36,6 +37,7 @@ export interface ImportedHeaders {
   /** Index text enters the search vector in the header import transaction. */
   senderText: string;
   recipientsText: string;
+  addressesText: string;
   subjectText: string;
 }
 
@@ -51,6 +53,7 @@ const EMPTY_HEADERS: ImportedHeaders = {
   sentAt: null,
   senderText: "",
   recipientsText: "",
+  addressesText: "",
   subjectText: "",
 };
 
@@ -86,6 +89,7 @@ export async function parseHeaderBlock(rawHeaders: Uint8Array): Promise<Imported
     sentAt: parseDateHeader(rawHeaderValue(parsed, "date")),
     senderText: normalizeIndexText(senderIndexText(sender)),
     recipientsText: normalizeIndexText(recipientsIndexText(recipients)),
+    addressesText: normalizeIndexText(addressesIndexText(sender, recipients)),
     subjectText: normalizeIndexText(parsed.subject ?? ""),
   };
 }

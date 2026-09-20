@@ -159,6 +159,7 @@ export async function importHeaderRecord(
       sizeBytes: record.sizeBytes,
       senderText: header.senderText,
       recipientsText: header.recipientsText,
+      addressesText: header.addressesText,
       subjectText: header.subjectText,
     })
     .returning({ id: messages.id });

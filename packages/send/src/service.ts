@@ -28,6 +28,7 @@ import {
   MAX_MESSAGE_BYTES,
   makeSnippet,
   normalizeIndexText,
+  addressesIndexText,
   recipientsIndexText,
   senderIndexText,
 } from "@mail-hub/ingestion";
@@ -1514,6 +1515,7 @@ export class OutboundService {
       originalSha256: row.mimeSha256,
       senderText: normalizeIndexText(senderIndexText(row.identity)),
       recipientsText: normalizeIndexText(recipientsIndexText(row.recipients)),
+      addressesText: normalizeIndexText(addressesIndexText(row.identity, row.recipients)),
       subjectText: normalizeIndexText(row.subject ?? ""),
       bodyIndexText: truncate(normalizeIndexText(row.markdownSource), BODY_INDEX_MAX_CHARS),
     });

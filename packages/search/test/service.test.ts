@@ -34,6 +34,8 @@ interface SeedMessage {
   sender?: EmailAddress | null;
   recipients?: Recipients | null;
   recipientsText?: string;
+  /** Defaults to the addresses of the structured sender and recipients. */
+  addressesText?: string;
   bodyIndexText?: string;
   fetchedBody?: boolean;
   sentAt?: Date | null;
@@ -199,6 +201,7 @@ suite("SearchService", () => {
       subject: "Server dated",
       subjectText: "server dated",
       senderText: "frank frank@work.example",
+      sender: { address: "frank@work.example", name: "Frank" },
       fetchedBody: false,
       sentAt: null,
     });
@@ -235,12 +238,28 @@ suite("SearchService", () => {
   }
 
   async function seedMessage(message: SeedMessage): Promise<string> {
+    // The default mirrors what the import writers derive: the addresses of
+    // the structured columns, lower-cased and space-joined.
+    const addresses =
+      message.addressesText ??
+      [
+        ...(message.sender ? [message.sender.address] : []),
+        ...(message.recipients
+          ? [
+              ...message.recipients.to,
+              ...(message.recipients.cc ?? []),
+              ...(message.recipients.bcc ?? []),
+            ].map((entry) => entry.address)
+          : []),
+      ]
+        .join(" ")
+        .toLowerCase();
     const result = await pool.query(
       `insert into messages (
          account_id, subject, subject_text, sender_text, sender, recipients, recipients_text,
-         body_index_text, fetched_body, sent_at, has_attachments, class_hint, asks_action,
-         thread_link_state, thread_dirty
-       ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'root',false) returning id`,
+         addresses_text, body_index_text, fetched_body, sent_at, has_attachments,
+         class_hint, asks_action, thread_link_state, thread_dirty
+       ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'root',false) returning id`,
       [
         message.accountId,
         message.subject,
@@ -251,6 +270,7 @@ suite("SearchService", () => {
           ? null
           : JSON.stringify(message.recipients),
         message.recipientsText ?? "",
+        addresses,
         message.bodyIndexText ?? "",
         message.fetchedBody ?? false,
         message.sentAt ?? null,
@@ -334,6 +354,66 @@ suite("SearchService", () => {
     expect([...byDomain.keys()].sort()).toEqual([m1, m2, m3, m8].sort());
     const chips = await searchMap({ query: "", domains: ["work.example"] });
     expect([...chips.keys()].sort()).toEqual([m1, m2, m3, m8].sort());
+  });
+
+  it("matches addresses only, at any position, for domain filters", async () => {
+    // The spoof carries address-shaped text in display names: a plain one in
+    // the sender name, and a fullwidth at-sign in a Cc name. The joined text
+    // columns hold both after NFKC folding, exactly as ingestion stores them.
+    const spoof = await seedMessage({
+      accountId: accountA,
+      subject: "Your account needs attention",
+      subjectText: "your account needs attention",
+      senderText: "joe@bank.example no-reply@innocent.example",
+      sender: { address: "no-reply@innocent.example", name: "joe@bank.example" },
+      recipients: {
+        to: [{ address: "owner@home.example", name: null }],
+        cc: [{ address: "cc@innocent.example", name: "maya\uFF20bank.example" }],
+      },
+      // The fullwidth at-sign already folded, mirroring `normalizeIndexText`.
+      recipientsText: "owner@home.example maya@bank.example cc@innocent.example",
+      fetchedBody: false,
+      sentAt: new Date("2026-09-15T10:00:00Z"),
+    });
+    await seedOccurrence(spoof, accountA, inboxA, "2026-09-15T10:01:00Z");
+    const real = await seedMessage({
+      accountId: accountA,
+      subject: "Statement ready",
+      subjectText: "statement ready",
+      senderText: "finance finance@bank.example",
+      sender: { address: "finance@bank.example", name: "Finance" },
+      fetchedBody: false,
+      sentAt: new Date("2026-09-16T10:00:00Z"),
+    });
+    await seedOccurrence(real, accountA, inboxA, "2026-09-16T10:01:00Z");
+    // The bank address sits mid-list, with another recipient after it: the
+    // domain filter must still find it, in the query and in the chips.
+    const middle = await seedMessage({
+      accountId: accountA,
+      subject: "Middle recipient",
+      subjectText: "middle recipient",
+      senderText: "news news@innocent.example",
+      sender: { address: "news@innocent.example", name: "News" },
+      recipients: {
+        to: [{ address: "owner@home.example", name: null }],
+        cc: [{ address: "finance@bank.example", name: null }],
+        bcc: [{ address: "other@innocent.example", name: null }],
+      },
+      recipientsText: "owner@home.example finance@bank.example other@innocent.example",
+      fetchedBody: false,
+      sentAt: new Date("2026-09-17T10:00:00Z"),
+    });
+    await seedOccurrence(middle, accountA, inboxA, "2026-09-17T10:01:00Z");
+
+    const byQuery = await searchMap({ query: "domain:bank.example" });
+    expect([...byQuery.keys()].sort()).toEqual([middle, real].sort());
+    const byChip = await searchMap({ query: "", domains: ["bank.example"] });
+    expect([...byChip.keys()].sort()).toEqual([middle, real].sort());
+
+    // Later tests count rows; these seeds belong to this test alone.
+    const seeded = [spoof, real, middle];
+    await pool.query(`delete from message_occurrences where message_id = any($1)`, [seeded]);
+    await pool.query(`delete from messages where id = any($1)`, [seeded]);
   });
 
   it("escapes wildcard characters in operator values", async () => {

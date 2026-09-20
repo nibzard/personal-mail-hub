@@ -253,6 +253,11 @@ export const messages = pgTable(
     originalSha256: text("original_sha256"),
     senderText: text("sender_text").notNull().default(""),
     recipientsText: text("recipients_text").notNull().default(""),
+    /**
+     * Addresses only, sender first: `domain:` reads this text so a display
+     * name carrying address-shaped text cannot satisfy a domain filter.
+     */
+    addressesText: text("addresses_text").notNull().default(""),
     subjectText: text("subject_text").notNull().default(""),
     bodyIndexText: text("body_index_text").notNull().default(""),
     search: tsvector("search").generatedAlwaysAs(
@@ -292,6 +297,7 @@ export const messages = pgTable(
     index("messages_search_idx").using("gin", t.search),
     index("messages_sender_text_trgm_idx").using("gin", sql`${t.senderText} gin_trgm_ops`),
     index("messages_recipients_text_trgm_idx").using("gin", sql`${t.recipientsText} gin_trgm_ops`),
+    index("messages_addresses_text_trgm_idx").using("gin", sql`${t.addressesText} gin_trgm_ops`),
     index("messages_subject_text_trgm_idx").using("gin", sql`${t.subjectText} gin_trgm_ops`),
     uniqueIndex("messages_account_id_original_sha256_uidx")
       .on(t.accountId, t.originalSha256)
