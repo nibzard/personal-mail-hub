@@ -50,6 +50,13 @@
       "when": 1789809792769,
       "tag": "0006_wakeful_mephisto",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1789894588383,
+      "tag": "0007_sparkling_clint_barton",
+      "breakpoints": true
     }
   ]
 }

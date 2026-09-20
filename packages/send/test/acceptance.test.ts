@@ -38,7 +38,7 @@ import {
   type TestAuthority,
   type TestCertificate,
 } from "@mail-hub/harness";
-import { OutboundService, SendError, type SentCopyMailbox } from "../src/index.ts";
+import { OutboundService, SendError, ATTEMPT_LEASE_MS, type SentCopyMailbox } from "../src/index.ts";
 
 /**
  * Compose and send safety acceptance (SPEC section 12, "Reply acceptance" and
@@ -937,14 +937,17 @@ suite("compose and send safety on the wire", () => {
     expect(cutServer.submissions.length).toBeGreaterThanOrEqual(1);
 
     // A crash after the claim, before any byte left: startup recovery holds
-    // the attempt, and nothing replays it.
+    // the attempt once its lease expires, and nothing replays it.
     const server = await startSmtp({});
     const service = outboundTo(server);
     const claimed = await makeDraft({ subject: "Crash before submission" });
     const claimedQueued = await queueSendOf(claimed.id);
     await db
       .update(outboundMessages)
-      .set({ status: "sending", sendingStartedAt: new Date() })
+      .set({
+        status: "sending",
+        sendingStartedAt: new Date(Date.now() - ATTEMPT_LEASE_MS - 1000),
+      })
       .where(eq(outboundMessages.id, claimedQueued.outbound.id));
 
     const recovered = await service.recoverAbandonedAttempts();

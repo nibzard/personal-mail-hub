@@ -2040,17 +2040,21 @@
       "id": "T068",
       "title": "Stop startup recovery from flipping live sends",
       "priority": 2,
-      "status": "todo",
-      "details": "recoverAbandonedAttempts holds every same-generation sending row with no age or lease check on sendingStartedAt (packages/send/src/service.ts:1004-1030), and the send queue is not exclusive, so a rolling restart or a second worker flips a live in-flight submission to outcome_unknown. The live worker's commitAcceptance then matches zero rows under its status guard and returns the flipped row (service.ts:1130-1165), so accepted mail is recorded unknown, the draft stays locked, and no Sent copy is scheduled; a definitive refusal instead throws in releaseDraftLock with no per-row catch in executeQueued (service.ts:500), so one poisoned row aborts every sweep. Require an age or lease threshold before startup holds a sending row, make the claim and the hold agree, and contain per-row sweep failures. Also appendDueSentCopies and reconcileUnknownOutcomes select the oldest rows with a bounded limit (service.ts:661-671 and 905-910), so permanently failing appends and evidence-less unknowns occupy the whole window and starve every newer row; page past stuck rows or bound retries per row.",
+      "status": "done",
+      "details": "Done 2026-09-20. recoverAbandonedAttempts now waits for an attempt lease (ATTEMPT_LEASE_MS, 10 minutes) before it holds a sending or appending row: the selection requires sendingStartedAt or appendStartedAt older than the lease, the append claim stamps the new appendStartedAt column, and the worker repeats the recovery pass every send and Sent-copy cycle instead of only at startup, so a crashed worker's rows resolve without a restart while live submissions keep their claims (packages/send/src/service.ts, apps/worker/src/main.ts). Every sweep (executeQueued, appendDueSentCopies, reconcileUnknownOutcomes) contains per-row failures behind a rowErrors counter, so one poisoned row can no longer abort a pass; its attempt stays claimed until the lease-aged hold picks it up. Starvation is bounded two ways: migration 0007 adds sentCopyAttempts and reconcileAttempts counters, non-stored conclusions and evidence-less passes increment them, a row at SEND_SWEEP_ATTEMPT_CAP (20) leaves the sweep with a send.sent_copy_halted or send.reconcile_halted event, and configuration-blocked rows (a recorded sent_folder_unmapped failure while the account still maps no Sent folder, or an unknown whose account maps none) are excluded from the bounded selection and return the moment a mapping exists. Four regression tests cover the concurrent recovery pass against a live claimed submission, the poisoned row, and both caps; each was verified to fail on the pre-fix code.",
       "tags": [
         "send",
         "reliability",
         "safety"
       ],
-      "updated_at": "2026-09-20T02:52:12Z",
+      "updated_at": "2026-09-20T09:12:00Z",
       "files": [
         "packages/send/src/service.ts",
+        "packages/send/src/index.ts",
         "packages/send/test/service.test.ts",
+        "packages/send/test/acceptance.test.ts",
+        "packages/database/src/schema.ts",
+        "packages/database/drizzle/0007_sparkling_clint_barton.sql",
         "apps/worker/src/main.ts"
       ]
     },
@@ -2224,5 +2228,6 @@
         "deploy/backup.sh"
       ]
     }
-  ]
+  ],
+  "updated_at": "2026-09-20T09:12:00Z"
 }

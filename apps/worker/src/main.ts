@@ -191,7 +191,22 @@ async function main(databaseUrl: string): Promise<void> {
   });
 
   // Startup recovery (SPEC F7): hold the attempts a crash left behind as
-  // unknown before any cycle runs, so nothing is replayed blindly.
+  // unknown before any cycle runs, so nothing is replayed blindly. The send
+  // and Sent-copy cycles repeat the same pass under the attempt lease, so a
+  // crash between restarts also resolves.
+  const logRecoveredAttempts = async (cycle: string): Promise<void> => {
+    const abandoned = await outbound.recoverAbandonedAttempts();
+    if (abandoned.blocked) {
+      console.warn(`${cycle}: attempt recovery is blocked by the control state; nothing was replayed.`);
+      return;
+    }
+    if (abandoned.heldSends > 0 || abandoned.heldAppends > 0) {
+      console.log(
+        `${cycle}: held ${abandoned.heldSends} expired submission(s) and ` +
+          `${abandoned.heldAppends} expired append(s) as unknown.`,
+      );
+    }
+  };
   const abandoned = await outbound.recoverAbandonedAttempts();
   if (abandoned.blocked) {
     console.warn("Startup recovery is blocked by the control state; no attempt was replayed.");
@@ -243,10 +258,17 @@ async function main(databaseUrl: string): Promise<void> {
       throw new Error(`Recovery control state is not ready; the ${SEND_CYCLE_QUEUE} job will retry.`);
     }
 
+    // Recovery runs every cycle, not only at startup: the attempt lease
+    // makes a hold safe while submissions are live, so a crashed worker's
+    // rows resolve without waiting for the next restart.
+    await logRecoveredAttempts("Send cycle");
     const summary = await outbound.executeQueued();
-    if (summary.submitted > 0 || summary.skippedStale > 0) {
+    if (summary.submitted > 0 || summary.skippedStale > 0 || summary.rowErrors > 0) {
       console.log(
-        `Send cycle: ${summary.submitted} submitted, ${summary.skippedStale} held for reconciliation.`,
+        `Send cycle: ${summary.submitted} submitted, ${summary.skippedStale} held for reconciliation` +
+          (summary.rowErrors > 0
+            ? `, ${summary.rowErrors} attempt(s) errored and keep their claims until the lease expires.`
+            : "."),
       );
     }
   });
@@ -269,15 +291,20 @@ async function main(databaseUrl: string): Promise<void> {
     // The Sent-copy job never touches SMTP: it appends stored bytes and
     // reconciles uncertain outcomes from durable evidence alone (SPEC F7
     // steps 5 and 7).
+    await logRecoveredAttempts("Sent-copy cycle");
     const copies = await outbound.appendDueSentCopies();
-    if (copies.attempted > 0 || copies.skippedStale > 0) {
+    if (copies.attempted > 0 || copies.skippedStale > 0 || copies.rowErrors > 0) {
       console.log(
-        `Sent-copy cycle: ${copies.attempted} attempted, ${copies.skippedStale} held for reconciliation.`,
+        `Sent-copy cycle: ${copies.attempted} attempted, ${copies.skippedStale} held for reconciliation` +
+          (copies.rowErrors > 0 ? `, ${copies.rowErrors} attempt(s) errored and keep their claims.` : "."),
       );
     }
     const unknown = await outbound.reconcileUnknownOutcomes();
-    if (unknown.resolved > 0) {
-      console.log(`Sent-copy cycle: ${unknown.resolved} unknown outcome(s) resolved from server evidence.`);
+    if (unknown.resolved > 0 || unknown.rowErrors > 0) {
+      console.log(
+        `Sent-copy cycle: ${unknown.resolved} unknown outcome(s) resolved from server evidence` +
+          (unknown.rowErrors > 0 ? `, ${unknown.rowErrors} pass(es) errored.` : "."),
+      );
     }
   });
 

@@ -468,6 +468,12 @@ export const outboundMessages = pgTable(
     smtpResponse: jsonb("smtp_response").$type<Record<string, unknown>>(),
     recipientResults: jsonb("recipient_results").$type<RecipientResult[]>().notNull().default([]),
     sendingStartedAt: timestamp("sending_started_at", { withTimezone: true }),
+    /** Stamped when the Sent append claim persists `appending`. */
+    appendStartedAt: timestamp("append_started_at", { withTimezone: true }),
+    /** Append attempts that ended without a stored copy; bounds retries. */
+    sentCopyAttempts: integer("sent_copy_attempts").notNull().default(0),
+    /** Reconcile passes that found no evidence; bounds repeated passes. */
+    reconcileAttempts: integer("reconcile_attempts").notNull().default(0),
     sentCopyStatus: text("sent_copy_status").$type<SentCopyStatus>().notNull().default("pending"),
     sentFolderId: uuid("sent_folder_id").references(() => folders.id),
     sentUidvalidity: bigint("sent_uidvalidity", { mode: "number" }),

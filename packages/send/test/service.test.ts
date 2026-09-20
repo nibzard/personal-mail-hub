@@ -26,7 +26,7 @@ import {
 import { SANITIZER_VERSION } from "@mail-hub/ingestion";
 import { RecoveryBlockedError, RecoveryControls } from "@mail-hub/recovery";
 import { ComposeService, ComposeError } from "@mail-hub/compose";
-import { OutboundService, SendError, type OutboundRecord } from "../src/index.ts";
+import { OutboundService, SendError, ATTEMPT_LEASE_MS, SEND_SWEEP_ATTEMPT_CAP, type OutboundRecord } from "../src/index.ts";
 import { FakeSentFolder } from "./fake-sent-copy.ts";
 
 /**
@@ -999,10 +999,14 @@ suite("outbound snapshots and SMTP sending", () => {
     const draft = await makeDraft();
     const outbound = await queueSendOf(draft.id);
 
-    // A crash left the row mid-submission: claimed, but no outcome recorded.
+    // A crash left the row mid-submission: claimed with an expired lease and
+    // no outcome recorded.
     await db
       .update(outboundMessages)
-      .set({ status: "sending", sendingStartedAt: new Date() })
+      .set({
+        status: "sending",
+        sendingStartedAt: new Date(Date.now() - ATTEMPT_LEASE_MS - 1000),
+      })
       .where(eq(outboundMessages.id, outbound.id));
 
     const recovered = await service.recoverAbandonedAttempts();
@@ -1036,7 +1040,10 @@ suite("outbound snapshots and SMTP sending", () => {
 
     await db
       .update(outboundMessages)
-      .set({ sentCopyStatus: "appending" })
+      .set({
+        sentCopyStatus: "appending",
+        appendStartedAt: new Date(Date.now() - ATTEMPT_LEASE_MS - 1000),
+      })
       .where(eq(outboundMessages.id, row.id));
 
     const recovered = await service.recoverAbandonedAttempts();
@@ -1051,6 +1058,97 @@ suite("outbound snapshots and SMTP sending", () => {
     const stored = await loadRow(row.id);
     expect(stored.sentCopyStatus).toBe("stored");
     expect(folder.appendsOf(row.rfcMessageId)).toBe(0);
+  });
+
+  it("keeps a live in-flight submission safe from a concurrent recovery pass", async () => {
+    const folder = new FakeSentFolder("Sent");
+    let release!: (report: SmtpSubmitReport) => void;
+    let entered = false;
+    const gated = new Promise<SmtpSubmitReport>((resolve) => {
+      release = resolve;
+    });
+    const service = new OutboundService(db, storage, controls, {
+      submit: async () => {
+        entered = true;
+        return gated;
+      },
+      resolveCredentials: async () => ({
+        host: "smtp.example.com",
+        port: 587,
+        security: "starttls_required" as const,
+        username: "user@example.com",
+        password: "mailbox-secret",
+      }),
+      openSentCopy: async () => folder.session(),
+    });
+    const draft = await makeDraft();
+    const outbound = await queueSendOf(draft.id);
+
+    // Hold the attempt open after its claim: the row is `sending` and the
+    // SMTP conversation is still running.
+    const inFlight = service.executeOutbound(outbound.id);
+    for (let guard = 0; !entered && guard < 500; guard += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(entered).toBe(true);
+    expect((await loadRow(outbound.id)).status).toBe("sending");
+
+    // A second worker's recovery pass must leave the leased attempt alone.
+    const recovered = await service.recoverAbandonedAttempts();
+    expect(recovered.heldSends).toBe(0);
+    expect((await loadRow(outbound.id)).status).toBe("sending");
+
+    // The live worker's own commit still wins after the pass went by.
+    release(acceptedReport());
+    const done = await inFlight;
+    expect(done.submitted).toBe(true);
+    expect((await loadRow(outbound.id)).status).toBe("sent");
+    const draftRow = (
+      await db.select().from(draftsTable).where(eq(draftsTable.id, draft.id)).limit(1)
+    )[0]!;
+    expect(draftRow.lockedBySend).toBeNull();
+  });
+
+  it("contains one poisoned row and keeps the sweep moving", async () => {
+    const folder = new FakeSentFolder("Sent");
+    // The poisoned row is the older one; the sweep must reach the younger
+    // row in the same pass instead of aborting on the first.
+    const poisoned = await queueSendOf((await makeDraft({ subject: "Poisoned first" })).id);
+    const healthy = await queueSendOf((await makeDraft({ subject: "Healthy second" })).id);
+
+    let poisonedOnce = false;
+    const script = scriptedSubmitter(acceptedReport());
+    const service = new OutboundService(db, storage, controls, {
+      submit: async (request) => {
+        script.calls.push(request);
+        if (!poisonedOnce) {
+          poisonedOnce = true;
+          // The claimed row was flipped before the refusal could record —
+          // the unlock then refuses, exactly like the poisoned row the
+          // defect describes.
+          await db
+            .update(outboundMessages)
+            .set({ status: "outcome_unknown" })
+            .where(eq(outboundMessages.id, poisoned.id));
+          return rejectedReport();
+        }
+        return acceptedReport();
+      },
+      resolveCredentials: async () => ({
+        host: "smtp.example.com",
+        port: 587,
+        security: "starttls_required" as const,
+        username: "user@example.com",
+        password: "mailbox-secret",
+      }),
+      openSentCopy: async () => folder.session(),
+    });
+
+    const summary = await service.executeQueued();
+    expect(summary.rowErrors).toBe(1);
+    expect(summary.submitted).toBe(1);
+    expect((await loadRow(poisoned.id)).status).toBe("outcome_unknown");
+    expect((await loadRow(healthy.id)).status).toBe("sent");
   });
 
   it("resolves an unknown send from a verified Sent copy in one transaction", async () => {
@@ -1275,11 +1373,69 @@ suite("outbound snapshots and SMTP sending", () => {
     const queued = await queueSendOf((await makeDraft()).id);
     await db
       .update(outboundMessages)
-      .set({ status: "sending", recoveryGeneration: OTHER_GENERATION })
+      .set({
+        status: "sending",
+        sendingStartedAt: new Date(Date.now() - ATTEMPT_LEASE_MS - 1000),
+        recoveryGeneration: OTHER_GENERATION,
+      })
       .where(eq(outboundMessages.id, queued.id));
     const recovered = await service.recoverAbandonedAttempts();
     expect(recovered.skippedStale).toBeGreaterThanOrEqual(1);
     expect((await loadRow(queued.id)).status).toBe("sending");
+  });
+
+  it("caps a permanently failing append and lets younger rows through", async () => {
+    const folder = new FakeSentFolder("Sent");
+    const { service } = appendingService(acceptedReport(), folder);
+    const { row: stuck } = await acceptedSend(service);
+
+    folder.scriptedAppend = { result: "rejected" };
+    for (let pass = 0; pass < SEND_SWEEP_ATTEMPT_CAP; pass += 1) {
+      await service.appendDueSentCopies(100);
+    }
+    const capped = await loadRow(stuck.id);
+    expect(capped.sentCopyAttempts).toBe(SEND_SWEEP_ATTEMPT_CAP);
+    expect(capped.sentCopyStatus).toBe("failed");
+    expect(
+      (await eventTypesOf(stuck.id)).filter((type) => type === "send.sent_copy_halted"),
+    ).toHaveLength(1);
+
+    // The capped row leaves the window: one more pass never appends it
+    // again, while a younger row stores in that same pass.
+    folder.scriptedAppend = null;
+    const { row: young } = await acceptedSend(service);
+    await service.appendDueSentCopies(100);
+    expect((await loadRow(stuck.id)).sentCopyAttempts).toBe(SEND_SWEEP_ATTEMPT_CAP);
+    expect(folder.appendsOf(stuck.rfcMessageId)).toBe(SEND_SWEEP_ATTEMPT_CAP);
+    expect((await loadRow(young.id)).sentCopyStatus).toBe("stored");
+  });
+
+  it("caps evidence-less reconcile passes and lets younger unknowns resolve", async () => {
+    const folder = new FakeSentFolder("Sent");
+    const { service } = appendingService(unknownReport(), folder);
+    const stuck = await queueSendOf((await makeDraft({ subject: "Evidence never arrives" })).id);
+    await service.executeOutbound(stuck.id);
+    expect((await loadRow(stuck.id)).status).toBe("outcome_unknown");
+
+    for (let pass = 0; pass < SEND_SWEEP_ATTEMPT_CAP; pass += 1) {
+      await service.reconcileUnknownOutcomes(100);
+    }
+    const capped = await loadRow(stuck.id);
+    expect(capped.reconcileAttempts).toBe(SEND_SWEEP_ATTEMPT_CAP);
+    expect(capped.status).toBe("outcome_unknown");
+    expect(
+      (await eventTypesOf(stuck.id)).filter((type) => type === "send.reconcile_halted"),
+    ).toHaveLength(1);
+
+    // The capped row leaves the window; a younger unknown with evidence
+    // resolves in the same pass.
+    const young = await queueSendOf((await makeDraft({ subject: "Evidence arrives" })).id);
+    await service.executeOutbound(young.id);
+    const youngRow = await loadRow(young.id);
+    folder.load(youngRow.rfcMessageId, await storage.durable.get(youngRow.mimeStorageKey));
+    await service.reconcileUnknownOutcomes(100);
+    expect((await loadRow(young.id)).status).toBe("sent");
+    expect((await loadRow(stuck.id)).reconcileAttempts).toBe(SEND_SWEEP_ATTEMPT_CAP);
   });
 
   /** The folder one account maps to the Sent role. */

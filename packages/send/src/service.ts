@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lt, not, or, sql, type SQL } from "drizzle-orm";
 import {
   attachments as attachmentsTable,
   bodies,
@@ -85,10 +85,10 @@ import type { SentCopyDestination, SentCopyMailbox, SentCopySessionFactory } fro
  *    proved, and keeps `sent` whatever the append does. Append retries can
  *    never invoke SMTP.
  * 6. `recoverAbandonedAttempts` holds crashed `sending` and `appending` rows
- *    as unknown at startup, and `reconcileUnknownOutcome` resolves an
- *    uncertain send only from durable server evidence: a Sent copy whose
- *    bytes hash to the frozen snapshot. Without evidence the unknown stays,
- *    and no path in this service ever resubmits it.
+ *    as unknown once their attempt lease expires, and `reconcileUnknownOutcome`
+ *    resolves an uncertain send only from durable server evidence: a Sent copy
+ *    whose bytes hash to the frozen snapshot. Without evidence the unknown
+ *    stays, and no path in this service ever resubmits it.
  */
 
 /** Event recorded when a snapshot and its draft lock commit (SPEC F7 step 2). */
@@ -112,11 +112,34 @@ export const SEND_SENT_COPY_FAILED_EVENT = "send.sent_copy_failed";
 /** Event recorded when the Sent append outcome cannot be classified (SPEC F7 step 5). */
 export const SEND_SENT_COPY_UNKNOWN_EVENT = "send.sent_copy_unknown";
 
+/** Event recorded when a Sent append exhausts its attempts and leaves the sweep. */
+export const SEND_SENT_COPY_HALTED_EVENT = "send.sent_copy_halted";
+
+/** Event recorded when an unknown outcome exhausts its reconcile passes and leaves the sweep. */
+export const SEND_RECONCILE_HALTED_EVENT = "send.reconcile_halted";
+
 /** Longest idempotency key accepted, so keys stay index-friendly. */
 export const MAX_IDEMPOTENCY_KEY_LENGTH = 200;
 
 /** Outbound rows one sweep claims per pass, bounded like every batch. */
 export const DEFAULT_SEND_SWEEP_LIMIT = 10;
+
+/**
+ * How long one claimed attempt stays with its worker before recovery may
+ * hold it (SPEC F7). The claims stamp `sendingStartedAt` and
+ * `appendStartedAt`; a hold is allowed only after this lease expires, so a
+ * live submission under a rolling restart or a second worker is never
+ * flipped to unknown while it is still running.
+ */
+export const ATTEMPT_LEASE_MS = 10 * 60_000;
+
+/**
+ * Append attempts and reconcile passes one row gets before the sweeps set it
+ * aside for review. A row that keeps failing or keeps finding no evidence
+ * must not occupy the bounded sweep window forever; the halt event records
+ * where the row stopped.
+ */
+export const SEND_SWEEP_ATTEMPT_CAP = 20;
 
 /** Control-state access the send service needs. `RecoveryControls` satisfies it. */
 export interface SendControlState extends MutationGate {
@@ -175,6 +198,8 @@ export interface SendSweepSummary {
   scanned: number;
   submitted: number;
   skippedStale: number;
+  /** Rows whose attempt threw; each keeps its claim until its lease expires. */
+  rowErrors: number;
   blocked: boolean;
 }
 
@@ -183,6 +208,8 @@ export interface SentCopySweepSummary {
   scanned: number;
   attempted: number;
   skippedStale: number;
+  /** Rows whose attempt threw; each keeps its claim until its lease expires. */
+  rowErrors: number;
   blocked: boolean;
 }
 
@@ -191,6 +218,8 @@ export interface UnknownSweepSummary {
   scanned: number;
   resolved: number;
   skippedStale: number;
+  /** Rows whose pass threw; the unknown state is untouched either way. */
+  rowErrors: number;
   blocked: boolean;
 }
 
@@ -475,11 +504,13 @@ export class OutboundService {
    * Sweep the queued set and submit what this deployment still owns (SPEC F7
    * step 3). Rows from another recovery generation are skipped: a restored
    * database keeps its pending sends until reconciliation dispositions them.
+   * One row that throws cannot abort the pass: its attempt stays claimed,
+   * and the lease-aged recovery hold picks it up later.
    */
   async executeQueued(limit = DEFAULT_SEND_SWEEP_LIMIT): Promise<SendSweepSummary> {
     const status = await this.controls.readStatus();
     if (status.state !== "ready") {
-      return { scanned: 0, submitted: 0, skippedStale: 0, blocked: true };
+      return { scanned: 0, submitted: 0, skippedStale: 0, rowErrors: 0, blocked: true };
     }
     const queued = await this.db
       .select({ id: outboundMessages.id, generation: outboundMessages.recoveryGeneration })
@@ -490,6 +521,7 @@ export class OutboundService {
 
     let submitted = 0;
     let skippedStale = 0;
+    let rowErrors = 0;
     for (const row of queued) {
       // A row keeps the generation it was queued with; a lease renewal or a
       // retry never upgrades it (SPEC section 7).
@@ -497,12 +529,18 @@ export class OutboundService {
         skippedStale += 1;
         continue;
       }
-      const outcome = await this.executeOutbound(row.id);
-      if (outcome.submitted) {
-        submitted += 1;
+      try {
+        const outcome = await this.executeOutbound(row.id);
+        if (outcome.submitted) {
+          submitted += 1;
+        }
+      } catch {
+        // The attempt stays claimed with its lease running; the next
+        // recovery pass holds it once the lease expires.
+        rowErrors += 1;
       }
     }
-    return { scanned: queued.length, submitted, skippedStale, blocked: false };
+    return { scanned: queued.length, submitted, skippedStale, rowErrors, blocked: false };
   }
 
   /**
@@ -651,12 +689,15 @@ export class OutboundService {
    * Sweep the due Sent copies of this deployment (SPEC F7 step 5). Rows whose
    * send left `sent`, and rows from another recovery generation, stay put:
    * a restored database keeps its pending work until reconciliation
-   * dispositions it.
+   * dispositions it. Two row classes never occupy the bounded window: a row
+   * that exhausted its append attempts, and a row whose unmapped-account
+   * failure is still unmapped — the sweep cannot progress either until the
+   * world changes, so neither may starve younger rows.
    */
   async appendDueSentCopies(limit = DEFAULT_SEND_SWEEP_LIMIT): Promise<SentCopySweepSummary> {
     const status = await this.controls.readStatus();
     if (status.state !== "ready") {
-      return { scanned: 0, attempted: 0, skippedStale: 0, blocked: true };
+      return { scanned: 0, attempted: 0, skippedStale: 0, rowErrors: 0, blocked: true };
     }
     const due = await this.db
       .select({ id: outboundMessages.id, generation: outboundMessages.recoveryGeneration })
@@ -665,6 +706,15 @@ export class OutboundService {
         and(
           eq(outboundMessages.status, "sent"),
           inArray(outboundMessages.sentCopyStatus, ["pending", "failed", "unknown"]),
+          lt(outboundMessages.sentCopyAttempts, SEND_SWEEP_ATTEMPT_CAP),
+          // The recorded unmapped failure stays quiet only while the account
+          // still maps no Sent folder; a fresh mapping makes the row due
+          // again the moment it exists.
+          not(
+            sql`(${outboundMessages.sentCopyStatus} = 'failed'
+              and ${outboundMessages.lastError} ->> 'code' = 'sent_folder_unmapped'
+              and ${missingSentFolder()})`,
+          ),
         ),
       )
       .orderBy(asc(outboundMessages.createdAt))
@@ -672,17 +722,22 @@ export class OutboundService {
 
     let attempted = 0;
     let skippedStale = 0;
+    let rowErrors = 0;
     for (const row of due) {
       if (assessJob(status, row.generation) === "stale") {
         skippedStale += 1;
         continue;
       }
-      const outcome = await this.executeSentCopyAppend(row.id);
-      if (outcome.attempted) {
-        attempted += 1;
+      try {
+        const outcome = await this.executeSentCopyAppend(row.id);
+        if (outcome.attempted) {
+          attempted += 1;
+        }
+      } catch {
+        rowErrors += 1;
       }
     }
-    return { scanned: due.length, attempted, skippedStale, blocked: false };
+    return { scanned: due.length, attempted, skippedStale, rowErrors, blocked: false };
   }
 
   /**
@@ -739,10 +794,11 @@ export class OutboundService {
     }
 
     // The claim: `appending` persists before the connection opens, and only
-    // the claimer may conclude the attempt.
+    // the claimer may conclude the attempt. The stamp starts the lease a
+    // recovery hold waits for before calling the attempt abandoned.
     const claimed = await this.db
       .update(outboundMessages)
-      .set({ sentCopyStatus: "appending" })
+      .set({ sentCopyStatus: "appending", appendStartedAt: this.now() })
       .where(
         and(
           eq(outboundMessages.id, outboundId),
@@ -896,32 +952,46 @@ export class OutboundService {
    * Sweep the unknown outcomes of this deployment (SPEC F7 step 7). Every
    * pass is read-only towards SMTP: it only looks for durable server
    * evidence, and a row without evidence keeps its unknown state and reason.
+   * A row that exhausted its passes, or whose account maps no Sent folder to
+   * search, never occupies the bounded window; a fresh mapping makes the row
+   * due again the moment it exists.
    */
   async reconcileUnknownOutcomes(limit = DEFAULT_SEND_SWEEP_LIMIT): Promise<UnknownSweepSummary> {
     const status = await this.controls.readStatus();
     if (status.state !== "ready") {
-      return { scanned: 0, resolved: 0, skippedStale: 0, blocked: true };
+      return { scanned: 0, resolved: 0, skippedStale: 0, rowErrors: 0, blocked: true };
     }
     const unknown = await this.db
       .select({ id: outboundMessages.id, generation: outboundMessages.recoveryGeneration })
       .from(outboundMessages)
-      .where(eq(outboundMessages.status, "outcome_unknown"))
+      .where(
+        and(
+          eq(outboundMessages.status, "outcome_unknown"),
+          lt(outboundMessages.reconcileAttempts, SEND_SWEEP_ATTEMPT_CAP),
+          not(missingSentFolder()),
+        ),
+      )
       .orderBy(asc(outboundMessages.createdAt))
       .limit(limit);
 
     let resolved = 0;
     let skippedStale = 0;
+    let rowErrors = 0;
     for (const row of unknown) {
       if (assessJob(status, row.generation) === "stale") {
         skippedStale += 1;
         continue;
       }
-      const outcome = await this.reconcileUnknownOutcome(row.id);
-      if (outcome.reconciled) {
-        resolved += 1;
+      try {
+        const outcome = await this.reconcileUnknownOutcome(row.id);
+        if (outcome.reconciled) {
+          resolved += 1;
+        }
+      } catch {
+        rowErrors += 1;
       }
     }
-    return { scanned: unknown.length, resolved, skippedStale, blocked: false };
+    return { scanned: unknown.length, resolved, skippedStale, rowErrors, blocked: false };
   }
 
   /**
@@ -965,6 +1035,7 @@ export class OutboundService {
     try {
       session = await this.execution.openSentCopy(before.accountId);
     } catch (cause) {
+      await this.noteReconcilePass(before);
       return { ...toOutboundRecord(before), reconciled: false, reason: `session_unavailable: ${firstLine(cause)}` };
     }
     try {
@@ -972,10 +1043,12 @@ export class OutboundService {
       if (evidence.kind !== "verified") {
         // Neither an empty folder nor an unverified candidate proves anything
         // about the submission; the unknown keeps its recorded reason.
+        await this.noteReconcilePass(before);
         return { ...toOutboundRecord(before), reconciled: false, reason: evidence.kind };
       }
       const bytes = await session.fetchOriginal(evidence.destination.uid!);
       if (bytes === null || sha256Hex(bytes) !== before.mimeSha256) {
+        await this.noteReconcilePass(before);
         return { ...toOutboundRecord(before), reconciled: false, reason: "candidate_unreadable" };
       }
       const resolved = await this.commitAcceptance(before, {
@@ -995,22 +1068,60 @@ export class OutboundService {
   }
 
   /**
-   * Hold the attempts a crash left behind (SPEC F7): on startup every
-   * abandoned `sending` row becomes `outcome_unknown` and every abandoned
+   * Count one evidence pass that settled nothing. A row that keeps finding
+   * no evidence must not occupy the bounded reconcile window forever: at the
+   * cap the row leaves the sweep, and the halt event records where it
+   * stopped. The unknown state itself never changes here.
+   */
+  private async noteReconcilePass(row: OutboundMessage): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      const updated = await tx
+        .update(outboundMessages)
+        .set({ reconcileAttempts: sql`${outboundMessages.reconcileAttempts} + 1` })
+        .where(and(eq(outboundMessages.id, row.id), eq(outboundMessages.status, "outcome_unknown")))
+        .returning({ attempts: outboundMessages.reconcileAttempts });
+      const after = updated[0];
+      if (after !== undefined && after.attempts >= SEND_SWEEP_ATTEMPT_CAP) {
+        await recordSendEvent(tx, "system", SEND_RECONCILE_HALTED_EVENT, row.id, {
+          accountId: row.accountId,
+          attempts: after.attempts,
+        });
+      }
+    });
+  }
+
+  /**
+   * Hold the attempts a crash left behind (SPEC F7): every abandoned
+   * `sending` row becomes `outcome_unknown` and every abandoned
    * `appending` row becomes `unknown`, both with the reason recorded. Nothing
    * is replayed; rows from another recovery generation stay for the operator
    * recovery flow (SPEC section 10, step 4).
+   *
+   * A hold waits for the attempt lease: the claims stamp
+   * `sendingStartedAt` and `appendStartedAt`, and only a row whose stamp is
+   * older than `ATTEMPT_LEASE_MS` may be held. A live submission under a
+   * rolling restart or a second worker therefore keeps its row, and its own
+   * commit still wins. An unstamped `sending` row is never held — only the
+   * claim writes that status, and every claim stamps, so no stamp means no
+   * hold, the safe direction. An unstamped `appending` row predates the
+   * stamp column and counts as expired.
    */
   async recoverAbandonedAttempts(): Promise<AbandonedAttemptSummary> {
     const status = await this.controls.readStatus();
     if (status.state !== "ready") {
       return { heldSends: 0, heldAppends: 0, skippedStale: 0, blocked: true };
     }
+    const expiredBefore = new Date(this.now().getTime() - ATTEMPT_LEASE_MS);
 
     const sending = await this.db
       .select({ id: outboundMessages.id, generation: outboundMessages.recoveryGeneration })
       .from(outboundMessages)
-      .where(eq(outboundMessages.status, "sending"));
+      .where(
+        and(
+          eq(outboundMessages.status, "sending"),
+          lt(outboundMessages.sendingStartedAt, expiredBefore),
+        ),
+      );
     let heldSends = 0;
     let skippedStale = 0;
     for (const row of sending) {
@@ -1048,7 +1159,15 @@ export class OutboundService {
     const appending = await this.db
       .select({ id: outboundMessages.id, generation: outboundMessages.recoveryGeneration })
       .from(outboundMessages)
-      .where(eq(outboundMessages.sentCopyStatus, "appending"));
+      .where(
+        and(
+          eq(outboundMessages.sentCopyStatus, "appending"),
+          or(
+            isNull(outboundMessages.appendStartedAt),
+            lt(outboundMessages.appendStartedAt, expiredBefore),
+          ),
+        ),
+      );
     let heldAppends = 0;
     for (const row of appending) {
       if (assessJob(status, row.generation) === "stale") {
@@ -1303,7 +1422,13 @@ export class OutboundService {
                 sentUid: outcome.destination.uid,
                 lastError: null,
               }
-            : { sentCopyStatus: outcome.status, lastError: { ...outcome.error } },
+            : {
+                sentCopyStatus: outcome.status,
+                lastError: { ...outcome.error },
+                // Every attempt that ends without a stored copy counts, so
+                // a permanently failing append leaves the bounded sweep.
+                sentCopyAttempts: sql`${outboundMessages.sentCopyAttempts} + 1`,
+              },
         )
         .where(
           and(
@@ -1337,6 +1462,18 @@ export class OutboundService {
             }
           : { accountId: row.accountId, code: outcome.error.code },
       );
+      if (
+        outcome.status !== "stored" &&
+        after.sentCopyAttempts >= SEND_SWEEP_ATTEMPT_CAP
+      ) {
+        // The row leaves the sweep here; the event marks where it stopped,
+        // because nothing else will touch it automatically.
+        await recordSendEvent(tx, "system", SEND_SENT_COPY_HALTED_EVENT, row.id, {
+          accountId: row.accountId,
+          attempts: after.sentCopyAttempts,
+          code: outcome.error.code,
+        });
+      }
       return after;
     });
   }
@@ -1620,6 +1757,16 @@ async function recordSendEvent(
   payload: Record<string, unknown>,
 ): Promise<void> {
   await tx.insert(events).values({ actor, type, entityType: "outbound_message", entityId: outboundId, payload });
+}
+
+/**
+ * True when the row's account maps no folder to the Sent role. The sweeps
+ * use it to leave configuration-blocked rows out of their bounded windows;
+ * the unique index on (account_id, role) keeps the subquery one row at
+ * most, and a fresh mapping turns the predicate false at once.
+ */
+function missingSentFolder(): SQL {
+  return sql`not exists (select 1 from ${folders} where ${folders.accountId} = ${outboundMessages.accountId} and ${folders.role} = 'sent')`;
 }
 
 function toOutboundRecord(row: OutboundMessage): OutboundRecord {
