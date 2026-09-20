@@ -14,3 +14,17 @@ existing API key. No message content or credentials were printed.
 
 The release check also found an unused mailbox status state. Render that
 status and set it after the form reset so connection failures remain visible.
+
+Verification: the strict release gate passed all checks, including 1,035
+workspace tests, 148 action-permission checks, migrations, browser flows,
+and accessibility checks. No test suites were skipped.
+
+Coolify deployment bwvsl3l6b2cnkvltcfagllld finished at 2026-09-20 21:25 UTC
+for commit 8b11af157a22e9d035565562b78f937b78b77a56. API and database health
+checks pass. The worker schedules sync, send, Sent-copy, and classification.
+A live synthetic request through the installed adapter succeeded in 817 ms.
+One active passkey, one account, 12 folders, and 6,417 messages remain present.
+
+Background classification still observes the earlier failure cooldown.
+The latest prior failure was at 21:05:09 UTC; its 30-minute cooldown ends
+at 21:35:09 UTC. The audit history and circuit controls were preserved.
