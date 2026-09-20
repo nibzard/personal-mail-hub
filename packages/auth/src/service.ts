@@ -266,6 +266,7 @@ export class PasskeyAuthService {
           "This sign-in request was already used. Start again.",
         );
       }
+      await requireLiveCredential(tx, credential.id);
       await updateCredentialAfterUse(tx, credential.id, authenticationInfo.newCounter, now);
       const opened = await insertSession(tx, ownerId, generation, kind, now, this.config.sessionTtlMs);
       await recordAuthEvent(tx, "auth.login", {
@@ -362,6 +363,7 @@ export class PasskeyAuthService {
           "This verification request was already used. Start again.",
         );
       }
+      await requireLiveCredential(tx, credential.id);
       await updateCredentialAfterUse(tx, credential.id, authenticationInfo.newCounter, now);
       const rows = await tx
         .update(ownerSessions)
@@ -772,6 +774,28 @@ async function updateCredentialAfterUse(
     .update(ownerCredentials)
     .set({ counter, lastUsedAt: now })
     .where(eq(ownerCredentials.id, credentialId));
+}
+
+/**
+ * Re-read the credential under the transaction lock before the ceremony
+ * commits. The assertion was verified against a read taken before the
+ * transaction opened, so a credential revoked in that window — a single
+ * removal, or an emergency that revoked everything — must not open a
+ * session afterward.
+ */
+async function requireLiveCredential(
+  tx: MailHubTransaction,
+  credentialId: string,
+): Promise<void> {
+  const rows = await tx
+    .select({ id: ownerCredentials.id, revokedAt: ownerCredentials.revokedAt })
+    .from(ownerCredentials)
+    .where(eq(ownerCredentials.id, credentialId))
+    .for("update");
+  const row = rows[0];
+  if (row === undefined || row.revokedAt !== null) {
+    throw new AuthError("webauthn_invalid", "This passkey is no longer registered. Start again.");
+  }
 }
 
 function parseClientData(clientDataJSON: string): { challenge: string } {

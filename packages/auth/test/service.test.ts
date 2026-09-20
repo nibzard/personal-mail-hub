@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { eq, like } from "drizzle-orm";
+import { and, eq, isNull, like } from "drizzle-orm";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   accounts,
   createDatabase,
+  enrollmentGrants,
   events,
   owner,
   ownerCredentials,
@@ -58,6 +59,63 @@ async function authCode(promise: Promise<unknown>): Promise<string> {
     throw error;
   }
   throw new Error("The call was expected to reject, but it resolved.");
+}
+
+/**
+ * A database proxy that replays one mid-ceremony race deterministically: the
+ * moment the Nth awaited read of one table resolves, the interleave runs
+ * before the rows reach the ceremony. The service under test sees the
+ * pre-interleave rows outside its transaction and the post-interleave state
+ * inside it, exactly like a revocation committing between the two.
+ */
+function raceAfterTableRead(
+  db: MailHubDatabase,
+  table: object,
+  interleave: () => Promise<void>,
+  onRead = 1,
+): MailHubDatabase {
+  let reads = 0;
+  const wrapBuilder = (builder: object, watched: boolean): object =>
+    new Proxy(builder, {
+      get(target, prop) {
+        if (prop === "then") {
+          const original = (target as { then: PromiseLike<unknown>["then"] }).then.bind(target);
+          if (!watched || reads >= onRead) {
+            return original;
+          }
+          return (onFulfilled?: (value: unknown) => unknown, onRejected?: (reason: unknown) => unknown) =>
+            original(async (rows: unknown) => {
+              reads += 1;
+              if (reads === onRead) {
+                await interleave();
+              }
+              return rows;
+            }).then(onFulfilled, onRejected);
+        }
+        const value = Reflect.get(target, prop, target) as unknown;
+        if (typeof value !== "function") {
+          return value;
+        }
+        return (...args: unknown[]) =>
+          wrapBuilder(
+            (value as (...a: unknown[]) => object).apply(target, args),
+            watched || (prop === "from" && args[0] === table),
+          );
+      },
+    });
+  return new Proxy(db, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop, target) as unknown;
+      if (typeof value !== "function") {
+        return value;
+      }
+      const bound = (value as (...a: unknown[]) => unknown).bind(target);
+      if (prop === "select") {
+        return (...args: unknown[]) => wrapBuilder(bound(...args) as object, false);
+      }
+      return bound;
+    },
+  }) as MailHubDatabase;
 }
 
 suite("passkey owner authentication", () => {
@@ -494,5 +552,87 @@ suite("passkey owner authentication", () => {
       expect(serialized).not.toContain(credential.credentialId);
       expect(serialized).not.toContain(credential.publicKey);
     }
+  });
+
+  /** Controls that match whatever generation the suite currently holds. */
+  async function controlsForCurrentGeneration() {
+    const state = (await db.select().from(serviceState).limit(1))[0]!;
+    return new RecoveryControls(db, { deploymentGeneration: state.recoveryGeneration });
+  }
+
+  /** Count the sessions nothing has revoked. */
+  async function liveSessionCount(): Promise<number> {
+    const rows = await db.select().from(ownerSessions).where(isNull(ownerSessions.revokedAt));
+    return rows.length;
+  }
+
+  it("rejects a login whose challenge was revoked mid-ceremony", async () => {
+    const before = await liveSessionCount();
+    const attempt = await login();
+
+    const raced = raceAfterTableRead(db, webauthnChallenges, async () => {
+      await db
+        .update(webauthnChallenges)
+        .set({ revokedAt: new Date() })
+        .where(and(isNull(webauthnChallenges.revokedAt), isNull(webauthnChallenges.consumedAt)));
+    });
+    const racing = new PasskeyAuthService(raced, config, await controlsForCurrentGeneration());
+    await expect(authCode(racing.completeLogin(attempt.response))).resolves.toBe("challenge_invalid");
+    expect(await liveSessionCount()).toBe(before);
+  });
+
+  it("rejects a login whose credential was revoked mid-ceremony", async () => {
+    // A second passkey must remain, so one credential can be revoked alone.
+    const opened = await (await login()).complete();
+    const spare = createFakePasskey();
+    const options = await service.startCredentialEnrollment(opened.token);
+    await service.completeCredentialEnrollment(
+      opened.token,
+      "Race spare",
+      fakeRegistrationResponse({ passkey: spare, options, rpId: RP_ID, origin: ORIGIN }),
+    );
+
+    const before = await liveSessionCount();
+    const attempt = await login();
+    const raced = raceAfterTableRead(db, ownerCredentials, async () => {
+      await db
+        .update(ownerCredentials)
+        .set({ revokedAt: new Date() })
+        .where(eq(ownerCredentials.credentialId, heldPasskey.credentialId));
+    });
+    const racing = new PasskeyAuthService(raced, config, await controlsForCurrentGeneration());
+    await expect(authCode(racing.completeLogin(attempt.response))).resolves.toBe("webauthn_invalid");
+    expect(await liveSessionCount()).toBe(before);
+  });
+
+  it("rejects an enrollment whose grant was revoked mid-ceremony", async () => {
+    const grant = await consoleAuth.issueRecoveryGrant();
+    const replacement = createFakePasskey();
+    const options = await service.startEnrollment(grant.token);
+
+    const raced = raceAfterTableRead(db, enrollmentGrants, async () => {
+      await db
+        .update(enrollmentGrants)
+        .set({ revokedAt: new Date() })
+        .where(and(isNull(enrollmentGrants.revokedAt), isNull(enrollmentGrants.consumedAt)));
+    });
+    const racing = new PasskeyAuthService(raced, config, await controlsForCurrentGeneration());
+    await expect(
+      authCode(
+        racing.completeEnrollment({
+          grantToken: grant.token,
+          label: "Race key",
+          response: fakeRegistrationResponse({
+            passkey: replacement,
+            options,
+            rpId: RP_ID,
+            origin: ORIGIN,
+          }),
+        }),
+      ),
+    ).resolves.toBe("grant_invalid");
+
+    const active = await db.select().from(ownerCredentials).where(isNull(ownerCredentials.revokedAt));
+    expect(active.every((row) => row.label !== "Race key")).toBe(true);
   });
 });

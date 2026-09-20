@@ -149,8 +149,10 @@ export async function findLiveChallenge(
 }
 
 /**
- * Consume a challenge exactly once. Returns false when another request
- * already consumed it.
+ * Consume a challenge exactly once, and only while it is still live. A
+ * challenge revoked after the ceremony read it must never commit, so the
+ * conditional update refuses a revoked row the same way it refuses a
+ * consumed one. Returns false when either got there first.
  */
 export async function consumeChallenge(
   tx: MailHubTransaction,
@@ -159,7 +161,13 @@ export async function consumeChallenge(
   const rows = await tx
     .update(webauthnChallenges)
     .set({ consumedAt: new Date() })
-    .where(and(eq(webauthnChallenges.id, challengeId), isNull(webauthnChallenges.consumedAt)))
+    .where(
+      and(
+        eq(webauthnChallenges.id, challengeId),
+        isNull(webauthnChallenges.consumedAt),
+        isNull(webauthnChallenges.revokedAt),
+      ),
+    )
     .returning({ id: webauthnChallenges.id });
   return rows.length > 0;
 }
@@ -194,14 +202,22 @@ export async function findLiveGrant(db: DbHandle, tokenHash: string, now: Date):
 }
 
 /**
- * Consume a grant exactly once. The conditional update serializes
- * concurrent first-passkey registrations: one request wins.
+ * Consume a grant exactly once, and only while it is still live. The
+ * conditional update serializes concurrent first-passkey registrations —
+ * one request wins — and refuses a grant a revocation already reached, so
+ * an enrollment in flight cannot complete after the token was withdrawn.
  */
 export async function consumeGrant(tx: MailHubTransaction, grantId: string): Promise<boolean> {
   const rows = await tx
     .update(enrollmentGrants)
     .set({ consumedAt: new Date() })
-    .where(and(eq(enrollmentGrants.id, grantId), isNull(enrollmentGrants.consumedAt)))
+    .where(
+      and(
+        eq(enrollmentGrants.id, grantId),
+        isNull(enrollmentGrants.consumedAt),
+        isNull(enrollmentGrants.revokedAt),
+      ),
+    )
     .returning({ id: enrollmentGrants.id });
   return rows.length > 0;
 }
