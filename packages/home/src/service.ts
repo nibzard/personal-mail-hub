@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type {
   AppSettings,
   HomeClassificationCoverage,
@@ -11,6 +11,7 @@ import type {
   HomeReasonView,
   HomeSectionIdWire,
   HomeWorkKindWire,
+  HomeWorkListResponse,
   HomeWorkRecordView,
   HomeWorkSummary,
   MessageAddress,
@@ -31,8 +32,6 @@ import { HomeError } from "./errors.ts";
 import {
   ACTION_BREAKOUT_CONFIDENCE,
   attentionReasons,
-  attentionTier,
-  compareIdentifier,
   type AttentionCandidate,
 } from "./ranking.ts";
 
@@ -109,22 +108,17 @@ export interface HomeSectionResult {
   nextCursor: string | null;
 }
 
-/**
- * The cursor payloads, one per section, frozen at page emission. The time a
- * cursor carries is the section's own order key: the due instant for Due
- * now, the saved instant for Reply later, the arrival instant for Since your
- * last visit, and the effective send time for Needs attention and Saved.
- *
- * Pages cut at the row a section orders by, so a conversation whose rows
- * straddle a page boundary appears once per page; the client merges rows by
- * `entryKey`.
- */
-export type HomeSectionCursor =
-  | { section: "needs_attention"; tier: number; sentAt: string; messageId: string }
-  | { section: "due_now"; dueAt: string; id: string }
-  | { section: "reply_later"; createdAt: string; id: string }
-  | { section: "since_visit"; ingestedAt: string; id: string; boundary: string | null }
-  | { section: "saved"; sentAt: string; id: string };
+/** A conversation cursor preserves the database order and the visit boundary. */
+export interface HomeSectionCursor {
+  section: HomeSectionIdWire;
+  tier: number;
+  /** Decimal epoch seconds, signed for ascending or descending time order. */
+  sortValue: string;
+  id: string;
+  boundary: string | null;
+}
+
+const SECTION_ORDER: HomeSectionIdWire[] = ["due_now", "needs_attention", "reply_later", "since_visit", "saved"];
 
 /** What one Home read asks for. */
 export interface HomeReadInput {
@@ -142,21 +136,8 @@ export interface HomeSectionInput {
   limit?: number;
   /** The device whose visit boundary a first Since page uses. */
   deviceId?: string;
-}
-
-/** One candidate with the display fields its row summary needs. */
-interface RankedCandidate {
-  candidate: AttentionCandidate;
-  display: {
-    subject: string | null;
-    snippet: string | null;
-    sender: MessageAddress | null;
-    hasAttachments: boolean;
-    accountLabel: string;
-    accountColor: string;
-    /** The effective send time the section ordered by. */
-    sortTime: string;
-  };
+  /** Freeze the previous visit across section refreshes; null means the first visit. */
+  visitBoundary?: string | null;
 }
 
 export class HomeService {
@@ -182,13 +163,10 @@ export class HomeService {
     const boundary = await this.readVisitBoundary(deviceId);
     const generatedAt = this.now();
 
-    const sections: HomeSectionResult[] = [
-      await this.readDueNow(limit, null),
-      await this.readNeedsAttention(limit, null),
-      await this.readReplyLater(limit, null),
-      await this.readSinceVisit(limit, null, boundary),
-      await this.readSaved(limit, null),
-    ];
+    const sections: HomeSectionResult[] = [];
+    for (const section of SECTION_ORDER) {
+      sections.push(await this.readRankedSection(section, limit, null, boundary));
+    }
     const classification = await this.readCoverage();
 
     await this.advanceVisitBoundary(deviceId);
@@ -208,295 +186,158 @@ export class HomeService {
     if (cursor !== null && cursor.section !== input.section) {
       throw new HomeError("invalid_request", "The cursor names a different section.");
     }
-    switch (input.section) {
-      case "due_now":
-        return this.readDueNow(limit, cursor as DueNowCursor | null);
-      case "needs_attention":
-        return this.readNeedsAttention(limit, cursor as AttentionCursor | null);
-      case "reply_later":
-        return this.readReplyLater(limit, cursor as ReplyLaterCursor | null);
-      case "since_visit": {
-        const sinceCursor = cursor as SinceCursor | null;
-        // The cursor freezes the boundary the session started with, so a
-        // page never shifts under a boundary that advanced mid-session.
-        const boundary =
-          sinceCursor !== null
-            ? parseInstant(sinceCursor.boundary, "visit boundary")
-            : await this.readVisitBoundary(requireDeviceId(input.deviceId));
-        return this.readSinceVisit(limit, sinceCursor, boundary);
-      }
-      case "saved":
-        return this.readSaved(limit, cursor as SavedCursor | null);
-      default:
-        // The schema at the boundary narrows the id; a caller that bypasses
-        // the schema still gets a refusal, never a resolved empty answer.
-        throw new HomeError("invalid_request", "Unknown section.");
+    if (!SECTION_ORDER.includes(input.section)) {
+      throw new HomeError("invalid_request", "Unknown section.");
     }
+    const boundary = cursor !== null ? cursor.boundary
+      : input.visitBoundary !== undefined ? input.visitBoundary
+      : input.deviceId !== undefined || input.section === "since_visit"
+        ? (await this.readVisitBoundary(requireDeviceId(input.deviceId)))?.toISOString() ?? null
+        : null;
+    return this.readRankedSection(input.section, limit, cursor,
+      boundary === null ? null : parseInstant(boundary, "visit boundary"));
   }
 
-  // ---------------------------------------------------------------------
-  // Sections
-  // ---------------------------------------------------------------------
-
-  /** Due now: open reminders whose time passed, earliest first. */
-  private async readDueNow(limit: number, cursor: DueNowCursor | null): Promise<HomeSectionResult> {
-    const now = this.now();
-    const cursorFilter =
-      cursor === null
-        ? sql``
-        : sql`and (w.due_at > ${parseInstant(cursor.dueAt, "cursor due time")}
-                   or (w.due_at = ${parseInstant(cursor.dueAt, "cursor due time")} and w.id > ${cursor.id}))`;
-    const rows = await this.db.execute(sql`
-      select w.id, w.kind, w.status, w.due_at, w.time_zone, w.revision,
-             w.account_id, w.anchor_message_id, w.thread_id,
-             m.subject, m.sender, m.sent_at, m.snippet, m.thread_id as current_thread_id,
-             m.has_attachments, m.id is not null as message_exists,
-             a.label as account_label, a.color as account_color
-      from home_work w
-      join accounts a on a.id = w.account_id
-      left join messages m on m.id = w.anchor_message_id
-      where w.status = 'open' and w.kind = 'reminder' and w.due_at <= ${now}
-        ${cursorFilter}
-      order by w.due_at asc, w.id asc
-      limit ${limit + 1}
-    `);
-    const items = await this.decorate(this.groupWorkEntries(rows.rows.slice(0, limit), "reminder_due"), false);
-    const totalRows = await this.db.execute(sql`
-      select count(distinct coalesce(m.thread_id, w.thread_id, w.anchor_message_id))::int as total
-      from home_work w
-      left join messages m on m.id = w.anchor_message_id
-      where w.status = 'open' and w.kind = 'reminder' and w.due_at <= ${now}
-    `);
-    return {
-      id: "due_now",
-      total: Number(totalRows.rows[0]?.total ?? 0),
-      items,
-      nextCursor: pageCursor(rows.rows, limit, (last) => ({
-        section: "due_now",
-        dueAt: isoOf(last.due_at) ?? "",
-        id: String(last.id),
-      })),
-    };
-  }
-
-  /** Reply later: open commitments, oldest first. */
-  private async readReplyLater(limit: number, cursor: ReplyLaterCursor | null): Promise<HomeSectionResult> {
-    const cursorFilter =
-      cursor === null
-        ? sql``
-        : sql`and (w.created_at > ${parseInstant(cursor.createdAt, "cursor created time")}
-                   or (w.created_at = ${parseInstant(cursor.createdAt, "cursor created time")} and w.id > ${cursor.id}))`;
-    const rows = await this.db.execute(sql`
-      select w.id, w.kind, w.status, w.due_at, w.time_zone, w.revision,
-             w.account_id, w.anchor_message_id, w.thread_id, w.created_at,
-             m.subject, m.sender, m.sent_at, m.snippet, m.thread_id as current_thread_id,
-             m.has_attachments, m.id is not null as message_exists,
-             a.label as account_label, a.color as account_color
-      from home_work w
-      join accounts a on a.id = w.account_id
-      left join messages m on m.id = w.anchor_message_id
-      where w.status = 'open' and w.kind = 'reply_later'
-        ${cursorFilter}
-      order by w.created_at asc, w.id asc
-      limit ${limit + 1}
-    `);
-    const items = await this.decorate(this.groupWorkEntries(rows.rows.slice(0, limit), "reply_planned"), false);
-    const totalRows = await this.db.execute(sql`
-      select count(distinct coalesce(m.thread_id, w.thread_id, w.anchor_message_id))::int as total
-      from home_work w
-      left join messages m on m.id = w.anchor_message_id
-      where w.status = 'open' and w.kind = 'reply_later'
-    `);
-    return {
-      id: "reply_later",
-      total: Number(totalRows.rows[0]?.total ?? 0),
-      items,
-      nextCursor: pageCursor(rows.rows, limit, (last) => ({
-        section: "reply_later",
-        createdAt: isoOf(last.created_at) ?? "",
-        id: String(last.id),
-      })),
-    };
-  }
-
-  /**
-   * Needs attention: explicit priority choices and stored suggestions, one
-   * leading tier for protected items and priority, then the remaining
-   * suggestions, effective send time breaking ties. The ranking resolves in
-   * SQL before the page is cut, so a priority item never lands beyond a
-   * recent-mail limit, and the keyset cursor pages through the ranked order.
-   */
-  private async readNeedsAttention(
+  /** Rank conversations before paging, then attach their messages and work. */
+  private async readRankedSection(
+    section: HomeSectionIdWire,
     limit: number,
-    cursor: AttentionCursor | null,
-  ): Promise<HomeSectionResult> {
-    const priorities = await this.db.select().from(homePriorities);
-    const priorityMatch = priorityMatchSql(priorities);
-    const eligibility = sql`(
-      ${priorityMatch}
-      or m.class_hint = 'security_alert'
-      or m.asks_action is true
-      or m.asks_reply is true
-      or m.time_sensitive is true
-    )`;
-    const innerWhere = sql`where ${inboxOccurrence} and ${notDismissed} and ${eligibility}`;
-    const cursorFilter =
-      cursor === null
-        ? sql``
-        : sql`where (ranked.tier > ${cursor.tier}
-                   or (ranked.tier = ${cursor.tier} and (
-                     ranked.sort_time < ${parseInstant(cursor.sentAt, "cursor send time")}
-                     or (ranked.sort_time = ${parseInstant(cursor.sentAt, "cursor send time")} and ranked.id > ${cursor.messageId})
-                   )))`;
-    const rows = await this.db.execute(sql`
-      select ranked.* from (
-        select m.id, m.account_id, m.thread_id, m.sent_at, m.ingested_at, m.sender,
-               m.subject, m.snippet, m.has_attachments,
-               m.class_hint, m.asks_action, m.asks_reply, m.time_sensitive,
-               m.metadata ->> 'classSource' as class_source,
-               (case when (
-                 ${priorityMatch}
-                 or m.class_hint = 'security_alert'
-                 or (m.asks_action is true and coalesce(conf.action_confidence, -1) >= ${ACTION_BREAKOUT_CONFIDENCE})
-               ) then 0 else 1 end) as tier,
-               coalesce(m.sent_at, m.ingested_at) as sort_time,
-               a.label as account_label, a.color as account_color
-        from messages m
-        join accounts a on a.id = m.account_id
-        left join lateral (
-          select (d.confidence ->> 'asks_action')::float8 as action_confidence
-          from decisions d
-          where d.message_id = m.id and m.metadata ->> 'classSource' = 'jev'
-          order by d.created_at desc
-          limit 1
-        ) conf on true
-        ${innerWhere}
-      ) ranked
-      ${cursorFilter}
-      order by ranked.tier asc, ranked.sort_time desc, ranked.id asc
-      limit ${limit + 1}
-    `);
-    const ranked = rows.rows
-      .slice(0, limit)
-      .map((row) => toRankedCandidate(row, priorities));
-    const items = await this.decorate(this.groupAttentionEntries(ranked), true);
-    // The total counts conversations, not messages: one entry may cover
-    // several messages of one thread (SPEC F13 grouping).
-    const totalRows = await this.db.execute(sql`
-      select count(distinct coalesce(m.thread_id, m.id))::int as total
-      from messages m
-      left join lateral (
-        select (d.confidence ->> 'asks_action')::float8 as action_confidence
-        from decisions d
-        where d.message_id = m.id and m.metadata ->> 'classSource' = 'jev'
-        order by d.created_at desc
-        limit 1
-      ) conf on true
-      ${innerWhere}
-    `);
-    return {
-      id: "needs_attention",
-      total: Number(totalRows.rows[0]?.total ?? 0),
-      items,
-      nextCursor: pageCursor(rows.rows, limit, (last) => {
-        const { candidate } = toRankedCandidate(last, priorities);
-        return {
-          section: "needs_attention",
-          tier: attentionTier(candidate) ?? 1,
-          sentAt: isoOf(last.sort_time) ?? isoOf(last.sent_at) ?? "",
-          messageId: candidate.messageId,
-        };
-      }),
-    };
-  }
-
-  /** Since your last visit: new inbox arrivals after the frozen boundary. */
-  private async readSinceVisit(
-    limit: number,
-    cursor: SinceCursor | null,
+    cursor: HomeSectionCursor | null,
     boundary: Date | null,
   ): Promise<HomeSectionResult> {
-    if (boundary === null) {
-      return { id: "since_visit", total: 0, items: [], nextCursor: null };
+    const sectionIndex = SECTION_ORDER.indexOf(section);
+    const now = this.now();
+    const after = cursor === null ? sql`` : sql`and (
+      tier > ${cursor.tier} or (tier = ${cursor.tier} and (
+        sort_value > ${cursor.sortValue}::numeric or
+        (sort_value = ${cursor.sortValue}::numeric and sort_id > ${cursor.id}::uuid)
+      )))`;
+    const result = await this.db.execute(sql`
+      with signals as (
+        select m.id, m.account_id, m.thread_id, m.subject, m.sender, m.sent_at, m.ingested_at,
+          m.snippet, m.has_attachments, m.class_hint, m.asks_action, m.asks_reply, m.time_sensitive,
+          a.label as account_label, a.color as account_color,
+          ${inboxOccurrence} as in_inbox, ${starredOccurrence} as starred,
+          ${notDismissed} as not_dismissed,
+          exists (select 1 from home_priorities p where p.account_id = m.account_id
+            and p.target_kind = 'sender' and p.sender = lower(m.sender ->> 'address')) as priority_sender,
+          exists (select 1 from home_priorities p where p.account_id = m.account_id
+            and p.target_kind = 'thread' and p.thread_id = m.thread_id) as priority_thread,
+          m.metadata ->> 'classSource' as class_source,
+          conf.action_confidence
+        from messages m join accounts a on a.id = m.account_id
+        left join lateral (
+          select (d.confidence ->> 'asks_action')::float8 as action_confidence
+          from decisions d where d.message_id = m.id and m.metadata ->> 'classSource' = 'jev'
+          order by d.created_at desc, d.id desc limit 1
+        ) conf on true
+      ), work as (
+        select w.*, case when m.id is null then coalesce(w.thread_id, w.anchor_message_id)
+          else coalesce(m.thread_id, m.id) end as entry_key,
+          m.id is null as anchor_unavailable,
+          a.label as account_label, a.color as account_color
+        from home_work w join accounts a on a.id = w.account_id
+        left join messages m on m.id = w.anchor_message_id where w.status = 'open'
+      ), candidates as (
+        select entry_key, anchor_message_id as message_id, id as sort_id,
+          0 as section, 0 as tier, extract(epoch from due_at) as sort_value
+        from work where kind = 'reminder' and due_at <= ${now}
+        union all
+        select coalesce(thread_id, id), id, id, 1,
+          case when priority_sender or priority_thread or class_hint = 'security_alert'
+            or (asks_action is true and action_confidence >= ${ACTION_BREAKOUT_CONFIDENCE})
+            then 0 else 1 end,
+          -extract(epoch from coalesce(sent_at, ingested_at))
+        from signals where in_inbox and not_dismissed and
+          (priority_sender or priority_thread or class_hint = 'security_alert'
+            or asks_action is true or asks_reply is true or time_sensitive is true)
+        union all
+        select entry_key, anchor_message_id, id, 2, 0, extract(epoch from created_at)
+        from work where kind = 'reply_later'
+        union all
+        select coalesce(thread_id, id), id, id, 3, 0, -extract(epoch from ingested_at)
+        from signals where in_inbox and not_dismissed and ingested_at > ${boundary}::timestamptz
+        union all
+        select coalesce(thread_id, id), id, id, 4, 0,
+          -extract(epoch from coalesce(sent_at, ingested_at)) from signals where starred
+      ), leaders as (
+        select distinct on (entry_key) * from candidates
+        order by entry_key, section, tier, sort_value, sort_id
+      ), page as (
+        select * from leaders where section = ${sectionIndex} ${after}
+        order by tier, sort_value, sort_id limit ${limit + 1}
+      )
+      select (select count(*)::int from leaders where section = ${sectionIndex}) as total,
+        coalesce((select jsonb_agg(row_data order by tier, sort_value, sort_id) from (
+          select p.tier, p.sort_value, p.sort_id, jsonb_build_object(
+            'entry_key', p.entry_key, 'message_id', p.message_id, 'sort_id', p.sort_id,
+            'tier', p.tier, 'sort_value', p.sort_value::text,
+            'members', coalesce((select jsonb_agg(s order by s.id) from signals s
+              where coalesce(s.thread_id, s.id) = p.entry_key), '[]'::jsonb),
+            'work', coalesce((select jsonb_agg(w order by w.due_at nulls last, w.created_at, w.id)
+              from work w where w.entry_key = p.entry_key), '[]'::jsonb),
+            'reasons', (select jsonb_agg(c order by c.section, c.tier, c.sort_value, c.sort_id) from candidates c where c.entry_key = p.entry_key)
+          ) as row_data from page p
+        ) details), '[]'::jsonb) as page
+    `);
+    const rows = result.rows[0]?.page as Record<string, unknown>[] ?? [];
+    const items = rows.slice(0, limit).map((row) => this.rankedEntry(row));
+    const flags = await this.loadOccurrences(items.map((item) => item.message.messageId));
+    for (const item of items) {
+      const active = flags.get(item.message.messageId);
+      item.occurrences = active?.refs ?? [];
+      item.noServerCopy = item.occurrences.length === 0;
+      item.message.unread = active?.unread ?? false;
+      item.message.flagged = active?.flagged ?? false;
     }
-    const cursorFilter =
-      cursor === null
-        ? sql``
-        : sql`and (m.ingested_at < ${parseInstant(cursor.ingestedAt, "cursor arrival")}
-                   or (m.ingested_at = ${parseInstant(cursor.ingestedAt, "cursor arrival")} and m.id > ${cursor.id}))`;
-    const rows = await this.db.execute(sql`
-      select m.id
-      from messages m
-      join accounts a on a.id = m.account_id
-      where ${inboxOccurrence}
-        and ${notDismissed}
-        and m.ingested_at > ${boundary}
-        ${cursorFilter}
-      order by m.ingested_at desc, m.id asc
-      limit ${limit + 1}
-    `);
-    const messageIds = rows.rows.slice(0, limit).map((row) => String(row.id));
-    const items = await this.decorate(
-      await this.buildMessageEntries(messageIds, "new_arrival", "notice"),
-      true,
-    );
-    const totalRows = await this.db.execute(sql`
-      select count(distinct coalesce(m.thread_id, m.id))::int as total
-      from messages m
-      where ${inboxOccurrence}
-        and ${notDismissed}
-        and m.ingested_at > ${boundary}
-    `);
+    const last = rows[limit - 1];
     return {
-      id: "since_visit",
-      total: Number(totalRows.rows[0]?.total ?? 0),
+      id: section,
+      total: Number(result.rows[0]?.total ?? 0),
       items,
-      nextCursor: pageCursor(rows.rows, limit, (last) => ({
-        section: "since_visit",
-        ingestedAt: isoOf(last.ingested_at) ?? "",
-        id: String(last.id),
-        boundary: boundary.toISOString(),
-      })),
+      nextCursor: rows.length > limit && last !== undefined ? encodeCursor({
+        section, tier: Number(last.tier), sortValue: String(last.sort_value),
+        id: String(last.sort_id), boundary: boundary?.toISOString() ?? null,
+      }) : null,
     };
   }
 
-  /** Saved: starred mail for quick reference, effective send time order. */
-  private async readSaved(limit: number, cursor: SavedCursor | null): Promise<HomeSectionResult> {
-    const cursorFilter =
-      cursor === null
-        ? sql``
-        : sql`where (ranked.sort_time < ${parseInstant(cursor.sentAt, "cursor send time")}
-                   or (ranked.sort_time = ${parseInstant(cursor.sentAt, "cursor send time")} and ranked.id > ${cursor.id}))`;
-    const rows = await this.db.execute(sql`
-      select ranked.id from (
-        select m.id, coalesce(m.sent_at, m.ingested_at) as sort_time
-        from messages m
-        join accounts a on a.id = m.account_id
-        where ${starredOccurrence}
-      ) ranked
-      ${cursorFilter}
-      order by ranked.sort_time desc, ranked.id asc
-      limit ${limit + 1}
-    `);
-    const messageIds = rows.rows.slice(0, limit).map((row) => String(row.id));
-    const items = await this.decorate(
-      await this.buildMessageEntries(messageIds, "you_starred", "choice"),
-      true,
-    );
-    const totalRows = await this.db.execute(sql`
-      select count(distinct coalesce(m.thread_id, m.id))::int as total
-      from messages m
-      where ${starredOccurrence}
-    `);
+  private rankedEntry(row: Record<string, unknown>): HomeItemView {
+    const members = row.members as Record<string, unknown>[];
+    const work = row.work as Record<string, unknown>[];
+    const candidates = row.reasons as Record<string, unknown>[];
+    const lead = members.find((member) => member.id === row.message_id);
+    const reasons: HomeReasonView[] = [];
+    for (const candidate of candidates) {
+      const member = members.find((item) => item.id === candidate.message_id);
+      const next = candidate.section === 1 && member !== undefined
+        ? attentionReasons(toAttentionCandidate(member))
+        : [reason(
+            candidate.section === 0 ? "reminder_due" : candidate.section === 2 ? "reply_planned"
+              : candidate.section === 3 ? "new_arrival" : "you_starred",
+            candidate.section === 3 ? "notice" : "choice",
+          )];
+      for (const value of next) {
+        if (!reasons.some((existing) => existing.code === value.code && existing.origin === value.origin)) {
+          reasons.push(value);
+        }
+      }
+    }
+    const source = lead ?? work[0]!;
+    const message = workMessageSummary({
+      ...source, anchor_message_id: row.message_id, current_thread_id: lead?.thread_id,
+    }, lead === undefined);
     return {
-      id: "saved",
-      total: Number(totalRows.rows[0]?.total ?? 0),
-      items,
-      nextCursor: pageCursor(rows.rows, limit, (last) => ({
-        section: "saved",
-        sentAt: isoOf(last.sort_time) ?? "",
-        id: String(last.id),
+      entryKey: String(row.entry_key), message,
+      messageIds: [...new Set([String(row.message_id), ...members.map((member) => String(member.id)),
+        ...work.map((record) => String(record.anchor_message_id))])],
+      reasons,
+      work: work.map((record) => ({
+        id: String(record.id), kind: record.kind as HomeWorkKindWire, status: "open",
+        dueAt: isoOf(record.due_at), timeZone: record.time_zone as string | null,
+        revision: Number(record.revision), anchorUnavailable: record.anchor_unavailable === true,
       })),
+      occurrences: [], noServerCopy: false,
     };
   }
 
@@ -773,26 +614,46 @@ export class HomeService {
     await this.recordEvent("home.work.cancelled", "home_work", id, { kind: record.kind });
   }
 
-  /** Every saved work record, open work first, for review and reopening. */
-  async listWork(
-    input: { status?: "open" | "done"; kind?: HomeWorkKindWire } = {},
-  ): Promise<HomeWorkRecordView[]> {
+  /** The first page, retained for application callers that need a short list. */
+  async listWork(input: { status?: "open" | "done"; kind?: HomeWorkKindWire } = {}): Promise<HomeWorkRecordView[]> {
+    return (await this.listWorkPage(input)).work;
+  }
+
+  /** Page all saved work, including future reminders and completed records. */
+  async listWorkPage(input: {
+    status?: "open" | "done"; kind?: HomeWorkKindWire; cursor?: string; limit?: number;
+  } = {}): Promise<HomeWorkListResponse> {
     const conditions = [];
-    if (input.status !== undefined) {
-      conditions.push(eq(homeWork.status, input.status));
+    const limit = input.limit === undefined ? WORK_LIST_LIMIT : pageLimit(input.limit);
+    if (input.status !== undefined) conditions.push(eq(homeWork.status, input.status));
+    if (input.kind !== undefined) conditions.push(eq(homeWork.kind, input.kind));
+    const order = sql`(case when status = 'open' then 0 else 1 end,
+      case when kind = 'reminder' then 0 else 1 end,
+      coalesce(due_at, 'infinity'::timestamptz), date_trunc('milliseconds', created_at), id)`;
+    if (input.cursor !== undefined) {
+      let cursor: { status: number; kind: number; dueAt: string | null; createdAt: string; id: string };
+      try {
+        cursor = JSON.parse(Buffer.from(input.cursor, "base64url").toString("utf8"));
+        if (cursor === null || ![0, 1].includes(cursor.status) || ![0, 1].includes(cursor.kind)) throw new Error();
+        requireUuid("work cursor id", cursor.id);
+        parseInstant(cursor.createdAt, "work cursor creation time");
+        if (cursor.dueAt !== null) parseInstant(cursor.dueAt, "work cursor due time");
+      } catch {
+        throw new HomeError("invalid_request", "The work cursor is not valid.");
+      }
+      conditions.push(sql`${order} > (${cursor.status}, ${cursor.kind},
+        coalesce(${cursor.dueAt}::timestamptz, 'infinity'::timestamptz),
+        ${cursor.createdAt}::timestamptz, ${cursor.id}::uuid)`);
     }
-    if (input.kind !== undefined) {
-      conditions.push(eq(homeWork.kind, input.kind));
-    }
-    const rows = await this.db
-      .select()
-      .from(homeWork)
+    const rows = await this.db.select().from(homeWork)
       .where(conditions.length > 0 ? and(...conditions) : undefined)
-      .orderBy(
-        sql`status = 'open' desc, kind = 'reminder' desc, due_at asc nulls last, created_at asc, id asc`,
-      )
-      .limit(WORK_LIST_LIMIT);
-    return Promise.all(rows.map((row) => this.toWorkRecord(row)));
+      .orderBy(order).limit(limit + 1);
+    const work = await Promise.all(rows.slice(0, limit).map((row) => this.toWorkRecord(row)));
+    const last = work[work.length - 1];
+    return { work, nextCursor: rows.length > limit && last !== undefined
+      ? Buffer.from(JSON.stringify({ status: last.status === "open" ? 0 : 1,
+          kind: last.kind === "reminder" ? 0 : 1, dueAt: last.dueAt,
+          createdAt: last.createdAt, id: last.id })).toString("base64url") : null };
   }
 
   // ---------------------------------------------------------------------
@@ -933,191 +794,6 @@ export class HomeService {
   // Entry assembly
   // ---------------------------------------------------------------------
 
-  /** Group one page of work rows into conversation entries. */
-  private groupWorkEntries(
-    page: Record<string, unknown>[],
-    reasonCode: HomeReasonCode,
-  ): HomeItemView[] {
-    const byConversation = new Map<string, HomeItemView>();
-    for (const row of page) {
-      const anchorUnavailable = row.message_exists !== true;
-      const work: HomeWorkSummary = {
-        id: String(row.id),
-        kind: row.kind === "reminder" ? "reminder" : "reply_later",
-        status: row.status === "done" ? "done" : "open",
-        dueAt: isoOf(row.due_at),
-        timeZone: typeof row.time_zone === "string" ? row.time_zone : null,
-        revision: Number(row.revision ?? 1),
-        anchorUnavailable,
-      };
-      const entryKey = conversationKey(row.current_thread_id, row.thread_id, row.anchor_message_id);
-      const existing = byConversation.get(entryKey);
-      if (existing === undefined) {
-        byConversation.set(entryKey, {
-          entryKey,
-          message: workMessageSummary(row, anchorUnavailable),
-          messageIds: [String(row.anchor_message_id)],
-          reasons: [reason(reasonCode, "choice")],
-          work: [work],
-          occurrences: [],
-          noServerCopy: false,
-        });
-        continue;
-      }
-      if (!existing.messageIds.includes(String(row.anchor_message_id))) {
-        existing.messageIds.push(String(row.anchor_message_id));
-      }
-      existing.work.push(work);
-    }
-    return [...byConversation.values()];
-  }
-
-  /** Group ranked candidates into one entry per conversation. */
-  private groupAttentionEntries(ranked: RankedCandidate[]): HomeItemView[] {
-    const byConversation = new Map<
-      string,
-      { lead: RankedCandidate; reasons: HomeReasonView[]; ids: string[] }
-    >();
-    for (const item of ranked) {
-      const entryKey = item.candidate.threadId ?? item.candidate.messageId;
-      const entry = byConversation.get(entryKey);
-      const itemReasons = attentionReasons(item.candidate);
-      if (entry === undefined) {
-        byConversation.set(entryKey, { lead: item, reasons: itemReasons, ids: [item.candidate.messageId] });
-        continue;
-      }
-      for (const itemReason of itemReasons) {
-        if (!entry.reasons.some((existing) => existing.code === itemReason.code)) {
-          entry.reasons.push(itemReason);
-        }
-      }
-      if (!entry.ids.includes(item.candidate.messageId)) {
-        entry.ids.push(item.candidate.messageId);
-      }
-    }
-    return [...byConversation.values()].map((entry) => ({
-      entryKey: entry.lead.candidate.threadId ?? entry.lead.candidate.messageId,
-      message: {
-        messageId: entry.lead.candidate.messageId,
-        accountId: entry.lead.candidate.accountId,
-        accountLabel: entry.lead.display.accountLabel,
-        accountColor: entry.lead.display.accountColor,
-        threadId: entry.lead.candidate.threadId,
-        subject: entry.lead.display.subject,
-        snippet: entry.lead.display.snippet,
-        sender: entry.lead.display.sender,
-        sentAt: entry.lead.candidate.sentAt?.toISOString() ?? null,
-        unread: false,
-        flagged: false,
-        hasAttachments: entry.lead.display.hasAttachments,
-      },
-      messageIds: entry.ids,
-      reasons: entry.reasons,
-      work: [],
-      occurrences: [],
-      noServerCopy: false,
-    }));
-  }
-
-  /** Build display entries for plain message sections (Since, Saved). */
-  private async buildMessageEntries(
-    messageIds: string[],
-    reasonCode: HomeReasonCode,
-    origin: HomeReasonOrigin,
-  ): Promise<HomeItemView[]> {
-    if (messageIds.length === 0) {
-      return [];
-    }
-    const rows = await this.db.execute(sql`
-      select m.id, m.account_id, m.thread_id, m.sent_at, m.sender, m.subject,
-             m.snippet, m.has_attachments,
-             a.label as account_label, a.color as account_color
-      from messages m
-      join accounts a on a.id = m.account_id
-      where m.id in (${uuidList(messageIds)})
-    `);
-    const byMessage = new Map(rows.rows.map((row) => [String(row.id), row]));
-    const byConversation = new Map<string, HomeItemView>();
-    for (const id of messageIds) {
-      const row = byMessage.get(id);
-      if (row === undefined) {
-        continue;
-      }
-      const entryKey = conversationKey(row.thread_id, null, row.id);
-      const existing = byConversation.get(entryKey);
-      if (existing === undefined) {
-        byConversation.set(entryKey, {
-          entryKey,
-          message: {
-            messageId: id,
-            accountId: String(row.account_id),
-            accountLabel: String(row.account_label ?? ""),
-            accountColor: String(row.account_color ?? ""),
-            threadId: row.thread_id === null || row.thread_id === undefined ? null : String(row.thread_id),
-            subject: row.subject === null || row.subject === undefined ? null : String(row.subject),
-            snippet: row.snippet === null || row.snippet === undefined ? null : String(row.snippet),
-            sender: (row.sender as MessageAddress | null) ?? null,
-            sentAt: isoOf(row.sent_at),
-            unread: false,
-            flagged: false,
-            hasAttachments: row.has_attachments === true,
-          },
-          messageIds: [id],
-          reasons: [{ code: reasonCode, origin }],
-          work: [],
-          occurrences: [],
-          noServerCopy: false,
-        });
-        continue;
-      }
-      if (!existing.messageIds.includes(id)) {
-        existing.messageIds.push(id);
-      }
-    }
-    return [...byConversation.values()];
-  }
-
-  /**
-   * Finish one page of entries: freeze the representative's occurrences for
-   * mail actions, and attach the open work anchored in each conversation.
-   */
-  private async decorate(entries: HomeItemView[], includeWork: boolean): Promise<HomeItemView[]> {
-    if (entries.length === 0) {
-      return entries;
-    }
-    const representativeIds = entries.map((entry) => entry.message.messageId);
-    const occurrences = await this.loadOccurrences(representativeIds);
-    for (const entry of entries) {
-      const flags = occurrences.get(entry.message.messageId);
-      entry.occurrences = flags?.refs ?? [];
-      entry.noServerCopy = (flags?.refs.length ?? 0) === 0;
-      entry.message.unread = flags?.unread ?? false;
-      entry.message.flagged = flags?.flagged ?? false;
-    }
-    if (includeWork) {
-      const coveredIds = entries.flatMap((entry) => entry.messageIds);
-      const workRows = coveredIds.length
-        ? await this.db
-            .select()
-            .from(homeWork)
-            .where(and(eq(homeWork.status, "open"), inArray(homeWork.anchorMessageId, coveredIds)))
-        : [];
-      const byAnchor = new Map(workRows.map((row) => [row.anchorMessageId, row]));
-      for (const entry of entries) {
-        entry.work = entry.messageIds
-          .map((id) => byAnchor.get(id))
-          .filter((row): row is typeof homeWork.$inferSelect => row !== undefined)
-          .sort(
-            (a, b) =>
-              (a.dueAt?.getTime() ?? Number.POSITIVE_INFINITY) -
-                (b.dueAt?.getTime() ?? Number.POSITIVE_INFINITY) || compareIdentifier(a.id, b.id),
-          )
-          .map((row) => toWorkSummary(row, false));
-      }
-    }
-    return entries;
-  }
-
   /** Active occurrence flags and frozen action refs for messages. */
   private async loadOccurrences(
     messageIds: string[],
@@ -1169,8 +845,10 @@ export class HomeService {
       .limit(1);
     const anchorRow = anchorRows[0];
     let anchor: HomeMessageSummary | null = null;
+    let occurrences: OccurrenceRefWire[] = [];
     if (anchorRow !== undefined) {
       const flags = (await this.loadOccurrences([anchorRow.id])).get(anchorRow.id);
+      occurrences = flags?.refs ?? [];
       anchor = {
         messageId: anchorRow.id,
         accountId: anchorRow.accountId,
@@ -1191,6 +869,7 @@ export class HomeService {
       accountId: record.accountId,
       anchorMessageId: record.anchorMessageId,
       anchor,
+      occurrences,
       createdAt: record.createdAt.toISOString(),
       updatedAt: record.updatedAt.toISOString(),
       completedAt: record.completedAt?.toISOString() ?? null,
@@ -1274,68 +953,27 @@ function uuidList(ids: string[]): ReturnType<typeof sql> {
   );
 }
 
-/** The match expression for every loaded priority choice. */
-function priorityMatchSql(choices: (typeof homePriorities.$inferSelect)[]): ReturnType<typeof sql> {
-  if (choices.length === 0) {
-    return sql`false`;
-  }
-  const parts = choices.map((choice) =>
-    choice.targetKind === "sender"
-      ? sql`(m.account_id = ${choice.accountId} and lower(m.sender ->> 'address') = ${choice.sender ?? ""})`
-      : sql`(m.account_id = ${choice.accountId} and m.thread_id = ${choice.threadId})`,
-  );
-  return sql.join(parts, sql` or `);
-}
-
 // -------------------------------------------------------------------------
 // Candidate and row mapping
 // -------------------------------------------------------------------------
 
-/** One ranked attention row, plus its priority flags and display fields. */
-function toRankedCandidate(
-  row: Record<string, unknown>,
-  priorities: (typeof homePriorities.$inferSelect)[],
-): RankedCandidate {
-  const accountId = String(row.account_id);
-  const messageId = String(row.id);
-  const senderAddress = readSenderAddress(row.sender);
-  const threadId = row.thread_id === null || row.thread_id === undefined ? null : String(row.thread_id);
-  const prioritySender = priorities.some(
-    (choice) =>
-      choice.targetKind === "sender" && choice.accountId === accountId && choice.sender === senderAddress,
-  );
-  const priorityThread = priorities.some(
-    (choice) =>
-      choice.targetKind === "thread" && choice.accountId === accountId && choice.threadId === threadId,
-  );
+/** Read the current stored signals for one message's reason labels. */
+function toAttentionCandidate(row: Record<string, unknown>): AttentionCandidate {
   return {
-    candidate: {
-      messageId,
-      accountId,
-      threadId,
-      sentAt: dateOf(row.sent_at) ?? dateOf(row.ingested_at),
-      senderAddress,
-      classHint: (row.class_hint as AttentionCandidate["classHint"]) ?? null,
-      classSource: (row.class_source as AttentionCandidate["classSource"]) ?? null,
-      asksAction: nullableBoolean(row.asks_action),
-      asksReply: nullableBoolean(row.asks_reply),
-      timeSensitive: nullableBoolean(row.time_sensitive),
-      actionConfidence:
-        row.action_confidence === null || row.action_confidence === undefined
-          ? null
-          : Number(row.action_confidence),
-      prioritySender,
-      priorityThread,
-    },
-    display: {
-      subject: row.subject === null || row.subject === undefined ? null : String(row.subject),
-      snippet: row.snippet === null || row.snippet === undefined ? null : String(row.snippet),
-      sender: (row.sender as MessageAddress | null) ?? null,
-      hasAttachments: row.has_attachments === true,
-      accountLabel: String(row.account_label ?? ""),
-      accountColor: String(row.account_color ?? ""),
-      sortTime: isoOf(row.sort_time) ?? "",
-    },
+    messageId: String(row.id),
+    accountId: String(row.account_id),
+    threadId: row.thread_id === null || row.thread_id === undefined ? null : String(row.thread_id),
+    sentAt: dateOf(row.sent_at) ?? dateOf(row.ingested_at),
+    senderAddress: readSenderAddress(row.sender),
+    classHint: (row.class_hint as AttentionCandidate["classHint"]) ?? null,
+    classSource: (row.class_source as AttentionCandidate["classSource"]) ?? null,
+    asksAction: nullableBoolean(row.asks_action),
+    asksReply: nullableBoolean(row.asks_reply),
+    timeSensitive: nullableBoolean(row.time_sensitive),
+    actionConfidence: row.action_confidence === null || row.action_confidence === undefined
+      ? null : Number(row.action_confidence),
+    prioritySender: row.priority_sender === true,
+    priorityThread: row.priority_thread === true,
   };
 }
 
@@ -1364,16 +1002,6 @@ function toWorkSummary(
     revision: record.revision,
     anchorUnavailable,
   };
-}
-
-/** The conversation key: current thread, saved thread, then the anchor. */
-function conversationKey(current: unknown, saved: unknown, fallback: unknown): string {
-  for (const value of [current, saved]) {
-    if (typeof value === "string" && value.length > 0) {
-      return value;
-    }
-  }
-  return String(fallback);
 }
 
 /** One work-section message summary; unavailable anchors stay explainable. */
@@ -1417,21 +1045,6 @@ function reason(code: HomeReasonCode, origin: HomeReasonOrigin): HomeReasonView 
   return { code, origin };
 }
 
-/**
- * The cursor for the next page: the key of the last returned row, emitted
- * only when the query fetched one row beyond the page.
- */
-function pageCursor(
-  rows: Record<string, unknown>[],
-  limit: number,
-  build: (last: Record<string, unknown>) => HomeSectionCursor,
-): string | null {
-  if (rows.length <= limit) {
-    return null;
-  }
-  return encodeCursor(build(rows[limit - 1]!));
-}
-
 function encodeCursor(cursor: HomeSectionCursor): string {
   return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
 }
@@ -1450,14 +1063,15 @@ function decodeCursor(value: string): HomeSectionCursor {
   if (!["due_now", "needs_attention", "reply_later", "since_visit", "saved"].includes(cursor.section)) {
     throw new HomeError("invalid_request", "The section cursor is not valid.");
   }
+  if (!Number.isInteger(cursor.tier) || cursor.tier < 0 || cursor.tier > 1 ||
+      typeof cursor.sortValue !== "string" || !/^-?\d+(\.\d+)?$/.test(cursor.sortValue) ||
+      cursor.sortValue.length > 40 || typeof cursor.id !== "string" || !UUID_PATTERN.test(cursor.id) ||
+      !(cursor.boundary === null || typeof cursor.boundary === "string")) {
+    throw new HomeError("invalid_request", "The section cursor is not valid. Reload Home.");
+  }
+  if (cursor.boundary !== null) parseInstant(cursor.boundary, "visit boundary");
   return cursor;
 }
-
-type DueNowCursor = Extract<HomeSectionCursor, { section: "due_now" }>;
-type ReplyLaterCursor = Extract<HomeSectionCursor, { section: "reply_later" }>;
-type AttentionCursor = Extract<HomeSectionCursor, { section: "needs_attention" }>;
-type SinceCursor = Extract<HomeSectionCursor, { section: "since_visit" }>;
-type SavedCursor = Extract<HomeSectionCursor, { section: "saved" }>;
 
 /**
  * Read one timestamp from a raw row. Raw queries return timestamps as

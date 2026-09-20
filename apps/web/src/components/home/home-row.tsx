@@ -123,6 +123,7 @@ export function HomeRow({
   const message = item.message;
   const openReply = item.work.find((work) => work.kind === "reply_later" && work.status === "open") ?? null;
   const openReminder = item.work.find((work) => work.kind === "reminder" && work.status === "open") ?? null;
+  const openWork = item.work.filter((work) => work.status === "open");
   const doneWork = item.work.filter((work) => work.status === "done");
   const hasSuggestion = item.reasons.some((reason) => reason.origin === "suggestion");
 
@@ -169,7 +170,7 @@ export function HomeRow({
       {(item.reasons.length > 0 || item.noServerCopy) && (
         <div className="flex flex-wrap items-center gap-1.5 px-3 pt-1.5">
           {item.reasons.map((reason) => (
-            <ReasonChip key={reason.code} code={reason.code} origin={reason.origin} />
+            <ReasonChip key={`${reason.code}:${reason.origin}`} code={reason.code} origin={reason.origin} />
           ))}
           {item.noServerCopy && (
             <span className="rounded border border-border px-1.5 py-0.5 text-muted-foreground">
@@ -181,30 +182,16 @@ export function HomeRow({
 
       {(openReminder !== null || openReply !== null || doneWork.length > 0) && (
         <div className="flex flex-col gap-1 px-3 pt-1.5">
-          {openReply !== null && (
+          {openWork.map((work) => (
             <WorkLine
-              label="Reply planned"
-              work={openReply}
-              offline={offline}
-              busy={busy}
-              actions={actions}
-              onReschedule={null}
+              key={work.id}
+              label={work.kind === "reply_later" ? "Reply planned"
+                : `Reminder${work.dueAt === null ? "" : `: ${describeInstant(new Date(work.dueAt), work.timeZone ?? timeZone)}`}`}
+              work={work} offline={offline} busy={busy} actions={actions}
+              onReschedule={work.kind === "reminder"
+                ? () => setPanel({ kind: "reschedule", work }) : null}
             />
-          )}
-          {openReminder !== null && (
-            <WorkLine
-              label={`Reminder${openReminder.dueAt === null ? "" : `: ${describeInstant(new Date(openReminder.dueAt), openReminder.timeZone ?? timeZone)}`}`}
-              work={openReminder}
-              offline={offline}
-              busy={busy}
-              actions={actions}
-              onReschedule={() =>
-                setPanel((current) =>
-                  current === null ? { kind: "reschedule", work: openReminder } : null,
-                )
-              }
-            />
-          )}
+          ))}
           {doneWork.map((work) => (
             <WorkLine
               key={work.id}
@@ -359,7 +346,7 @@ function ReasonChip({ code, origin }: { code: HomeReasonCode; origin: HomeReason
 }
 
 /** One saved work line: what it is, and the controls that act on it. */
-function WorkLine({
+export function WorkLine({
   label,
   work,
   offline,

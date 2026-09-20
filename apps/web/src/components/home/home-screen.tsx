@@ -30,6 +30,7 @@ import {
 } from "@/home/mutations";
 import { runMailAction } from "@/mail/actions";
 import { HomeRow, HOME_SECTION_DESCRIPTIONS, rowOfItem, type HomeRowActions } from "./home-row";
+import { WorkList } from "./work-list";
 import type { ReminderChoice } from "./reminder-panel";
 
 /*
@@ -89,6 +90,8 @@ export function HomeScreen({
   const [note, setNote] = useState<HomeNote | null>(null);
   const [busyEntry, setBusyEntry] = useState<string | null>(null);
   const [priorities, setPriorities] = useState<HomePriorityView[]>([]);
+  const [workView, setWorkView] = useState<"overview" | "open" | "done">("overview");
+  const [workVersion, setWorkVersion] = useState(0);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const noteTimer = useRef<number | null>(null);
   const lastOpened = useRef<string | null>(null);
@@ -196,10 +199,12 @@ export function HomeScreen({
         const outcome = await run();
         showNote(typeof outcome === "string" ? { text: outcome } : outcome);
         data.refresh();
+        setWorkVersion((value) => value + 1);
       } catch (cause) {
         if (cause instanceof HomeMutationError && cause.cause.code === "work_stale") {
           showNote({ text: "This work changed on another device. The rows now show the current state." });
           data.refresh();
+          setWorkVersion((value) => value + 1);
         } else {
           noteFailure(cause);
         }
@@ -447,6 +452,17 @@ export function HomeScreen({
         </p>
       )}
 
+      {state.phase === "ready" && state.error !== null && !state.offlineFromCache && (
+        <p role="alert" className="border-b px-3 py-2 text-muted-foreground">
+          Home could not update. The previous rows remain visible. Use Update to try again.
+        </p>
+      )}
+      <div className="flex flex-wrap gap-1 border-b px-3 py-2" role="group" aria-label="Home views">
+        {([['overview', 'Overview'], ['open', 'Active work'], ['done', 'Completed work']] as const).map(([value, label]) => (
+          <Button key={value} type="button" variant={workView === value ? "outline" : "ghost"} size="sm"
+            aria-pressed={workView === value} onClick={() => setWorkView(value)}>{label}</Button>
+        ))}
+      </div>
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
         {note !== null && (
           <p
@@ -471,7 +487,14 @@ export function HomeScreen({
           </p>
         )}
 
-        {accounts.length === 0 ? (
+        {workView !== "overview" ? (
+          <WorkList key={workView} status={workView} version={workVersion} offline={offline}
+            busyKey={busyEntry} actions={actions} onOpenMessage={(key, row) => {
+              lastOpened.current = key;
+              setSelectedKey(key);
+              onOpenMessage(row);
+            }} />
+        ) : accounts.length === 0 ? (
           <div className="flex flex-col items-start gap-2 p-4">
             <p className="font-medium">No accounts are configured yet.</p>
             <p className="text-muted-foreground">Add an account, and Home follows its mail.</p>
@@ -601,7 +624,7 @@ function HomeSectionList({
                 offline={offline}
                 priority={priorityFor(item, priorities)}
                 timeZone={timeZone}
-                busy={busyEntry === item.entryKey}
+                busy={busyEntry === item.entryKey || item.work.some((work) => busyEntry === workKey(work))}
                 actions={actions}
               />
             ))}

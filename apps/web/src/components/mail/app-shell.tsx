@@ -26,7 +26,7 @@ import {
 } from "@/mail/commands";
 import { scopeKey, scopeTitle, type MailScope } from "@/mail/view";
 import { runMailAction, type MailActionOutcome } from "@/mail/actions";
-import { readCachedHomeStartup } from "@/settings/home-startup";
+import { HomeStartupGate } from "@/settings/home-startup-gate";
 import { HomeScreen } from "@/components/home/home-screen";
 import { ComposeScreen, type ComposeIntent } from "./compose-screen";
 import { CommandPalette } from "./command-palette";
@@ -86,23 +86,20 @@ function confirmedFlagPatch(
   }
 }
 
-export function AppShell({
-  accounts,
-  recoveryGeneration,
-  onSessionLost,
-  onAccountsChanged,
-}: {
+interface AppShellProps {
   accounts: AccountSummary[];
-  /** The generation settings and account mutations must carry (SPEC section 7). */
   recoveryGeneration: string | null;
   onSessionLost: () => void;
-  /** Refetches the account list after a settings mutation changes it. */
   onAccountsChanged: () => void;
-}) {
-  // The startup view resolves from the cached setting before the first
-  // render, so the app never paints Inbox and then switches to Home (SPEC
-  // F13). The stored setting changes take effect on the next startup only.
-  const [view, setView] = useState<View>(() => (readCachedHomeStartup() ? "home" : "mail"));
+}
+
+export function AppShell(props: AppShellProps) {
+  return <HomeStartupGate>{(home) => <ReadyAppShell {...props} initialHome={home} />}</HomeStartupGate>;
+}
+
+function ReadyAppShell({ accounts, recoveryGeneration, onSessionLost, onAccountsChanged, initialHome }:
+  AppShellProps & { initialHome: boolean }) {
+  const [view, setView] = useState<View>(initialHome ? "home" : "mail");
   const [scope, setScope] = useState<MailScope>({ kind: "unified-inbox" });
   const [query, setQuery] = useState("");
   const debouncedQuery = useDebouncedValue(query, 300);
@@ -115,6 +112,7 @@ export function AppShell({
   const retryList =
     scope.kind === "unified-inbox" && folderIndexError !== null ? folders.reload : list.reload;
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [homeSelection, setHomeSelection] = useState<SearchResultItem | null>(null);
   const [pane, setPane] = useState<Pane>(() => (view === "home" ? "home" : "list"));
   const threePane = useMediaQuery(THREE_PANE_QUERY);
   const { theme, setTheme } = useTheme();
@@ -153,7 +151,9 @@ export function AppShell({
     () => (list.state.phase === "ready" ? { ...list.state, rows } : list.state),
     [list.state, rows],
   );
-  const selected = rows.find((row) => row.messageId === selectedId) ?? null;
+  const selected = view === "home" && homeSelection?.messageId === selectedId
+    ? { ...homeSelection, ...(flagPatches.get(homeSelection.messageId) ?? {}) }
+    : rows.find((row) => row.messageId === selectedId) ?? null;
   const title = scopeTitle(scope, accounts, folders.data);
 
   // A server read that replaced the rows also retires the overlays: the
@@ -644,7 +644,10 @@ export function AppShell({
               recoveryGeneration={recoveryGeneration}
               active={threePane || pane === "home"}
               archiveDestination={archiveDestination}
-              onOpenMessage={handleSelect}
+              onOpenMessage={(item) => {
+                setHomeSelection(item);
+                handleSelect(item);
+              }}
               onOpenInbox={openInbox}
               onOpenSettings={openSettings}
               onSessionLost={onSessionLost}

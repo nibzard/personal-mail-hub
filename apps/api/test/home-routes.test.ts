@@ -76,6 +76,7 @@ const WORK_RECORD: HomeWorkRecordView = {
   accountId: ACCOUNT,
   anchorMessageId: MESSAGE,
   anchor: null,
+  occurrences: [],
   createdAt: "2026-09-20T10:00:00.000Z",
   updatedAt: "2026-09-20T10:00:00.000Z",
   completedAt: null,
@@ -85,7 +86,7 @@ const WORK_RECORD: HomeWorkRecordView = {
 function fakeService(overrides: { reads?: () => Promise<HomeResponse> } = {}) {
   const calls = {
     home: [] as { deviceId: string; limit?: number }[],
-    sections: [] as { section: HomeSectionIdWire; cursor: string | null; limit?: number }[],
+    sections: [] as { section: HomeSectionIdWire; cursor: string | null; limit?: number; visitBoundary?: string | null }[],
     generations: [] as (string | null | undefined)[],
   };
   const service: HomeServiceForRoutes = {
@@ -97,12 +98,13 @@ function fakeService(overrides: { reads?: () => Promise<HomeResponse> } = {}) {
       calls.sections.push({
         section: input.section,
         cursor: input.cursor ?? null,
+        ...(input.visitBoundary === undefined ? {} : {visitBoundary: input.visitBoundary}),
         ...("limit" in input ? { limit: input.limit! } : {}),
       });
       return { id: input.section, total: 1, items: [ITEM], nextCursor: null };
     },
-    async listWork() {
-      return [WORK_RECORD];
+    async listWorkPage() {
+      return { work: [WORK_RECORD], nextCursor: null };
     },
     async createWork(context: HomeMutationContext) {
       calls.generations.push(context.requestGeneration);
@@ -217,6 +219,20 @@ describe("the home routes", () => {
       headers: cookie,
     });
     expect(unknown.statusCode).toBe(400);
+  });
+
+  it("validates and forwards a frozen visit boundary", async () => {
+    const service = fakeService();
+    const app = appWith(service);
+    for (const boundary of ["none", "2026-09-19T12:00:00.000Z"]) {
+      const response = await app.inject({method: "GET", headers: cookie,
+        url: `/home/sections/since_visit?visitBoundary=${encodeURIComponent(boundary)}`});
+      expect(response.statusCode).toBe(200);
+      expect(service.calls.sections.at(-1)?.visitBoundary).toBe(boundary === "none" ? null : boundary);
+    }
+    const invalid = await app.inject({method: "GET", headers: cookie,
+      url: "/home/sections/since_visit?visitBoundary=yesterday"});
+    expect(invalid.statusCode).toBe(400);
   });
 
   it("lists saved work with the standing filters", async () => {

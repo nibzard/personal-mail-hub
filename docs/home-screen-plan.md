@@ -1,7 +1,7 @@
 # Home screen implementation plan
 
 - Date: 2026-09-20
-- Status: Direction agreed; implementation pending
+- Status: Implemented; real-mail evaluation and device checks remain pending
 - Scope: Optional Home screen with important mail, explicit commitments, and reminders
 
 ## Purpose

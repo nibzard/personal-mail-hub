@@ -55,6 +55,7 @@ const harness = vi.hoisted(() => {
     sectionAnswers: new Map<string, HomeSectionView>(),
     homeReads: 0,
     sectionReads: [] as string[],
+    boundaries: [] as (string | null)[],
     failHome: false,
   };
 });
@@ -84,6 +85,7 @@ vi.mock("../src/lib/api.ts", () => ({
     }
     if (path.startsWith("/home/sections/")) {
       const id = path.slice("/home/sections/".length).split("?")[0]!;
+      harness.boundaries.push(new URLSearchParams(path.split("?")[1]).get("visitBoundary"));
       harness.sectionReads.push(`${id}?${new URLSearchParams(path.split("?")[1]).get("cursor")}`);
       const section = harness.sectionAnswers.get(id);
       if (section === undefined) {
@@ -132,6 +134,7 @@ afterEach(() => {
   harness.sectionAnswers.clear();
   harness.homeReads = 0;
   harness.sectionReads.length = 0;
+  harness.boundaries.length = 0;
   harness.failHome = false;
   harness.store.clear();
 });
@@ -145,6 +148,9 @@ async function mountHome(generation: string | null = "gen-1"): Promise<void> {
     });
   }
   data = { current: null };
+  for (const section of harness.homeAnswer?.sections ?? []) {
+    if (!harness.sectionAnswers.has(section.id)) harness.sectionAnswers.set(section.id, section);
+  }
   function Probe() {
     data.current = useHomeData(generation);
     return null;
@@ -180,6 +186,38 @@ function answerOf(sections: HomeSectionView[]): HomeResponse {
 }
 
 describe("the Home data hook", () => {
+  it("merges work and messages when a conversation also appears on a later page", async () => {
+    const a = itemOf("thread", MESSAGE_A);
+    a.work = [{ id: "work-a", kind: "reminder", status: "open", dueAt: "2026-09-20T10:00:00Z", timeZone: "UTC", revision: 1, anchorUnavailable: false }];
+    const first = sectionOf("due_now", [a], 1);
+    first.nextCursor = "next-page";
+    harness.homeAnswer = answerOf([first]);
+    await mountHome();
+    const b = itemOf("thread", MESSAGE_B);
+    b.work = [{ ...a.work[0]!, id: "work-b" }];
+    b.reasons = [{ code: "reply_planned", origin: "choice" }];
+    harness.sectionAnswers.set("due_now", sectionOf("due_now", [b], 1));
+    act(() => { data.current!.loadMore("due_now"); });
+    await settle(); await settle();
+    const item = data.current!.state.sections[0]!.items[0]!;
+    expect(item.messageIds).toEqual([MESSAGE_A, MESSAGE_B]);
+    expect(item.work.map(work => work.id)).toEqual(["work-a", "work-b"]);
+    expect(item.reasons).toHaveLength(2);
+  });
+
+  it("refreshes the original visit window and keeps access to unseen arrivals", async () => {
+    const first = sectionOf("since_visit", [itemOf("a", MESSAGE_A)], 10);
+    first.nextCursor = "frozen-window-next-page";
+    harness.homeAnswer = answerOf([first]);
+    await mountHome();
+    harness.sectionAnswers.set("since_visit", first);
+    act(() => { data.current!.refresh(); });
+    await settle(); await settle();
+    expect(harness.boundaries).toEqual(["2026-09-19T12:00:00.000Z"]);
+    expect(data.current!.state.sections[0]!.nextCursor).toBe("frozen-window-next-page");
+    expect(data.current!.state.sections[0]!.total).toBe(10);
+  });
+
   it("loads one visit, caches it, and refreshes sections only", async () => {
     harness.homeAnswer = answerOf([
       ...EMPTY_SECTIONS,
@@ -242,10 +280,10 @@ describe("the Home data hook", () => {
     expect(afterRemoval.items.map((item) => item.entryKey)).toEqual(["b"]);
     expect(afterRemoval.total).toBe(1);
 
-    // The server still lists both; the session's removal must hold.
+    // The server applies the dismissal within the original visit window.
     harness.sectionAnswers.set(
       "since_visit",
-      sectionOf("since_visit", [itemOf("a", MESSAGE_A), itemOf("b", MESSAGE_B)], 2),
+      sectionOf("since_visit", [itemOf("b", MESSAGE_B)], 1),
     );
     act(() => {
       data.current!.refresh();

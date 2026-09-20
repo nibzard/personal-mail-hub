@@ -16,8 +16,8 @@ import { homeDeviceId } from "./device.ts";
  * boundary it used and advances it on the server only after every query
  * succeeded. Refreshes run through the per-section route instead, so they
  * never advance the boundary: the `since_visit` window stays frozen at the
- * value the session opened with, and a refresh only appends arrivals newer
- * than the recorded boundary. A cold offline start serves the copy the last
+ * value the session opened with. Refreshes include all eligible arrivals
+ * after that boundary. A cold offline start serves the copy the last
  * online visit left, stamped with the recovery generation it belongs to; a
  * generation change invalidates that copy.
  */
@@ -32,7 +32,7 @@ const REQUEST_LIMIT_CAP = 50;
 const CACHE_KEY = "cachedHome";
 
 /** The only cache layout this client reads. */
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 
 interface CachedHome {
   version: number;
@@ -153,9 +153,6 @@ export function useHomeData(recoveryGeneration: string | null): HomeData {
   // invalidates the copy without restarting the visit.
   const generationRef = useRef(recoveryGeneration);
   generationRef.current = recoveryGeneration;
-  // Entries this session removed by a confirmed dismissal, so a refresh of
-  // the frozen `since_visit` window cannot bring them back.
-  const removedKeys = useRef(new Set<string>());
 
   useEffect(
     () => {
@@ -171,7 +168,6 @@ export function useHomeData(recoveryGeneration: string | null): HomeData {
           if (!live) {
             return;
           }
-          removedKeys.current = new Set();
           cacheHome(generationRef.current, response);
           setEntry({
             phase: "ready",
@@ -235,10 +231,11 @@ export function useHomeData(recoveryGeneration: string | null): HomeData {
 
   /** Reads one section page, with this device's identity attached. */
   const readSectionPage = useCallback(
-    (section: HomeSectionIdWire, cursor: string | null, limit: number, signal: AbortSignal) => {
+    (section: HomeSectionIdWire, cursor: string | null, limit: number, signal: AbortSignal, boundary: string | null) => {
       const query = new URLSearchParams({
         deviceId,
         limit: String(limit),
+        visitBoundary: boundary ?? "none",
       });
       if (cursor !== null) {
         query.set("cursor", cursor);
@@ -268,9 +265,10 @@ export function useHomeData(recoveryGeneration: string | null): HomeData {
         void (async () => {
           const controller = new AbortController();
           try {
-            const page = await readSectionPage(sectionId, section.nextCursor, HOME_PAGE_SIZE, controller.signal);
+            const page = await readSectionPage(sectionId, section.nextCursor, HOME_PAGE_SIZE, controller.signal, current.visitBoundary);
             setEntry((state) => ({
               ...state,
+              error: null,
               sections: state.sections.map((candidate) =>
                 candidate.id === sectionId
                   ? {
@@ -283,9 +281,10 @@ export function useHomeData(recoveryGeneration: string | null): HomeData {
                   : candidate,
               ),
             }));
-          } catch {
+          } catch (cause) {
             setEntry((state) => ({
               ...state,
+              error: toApiError(cause),
               sections: state.sections.map((candidate) =>
                 candidate.id === sectionId ? { ...candidate, loadingMore: false } : candidate,
               ),
@@ -313,20 +312,22 @@ export function useHomeData(recoveryGeneration: string | null): HomeData {
         const controller = new AbortController();
         try {
           const pages = await Promise.all(
-            sections.map((section) =>
-              // A section the owner expanded refreshes in one page that keeps
-              // its rows, within the per-request bound.
-              readSectionPage(
-                section.id,
-                null,
+            sections.map(async (section) => {
+              let page = await readSectionPage(section.id, null,
                 Math.min(Math.max(section.items.length, HOME_PAGE_SIZE), REQUEST_LIMIT_CAP),
-                controller.signal,
-              ).catch(() => null),
-            ),
+                controller.signal, current.visitBoundary);
+              while (page.nextCursor !== null && page.items.length < section.items.length) {
+                const next = await readSectionPage(section.id, page.nextCursor, REQUEST_LIMIT_CAP,
+                  controller.signal, current.visitBoundary);
+                page = { ...next, items: mergeItems(page.items, next.items) };
+              }
+              return page;
+            }),
           );
           setEntry((state) => ({
             ...state,
             refreshing: false,
+            error: null,
             sections: state.sections.map((section, position) => {
               const page = pages[position] ?? null;
               return page === null
@@ -334,17 +335,14 @@ export function useHomeData(recoveryGeneration: string | null): HomeData {
                 : {
                     ...section,
                     total: page.total,
-                    items:
-                      section.id === "since_visit"
-                        ? unionSinceItems(section, page)
-                        : page.items,
+                    items: page.items,
                     nextCursor: page.nextCursor,
                     loadingMore: false,
                   };
             }),
           }));
-        } catch {
-          setEntry((state) => ({ ...state, refreshing: false }));
+        } catch (cause) {
+          setEntry((state) => ({ ...state, refreshing: false, error: toApiError(cause) }));
         }
       })();
       return { ...current, refreshing: true };
@@ -356,7 +354,6 @@ export function useHomeData(recoveryGeneration: string | null): HomeData {
   }, []);
 
   const removeEntry = useCallback((sectionId: HomeSectionIdWire, entryKey: string) => {
-    removedKeys.current.add(entryKey);
     setEntry((current) => ({
       ...current,
       sections: current.sections.map((section) =>
@@ -372,27 +369,26 @@ export function useHomeData(recoveryGeneration: string | null): HomeData {
   }, []);
 
   return { state: entry, deviceId, loadMore, refresh, reload, removeEntry };
-
-  /**
-   * The refreshed `since_visit` window: the arrivals the recorded boundary
-   * already covers, plus what arrived since, minus what this session
-   * dismissed. The frozen base keeps its place after the newer arrivals,
-   * because the boundary caps how new its rows can be.
-   */
-  function unionSinceItems(section: HomeSectionState, page: HomeSectionView): HomeItemView[] {
-    const fresh = page.items.filter((item) => !removedKeys.current.has(item.entryKey));
-    const freshKeys = new Set(fresh.map((item) => item.entryKey));
-    const carried = section.items.filter(
-      (item) => !freshKeys.has(item.entryKey) && !removedKeys.current.has(item.entryKey),
-    );
-    return [...fresh, ...carried];
-  }
 }
 
 /** Appends one page, keeping earlier rows ahead of the new ones. */
 function mergeItems(current: HomeItemView[], page: HomeItemView[]): HomeItemView[] {
-  const seen = new Set(current.map((item) => item.entryKey));
-  return [...current, ...page.filter((item) => !seen.has(item.entryKey))];
+  const merged = new Map(current.map((item) => [item.entryKey, item]));
+  for (const item of page) {
+    const previous = merged.get(item.entryKey);
+    if (previous === undefined) {
+      merged.set(item.entryKey, item);
+      continue;
+    }
+    merged.set(item.entryKey, {
+      ...previous,
+      messageIds: [...new Set([...previous.messageIds, ...item.messageIds])],
+      work: [...new Map([...previous.work, ...item.work].map((work) => [work.id, work])).values()],
+      reasons: [...new Map([...previous.reasons, ...item.reasons].map((reason) =>
+        [`${reason.code}:${reason.origin}`, reason])).values()],
+    });
+  }
+  return [...merged.values()];
 }
 
 /** True while no network connection exists, following the browser's signal. */

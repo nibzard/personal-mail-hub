@@ -38,10 +38,9 @@ export default defineConfig({
     // Pin the locale the interface formats dates and counts with.
     locale: "en-US",
     timezoneId: "UTC",
-    // Every context boots as a device whose confirmed settings read said
-    // Inbox, so the checks that predate Home (SPEC F13) keep opening the
-    // mail list. A fresh device with no stored choice opens Home; the Home
-    // checks reach it through `openHome` or the navigation.
+    // The cache matches the fixture's server default of Inbox. Home checks
+    // enable the server preference through `openHome`; offline checks use
+    // the last confirmed cache when the settings request cannot finish.
     storageState: {
       cookies: [],
       origins: [
@@ -56,7 +55,7 @@ export default defineConfig({
       : { channel: browserChannel as PlaywrightWorkerOptions["channel"] }),
   },
   webServer: {
-    command: "npm run build && node e2e/fixture-server.mjs",
+    command: `npm run build && node e2e/fixture-server.mjs ${port}`,
     url: `${baseURL}/api/auth/status`,
     reuseExistingServer: process.env.CI === undefined,
     timeout: 120_000,

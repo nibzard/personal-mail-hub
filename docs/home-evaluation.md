@@ -92,7 +92,7 @@ synthetic corpus does not exercise.
 - Important mail with no stored answer cannot surface. Home makes no model
   call by design. The unanswered count in the report names that gap
   directly; the coverage line on the screen exists for it.
-- The walk pages at the client's default limit of eight per section. A
-  conversation that straddles a page boundary appears once per page; the
-  evaluation merges rows by message id, the same merge the client does by
-  entry key.
+- The walk pages at the client's default limit of eight conversations per
+  section. Selection assigns each conversation to its highest section before
+  pagination. Each entry includes its related messages, reasons, and open
+  work. The client also merges repeated entries if data changes between pages.

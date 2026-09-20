@@ -458,6 +458,7 @@ function homeWorkRecord(session, work) {
     accountId: work.accountId,
     anchorMessageId: work.anchorMessageId,
     anchor: anchor === undefined ? null : homeSummaryOf(anchor),
+    occurrences: anchor?.occurrences ?? [],
     createdAt: work.createdAt,
     updatedAt: work.updatedAt,
     completedAt: work.completedAt,
@@ -1662,7 +1663,9 @@ const server = createServer(async (request, response) => {
         sendError(response, 400, "invalid_request", "The Home read names no valid device.");
         return;
       }
-      const section = buildHomeSections(session, homeBoundaryFor(session, deviceId)).find(
+      const requestedBoundary = url.searchParams.get("visitBoundary");
+      const boundary = requestedBoundary === "none" ? null : requestedBoundary ?? homeBoundaryFor(session, deviceId);
+      const section = buildHomeSections(session, boundary).find(
         (entry) => entry.id === match[1],
       );
       if (section === undefined) {
@@ -1675,7 +1678,12 @@ const server = createServer(async (request, response) => {
 
     if (pathname === "/api/home/work") {
       sendJson(response, 200, {
-        work: session.home.work.map((work) => homeWorkRecord(session, work)),
+        work: session.home.work.filter((work) => {
+          const status = url.searchParams.get("status");
+          const kind = url.searchParams.get("kind");
+          return (status === null || work.status === status) && (kind === null || work.kind === kind);
+        }).map((work) => homeWorkRecord(session, work)),
+        nextCursor: null,
       });
       return;
     }

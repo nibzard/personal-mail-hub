@@ -16,10 +16,16 @@ export const STORAGE_KEY = "mail-hub.home-startup";
  * default, so a fresh device opens on Home.
  */
 export function readCachedHomeStartup(): boolean {
+  return readConfirmedHomeStartup() ?? true;
+}
+
+/** No cache is distinct from an explicit Home choice after a failed read. */
+export function readConfirmedHomeStartup(): boolean | null {
   try {
-    return window.localStorage.getItem(STORAGE_KEY) !== "false";
+    const value = window.localStorage.getItem(STORAGE_KEY);
+    return value === "true" ? true : value === "false" ? false : null;
   } catch {
-    return true;
+    return null;
   }
 }
 

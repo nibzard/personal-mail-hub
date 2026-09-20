@@ -567,16 +567,12 @@ test.describe("settings", () => {
     await expect(page.locator("html")).toHaveAttribute("data-density", "comfortable");
     await expect(dialog.locator("footer[role='status']")).toHaveText("Saved.");
 
-    // The server is the record: with local storage emptied, a reload adopts
-    // the stored choice (SPEC F10). The cleared startup cache boots on Home,
-    // the fresh-device default (SPEC F13); the stored density applies there
-    // too, and the Inbox leaf returns to the list.
+    // With local storage emptied, startup adopts both stored settings:
+    // comfortable density and the fixture's Inbox preference.
     await page.evaluate(() => window.localStorage.clear());
     await page.reload();
-    await expect(page.getByRole("region", { name: "Home" })).toBeVisible();
-    await expect(page.locator("html")).toHaveAttribute("data-density", "comfortable");
-    await page.getByRole("button", { name: "Inbox", exact: true }).click();
     await expect(page.locator("#message-list [data-message-row]").first()).toBeVisible();
+    await expect(page.getByRole("region", { name: "Home" })).toBeHidden();
     await expect(page.locator("html")).toHaveAttribute("data-density", "comfortable");
 
     // Compact returns the same way.
@@ -1253,6 +1249,65 @@ test.describe("compose and send", () => {
 });
 
 test.describe("home", () => {
+  test("opens a Home message outside the loaded Inbox page", async ({ page }) => {
+    await page.route(/\/api\/search\?/u, async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      body.results = body.results.filter((row: {messageId: string}) => row.messageId !== "m-007");
+      await route.fulfill({ response, json: body });
+    });
+    await openHome(page);
+    await page.locator("[data-home-entry='thread-m-007'] > button").click();
+    await expect(page.getByRole("region", {name: "Message reader"}).getByRole("heading", {level: 2})).toHaveText("Plain text reply");
+  });
+
+  test("manages a future reminder after archive and reopens it after a reload", async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 667 });
+    await openHome(page);
+    const row = page.locator("[data-home-entry='thread-m-001']");
+    await row.getByRole("button", {name: "Remind me"}).click();
+    const tomorrow = page.getByRole("group", {name: "Choose a reminder time"})
+      .getByText("Tomorrow", {exact: true}).locator("xpath=ancestor::div[1]");
+    await tomorrow.getByRole("button", {name: "Set reminder"}).click();
+    await expect(homeNote(page, /^Reminder set for/u)).toBeVisible();
+    await row.getByRole("button", {name: "Archive"}).click();
+    await expect(row).toBeHidden();
+    await page.getByRole("button", {name: "Active work", exact: true}).click();
+    const active = page.getByRole("region", {name: "Active work", exact: true});
+    const work = active.locator("li").filter({hasText: "Dinner on Saturday"});
+    await expect(work).toBeVisible();
+    await work.getByRole("button", {name: /Dinner on Saturday/u}).click();
+    await expect(page.getByRole("region", {name: "Message reader"}).getByRole("heading", {level: 2})).toHaveText("Dinner on Saturday");
+    await page.getByRole("button", { name: "Back to Home" }).click();
+    await expect(work.getByRole("button", {name: /Dinner on Saturday/u})).toBeFocused();
+    await work.getByRole("button", {name: "Move", exact: true}).click();
+    await work.getByRole("group", {name: "Choose a reminder time"})
+      .getByText("Tomorrow", {exact: true}).locator("xpath=ancestor::div[1]")
+      .getByRole("button", {name: "Set reminder"}).click();
+    await expect(homeNote(page, /^Reminder moved to/u)).toBeVisible();
+    await work.getByRole("button", {name: "Done", exact: true}).click();
+    await expect(work).toBeHidden();
+    await page.reload();
+    await page.getByRole("button", {name: "Completed work", exact: true}).click();
+    const completed = page.getByRole("region", {name: "Completed work", exact: true});
+    await expect(completed.getByText("Dinner on Saturday", {exact: false})).toBeVisible();
+    await completed.getByRole("button", {name: "Reopen", exact: true}).click();
+    await expect(completed.getByRole("button", {name: "Reopen", exact: true})).toBeHidden();
+    await page.getByRole("button", {name: "Active work", exact: true}).click();
+    const reopened = page.getByRole("region", {name: "Active work", exact: true}).locator("li").filter({hasText: "Dinner on Saturday"});
+    await expect(reopened).toBeVisible();
+    await reopened.getByRole("button", {name: "Remove", exact: true}).click();
+    await expect(reopened).toBeHidden();
+  });
+
+  test("uses the server startup choice when this device has no cache", async ({ page }) => {
+    await openInbox(page);
+    await page.evaluate(() => localStorage.removeItem("mail-hub.home-startup"));
+    await page.reload();
+    await expect(page.locator("#message-list [data-message-row]").first()).toBeVisible();
+    await expect(page.getByRole("region", {name: "Home", exact: true})).toBeHidden();
+  });
+
   test("the sections show reasons, saved work, coverage, and the frozen visit boundary", async ({
     page,
   }) => {

@@ -372,6 +372,69 @@ suite("HomeService", () => {
     return answer.sections.find((entry) => entry.id === section)!;
   }
 
+  it("pages Saved without losing its timestamp", async () => {
+    const first = await service.readSection({ section: "saved", limit: 1 });
+    expect(first.nextCursor).not.toBeNull();
+    const second = await service.readSection({ section: "saved", limit: 1, cursor: first.nextCursor });
+    expect(second.items[0]!.message.messageId).toBe(id("flaggedSaved"));
+    expect(second.nextCursor).toBeNull();
+  });
+
+  it("keeps protected action and priority rows across an attention page boundary", async () => {
+    const first = await service.readSection({ section: "needs_attention", limit: 2 });
+    expect(first.items[1]!.message.messageId).toBe(id("highAction"));
+    const next = await service.readSection({ section: "needs_attention", limit: 2, cursor: first.nextCursor });
+    expect(next.items.map(item => item.message.messageId)).toEqual([id("priorityOld"), id("lowAction")]);
+  });
+
+  it("assigns each conversation to its highest section and retains all reasons", async () => {
+    const answer = await service.readHome({ deviceId: "review-grouping-device" });
+    const keys = answer.sections.flatMap(section => section.items.map(item => item.entryKey));
+    expect(new Set(keys).size).toBe(keys.length);
+    const thread = answer.sections.find(section => section.id === "needs_attention")!.items.find(item => item.entryKey === THREAD)!;
+    expect(thread.messageIds).toEqual([id("threadB"), id("threadA")]);
+    expect(thread.work).toHaveLength(1);
+    expect(thread.reasons).toContainEqual({code: "reply_planned", origin: "choice"});
+  });
+
+  it("keeps both work kinds on one anchor and every reminder in a paged conversation", async () => {
+    const reminder = await service.createWork(readyContext, { accountId: accountA,
+      anchorMessageId: id("threadB"), kind: "reminder", dueAt: "2026-09-21T12:00:00Z", timeZone: "UTC" });
+    const other = await service.createWork(readyContext, { accountId: accountA,
+      anchorMessageId: id("threadA"), kind: "reminder", dueAt: "2026-09-22T12:00:00Z", timeZone: "UTC" });
+    try {
+      const attention = await service.readSection({section: "needs_attention"});
+      expect(attention.items.find(item => item.entryKey === THREAD)!.work).toHaveLength(3);
+      await pool.query("update home_work set due_at = '2020-01-01' where id = any($1::uuid[])", [[reminder.id, other.id]]);
+      const first = await service.readSection({section: "due_now", limit: 1});
+      expect(first.items[0]!.entryKey).toBe(THREAD);
+      expect(first.items[0]!.work).toHaveLength(3);
+      const second = await service.readSection({section: "due_now", limit: 1, cursor: first.nextCursor});
+      expect(second.items.map(item => item.entryKey)).not.toContain(THREAD);
+      expect(second.nextCursor).toBeNull();
+      const all = await service.readHome({deviceId: "review-work-device", limit: 1});
+      expect(all.sections.filter(section => section.items.some(item => item.entryKey === THREAD))).toHaveLength(1);
+    } finally {
+      await service.cancelWork(readyContext, reminder.id, {revision: 1});
+      await service.cancelWork(readyContext, other.id, {revision: 1});
+    }
+  });
+
+  it("pages all active and completed work without omissions", async () => {
+    const expected = await service.listWork();
+    const collected = [];
+    let cursor: string | undefined;
+    do {
+      const page = await service.listWorkPage({limit: 1, ...(cursor === undefined ? {} : {cursor})});
+      collected.push(...page.work.map(work => work.id));
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor !== undefined);
+    expect(collected).toEqual(expected.map(work => work.id));
+    expect(expected.some(work => work.id === reminderFutureId)).toBe(true);
+    const bad = await rejection(service.listWorkPage({cursor: "not-a-cursor"}));
+    expect(bad.code).toBe("invalid_request");
+  });
+
   it("assembles every section with accurate totals", async () => {
     const answer = await service.readHome({ deviceId: DEVICE });
     expect(answer.sections.map((section) => section.id)).toEqual([
@@ -384,7 +447,7 @@ suite("HomeService", () => {
     const byId = new Map(answer.sections.map((section) => [section.id, section]));
     expect(byId.get("due_now")!.total).toBe(1);
     expect(byId.get("needs_attention")!.total).toBe(7);
-    expect(byId.get("reply_later")!.total).toBe(2);
+    expect(byId.get("reply_later")!.total).toBe(1);
     expect(byId.get("since_visit")!.total).toBe(0);
     expect(byId.get("saved")!.total).toBe(2);
     expect(answer.generatedAt).toBe(NOW.toISOString());
@@ -459,7 +522,7 @@ suite("HomeService", () => {
     expect(byId.get(id("manualAction"))!.reasons).toEqual([
       { code: "may_need_action", origin: "choice" },
     ]);
-    expect(byId.get(id("threadB"))!.reasons).toEqual([{ code: "may_need_reply", origin: "suggestion" }]);
+    expect(byId.get(id("threadB"))!.reasons).toEqual([{ code: "may_need_reply", origin: "suggestion" }, { code: "reply_planned", origin: "choice" }]);
   });
 
   it("hides dismissed suggestions and messages outside the inbox", async () => {
@@ -482,7 +545,6 @@ suite("HomeService", () => {
     const section = await readSectionOnce("reply_later");
     expect(section.items.map((item) => item.message.messageId)).toEqual([
       id("replyLaterAnchor"),
-      id("threadB"),
     ]);
     expect(section.items[0]!.reasons).toEqual([{ code: "reply_planned", origin: "choice" }]);
   });
@@ -943,4 +1005,23 @@ suite("HomeService", () => {
     };
     return table[key]!;
   }
+  it("preserves arrival pagination and counts across refreshes of a frozen visit", async () => {
+    const deviceId = "review-arrivals-device";
+    await service.readHome({deviceId});
+    for (let n = 0; n < 3; n++) {
+      await seed(`review-arrival-${n}`, {account: accountA, folder: inboxA,
+        sentAt: "2026-09-21T12:00:00Z", ingestedAt: `2026-09-21T12:00:0${n}Z`});
+    }
+    const visit = await service.readHome({deviceId, limit: 1});
+    const first = visit.sections.find(section => section.id === "since_visit")!;
+    expect(first.total).toBe(3);
+    const second = await service.readSection({section: "since_visit", cursor: first.nextCursor, limit: 1});
+    expect(second.items[0]!.message.messageId).toBe(id("review-arrival-1"));
+    const refresh = await service.readSection({section: "since_visit", deviceId, visitBoundary: visit.visitBoundary, limit: 1});
+    expect(refresh.total).toBe(3);
+    expect(refresh.nextCursor).toBe(first.nextCursor);
+    const nextVisit = await service.readHome({deviceId});
+    expect(nextVisit.sections.find(section => section.id === "since_visit")!.total).toBe(0);
+  });
+
 });

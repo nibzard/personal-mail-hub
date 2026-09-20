@@ -1157,6 +1157,7 @@ export interface HomeWorkRecordView extends HomeWorkSummary {
   anchorMessageId: string;
   /** The anchor message when its row still exists; `null` otherwise. */
   anchor: HomeMessageSummary | null;
+  occurrences: OccurrenceRefWire[];
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
@@ -1165,6 +1166,7 @@ export interface HomeWorkRecordView extends HomeWorkSummary {
 /** Response of `GET /home/work`. */
 export interface HomeWorkListResponse {
   work: HomeWorkRecordView[];
+  nextCursor: string | null;
 }
 
 /** The body of `POST /home/work`. */

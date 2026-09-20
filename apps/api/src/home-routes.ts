@@ -34,7 +34,7 @@ export type HomeServiceForRoutes = Pick<
   HomeService,
   | "readHome"
   | "readSection"
-  | "listWork"
+  | "listWorkPage"
   | "createWork"
   | "rescheduleWork"
   | "completeWork"
@@ -147,6 +147,7 @@ export async function registerHomeRoutes(
             type: "object",
             properties: {
               deviceId: deviceIdQuery,
+              visitBoundary: { anyOf: [{ type: "string", const: "none" }, { type: "string", format: "date-time", maxLength: 40 }] },
               cursor: { type: "string", minLength: 1, maxLength: 4096 },
               limit: limitQuery,
             },
@@ -156,10 +157,11 @@ export async function registerHomeRoutes(
         preHandler: [requireSession],
       },
       async (request) => {
-        const query = request.query as { deviceId?: string; cursor?: string };
+        const query = request.query as { deviceId?: string; cursor?: string; visitBoundary?: string };
         const section = await service.readSection({
           section: (request.params as { id: HomeSectionIdWire }).id,
           cursor: query.cursor ?? null,
+          ...(query.visitBoundary === undefined ? {} : { visitBoundary: query.visitBoundary === "none" ? null : query.visitBoundary }),
           ...(query.deviceId === undefined ? {} : { deviceId: query.deviceId }),
           ...pageLimitOf(request),
         });
@@ -175,6 +177,8 @@ export async function registerHomeRoutes(
             type: "object",
             properties: {
               status: { type: "string", enum: ["open", "done"] },
+              cursor: { type: "string", minLength: 1, maxLength: 4096 },
+              limit: limitQuery,
               kind: { type: "string", enum: ["reply_later", "reminder"] },
             },
             additionalProperties: false,
@@ -183,13 +187,13 @@ export async function registerHomeRoutes(
         preHandler: [requireSession],
       },
       async (request) => {
-        const query = request.query as { status?: "open" | "done"; kind?: "reply_later" | "reminder" };
-        return {
-          work: await service.listWork({
+        const query = request.query as { status?: "open" | "done"; kind?: "reply_later" | "reminder"; cursor?: string };
+        return service.listWorkPage({
+            ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
+            ...pageLimitOf(request),
             ...(query.status === undefined ? {} : { status: query.status }),
             ...(query.kind === undefined ? {} : { kind: query.kind }),
-          }),
-        };
+          });
       },
     );
 

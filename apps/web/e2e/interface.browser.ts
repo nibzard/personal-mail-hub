@@ -114,6 +114,19 @@ test.describe("axe", () => {
     await expectNoAxeViolations(page);
   });
 
+  test("the active and completed work lists pass accessibility checks", async ({ page }) => {
+    await openHome(page);
+    await page.getByRole("button", {name: "Active work", exact: true}).click();
+    await expect(page.getByRole("region", {name: "Active work", exact: true}).getByRole("button", {name: "Done", exact: true})).toBeVisible();
+    let violations = await axeViolations(page);
+    expect(violations, describeViolations(violations)).toEqual([]);
+    await page.getByRole("region", {name: "Active work", exact: true}).getByRole("button", {name: "Done", exact: true}).click();
+    await page.getByRole("button", {name: "Completed work", exact: true}).click();
+    await expect(page.getByRole("region", {name: "Completed work", exact: true}).getByRole("button", {name: "Reopen", exact: true})).toBeVisible();
+    violations = await axeViolations(page);
+    expect(violations, describeViolations(violations)).toEqual([]);
+  });
+
   test("the Home overview and its reminder chooser pass", async ({ page }) => {
     await openHome(page);
     await expectNoAxeViolations(page);

@@ -12,6 +12,7 @@ row to make coverage look better.
 | --- | --- | --- | --- | --- | --- |
 | 2026-09-20 | Development container | Linux 6.8 | Playwright Chromium, build `chromium-1243` (`@playwright/test` 1.63.0) | `flows` and `interface` suites from the release gate, 1280×800, `en-US`, UTC | Pass |
 | 2026-09-20 | Development container | Linux 6.8 | Playwright Chromium, build `chromium-1243` (`@playwright/test` 1.63.0) | The same two suites with the Home overview (SPEC F13): nine Home workflow checks and the Home axe, semantics, touch-target, and snapshot checks, 1280×800 plus 375×667 and 320×568 emulation, `en-US`, UTC | Pass |
+| 2026-09-20 | Development container | Linux 6.8 | Playwright Chromium (`@playwright/test` 1.63.0) | Home review fixes: 12 workflows, including a message outside the Inbox page, startup without a cache, future reminder management, and completed work reopening; active and completed work accessibility | Pass |
 
 What the first row covers: keyboard triage, the palette chord and its latency
 budget, the offline fallback against the fixture server, axe contrast and
