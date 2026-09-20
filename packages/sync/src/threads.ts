@@ -250,6 +250,15 @@ export class ThreadService {
    */
   private async reconcileRow(accountId: string, messageId: string): Promise<RowOutcome | null> {
     return this.db.transaction(async (tx) => {
+      // Two passes that resolve the two directions of the same pair each read
+      // one row with no parent yet — the other pass's link is uncommitted —
+      // so both commit and the pair becomes a parent cycle nothing repairs.
+      // Every decision for one account queues on this lock, so a later pass
+      // reads the earlier pass's committed links. The lock is taken before
+      // any row lock, so passes cannot deadlock on the pair of locks.
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtext(${`threads.${accountId}`})::bigint)`,
+      );
       const rows = await tx
         .select()
         .from(messages)

@@ -78,6 +78,8 @@ export interface AccountCycleSummary {
   folderErrors: number;
   /** Body jobs that failed, for example a stale job after a move. */
   bodyErrors: number;
+  /** Thread passes that failed and were contained. */
+  threadErrors: number;
 }
 
 export interface CycleControl {
@@ -134,6 +136,7 @@ export class SyncRunner {
       threadLinksChanged: 0,
       folderErrors: 0,
       bodyErrors: 0,
+      threadErrors: 0,
     };
 
     const accountFolders = await this.db
@@ -186,9 +189,20 @@ export class SyncRunner {
     // and byte-identical copies merge here, so this cycle's merges reconcile
     // in this cycle (SPEC F2).
     if (!aborted(control)) {
-      const reconciled = await this.threads.reconcileAccount(accountId, this.threadsPerCycle);
-      summary.threadsResolved = reconciled.examined;
-      summary.threadLinksChanged = reconciled.linksChanged;
+      try {
+        const reconciled = await this.threads.reconcileAccount(accountId, this.threadsPerCycle);
+        summary.threadsResolved = reconciled.examined;
+        summary.threadLinksChanged = reconciled.linksChanged;
+      } catch (cause) {
+        // A failed thread pass must not cost the status event: the account
+        // still completed its folders, bodies, and polls, and the next cycle
+        // retries the links. The count cannot say why, so the diagnostic
+        // goes to the logger.
+        summary.threadErrors += 1;
+        this.logger?.warn(
+          `Thread pass for account ${accountId} failed and was contained: ${failureText(cause)}`,
+        );
+      }
     }
 
     await this.recordStatus(accountId, summary);
@@ -348,6 +362,7 @@ export class SyncRunner {
       threadLinksChanged: summary.threadLinksChanged,
       folderErrors: summary.folderErrors,
       bodyErrors: summary.bodyErrors,
+      threadErrors: summary.threadErrors,
       // Header sync progress: how many folders still owe historical windows.
       backfillPendingFolders: pending[0]?.count ?? 0,
       // Body sync progress, independent of headers.

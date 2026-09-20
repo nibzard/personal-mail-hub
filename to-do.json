@@ -2112,7 +2112,7 @@
       "id": "T071",
       "title": "Contain thread-pass failures and prevent parent cycles",
       "priority": 2,
-      "status": "todo",
+      "status": "done",
       "details": "The thread pass is the one uncontained step of runAccountCycle: a bare await of reconcileAccount (packages/sync/src/runner.ts:160-178) means a throw skips recordStatus, so the per-account sync.status event never lands and the account shows no cycle at all. A concurrent merge can trigger the throw through the self-foreign-key check in decideLink (packages/sync/src/threads.ts:344) or a deadlock abort, and nothing catches either. Contain the pass the way folders and bodies are contained, and record the status event regardless. Also reconcileRow locks only its own row (threads.ts:223-228) while decideLink reads the parent rows unlocked, so two concurrent passes can commit A.parent_message_id = B and B.parent_message_id = A; the schema forbids only self-parents, both rows clear thread_dirty, and membership stays permanently wrong with nothing that repairs it. Serialize the decision, for example by locking both rows in a stable order or rechecking the pair after commit.",
       "depends_on": [
         "T059"
@@ -2121,12 +2121,13 @@
         "sync",
         "threading"
       ],
-      "updated_at": "2026-09-20T02:52:12Z",
+      "updated_at": "2026-09-20T11:12:00Z",
       "files": [
         "packages/sync/src/runner.ts",
         "packages/sync/src/threads.ts",
         "packages/sync/test/threads.test.ts"
-      ]
+      ],
+      "notes": "Fixed 2026-09-20. Containment: runAccountCycle now wraps the thread pass like folders and bodies \u2014 a throw increments threadErrors, logs one warn through the runner logger, and the sync.status event still lands; the event payload carries threadErrors and pendingThreads. Serialization: reconcileRow takes pg_advisory_xact_lock(hashtext('threads.<account>')) as the first statement of its transaction, before any row lock, so every link decision for one account queues behind the previous commit and a later pass reads committed links; the advisory-first order keeps two passes from deadlocking on advisory-plus-row locks. Fail-pre-fix proofs: with runner.ts stashed, the containment test fails because the SyncError escapes runAccountCycle (no status event); with threads.ts stashed, the race test fails with a raw 40P01 deadlock \u2014 the two passes block each other on the parent-message foreign-key KEY SHARE while each holds the other row, so the error escapes reconcileAccount uncontained; the same missing serialization is what lets both directions commit and form the A<->B parent cycle the schema cannot see (only self-parents are forbidden). Race test makes the interleave deterministic: A resolves alone first (own thread, no parent), B imports and is the only dirty row, a trigger stalls exactly the write that sets B.parent=A for 2 s, A is re-dirtied mid-flight, and a second pass (A first on newer sentAt) decides against B's uncommitted link. Post-fix the second pass waits on the advisory lock, then flags A ambiguous on the committed B->A link; exactly one direction links and both rows settle. Note: same-order batches are already safe on the row locks; the defect needs divergent batch order between concurrent passes, which sentAt ties make realistic (the fixture Date header ties, so batch order is physical order). Full sync suite 72/72, tsc clean in sync and worker."
     },
     {
       "id": "T072",

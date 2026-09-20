@@ -24,6 +24,7 @@ import {
   BodyFetchService,
   ReconciliationService,
   SteadyStateService,
+  SyncError,
   SyncRunner,
   ThreadService,
   type BackfillBatchOutcome,
@@ -533,5 +534,124 @@ suite("ThreadService", () => {
     expect(remaining.rows.some((row: { id: string }) => row.id === orphan!.id)).toBe(false);
     // The prune itself is on the audit trail, with no rows examined.
     expect(await eventCount(accountId, "sync.thread_reconciliation")).toBe(2);
+  });
+
+  it("contains a failing thread pass and still records the cycle status", async () => {
+    const { accountId } = await setupAccount(["INBOX"]);
+    const session = new FakeMailboxSession();
+    session.load("INBOX", [mail({ uid: 1, id: "contain-one" })]);
+
+    const { backfill, bodies, steady, reconcile } = services();
+    class ExplodingThreads extends ThreadService {
+      override async reconcileAccount(): Promise<never> {
+        throw new SyncError("mailbox_error", "The thread pass hit a broken chain.");
+      }
+    }
+
+    const warns: string[] = [];
+    const runner = new SyncRunner(
+      createDatabase(pool),
+      backfill,
+      bodies,
+      new ExplodingThreads(createDatabase(pool)),
+      steady,
+      reconcile,
+      { logger: { warn: (message) => warns.push(message) } },
+    );
+
+    // The throw must cost neither the answer nor the status event.
+    const summary = await runner.runAccountCycle(session, accountId);
+    expect(summary).toMatchObject({
+      imported: 1,
+      threadErrors: 1,
+      folderErrors: 0,
+      bodyErrors: 0,
+      threadsResolved: 0,
+    });
+
+    const status = await pool.query(
+      "select payload from events where entity_id = $1 and type = 'sync.status' order by at",
+      [accountId],
+    );
+    expect(status.rows.at(-1).payload).toMatchObject({ threadErrors: 1, pendingThreads: 1 });
+    expect(warns.some((message) => message.includes("failed and was contained"))).toBe(true);
+  });
+
+  it("orders concurrent passes so a mutual reply pair cannot become a parent cycle", async () => {
+    const { accountId, folderIds } = await setupAccount(["INBOX"]);
+    const folder = folderIds.get("INBOX")!;
+    const session = new FakeMailboxSession();
+
+    // First only A exists: it resolves pending, with no parent, and stands in
+    // a thread of its own.
+    session.load("INBOX", [mail({ uid: 1, id: "mutual-a", inReplyTo: ["mutual-b"] })]);
+    const first = services();
+    await drain(first.backfill, session, accountId, folder);
+    await drainBodies(first.bodies, session, accountId);
+    await first.threads.reconcileAccount(accountId);
+
+    // B arrives: it answers A and also names A as its parent.
+    session.load("INBOX", [
+      mail({ uid: 1, id: "mutual-a", inReplyTo: ["mutual-b"] }),
+      mail({ uid: 2, id: "mutual-b", inReplyTo: ["mutual-a"] }),
+    ]);
+    session.uidNext = 3;
+    const second = services();
+    await second.steady.pollFolder(session, accountId, folder.id);
+    await drainBodies(second.bodies, session, accountId);
+
+    const rows = await accountMessages(accountId);
+    const a = holding(rows, "mutual-a");
+    const b = holding(rows, "mutual-b");
+    expect(a).toMatchObject({ parentMessageId: null });
+    expect(a.threadId).toEqual(expect.any(String));
+
+    // Importing B marks A dirty again; settle A so the first pass below owns
+    // only B. The mid-race dirtying below brings A back.
+    await pool.query("update messages set thread_dirty = false where id = $1", [a.id]);
+    expect(b).toMatchObject({ parentMessageId: null, threadDirty: true });
+
+    // Any batch that holds both rows must order A first.
+    await pool.query("update messages set sent_at = sent_at + interval '1 hour' where id = $1", [a.id]);
+
+    // Stall exactly the write that would link B onto A, so a second pass
+    // decides A against B while the first pass holds its link uncommitted.
+    await pool.query(`
+      create function mail_hub_test_stall() returns trigger as $fn$
+        begin
+          perform pg_sleep(2);
+          return new;
+        end;
+      $fn$ language plpgsql
+    `);
+    await pool.query(
+      `create trigger mail_hub_test_stall before update on messages
+       for each row
+       when (old.parent_message_id is distinct from new.parent_message_id
+             and new.parent_message_id = '${a.id}'::uuid)
+       execute function mail_hub_test_stall()`,
+    );
+
+    try {
+      const stalled = second.threads.reconcileAccount(accountId);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      // A concurrent ingestion rewrote A's references, so A owes a decision
+      // while the first pass still holds B's row.
+      await pool.query("update messages set thread_dirty = true where id = $1", [a.id]);
+      const racing = services().threads.reconcileAccount(accountId);
+      await Promise.all([stalled, racing]);
+    } finally {
+      await pool.query("drop trigger if exists mail_hub_test_stall on messages");
+      await pool.query("drop function if exists mail_hub_test_stall()");
+    }
+
+    const settled = await accountMessages(accountId);
+    const aAfter = holding(settled, "mutual-a");
+    const bAfter = holding(settled, "mutual-b");
+    // Exactly one direction holds a link; the pair never points at itself.
+    const parents = [aAfter.parentMessageId, bAfter.parentMessageId].filter((id) => id !== null);
+    expect(parents).toHaveLength(1);
+    expect(bAfter.parentMessageId).toBe(aAfter.id);
+    expect([aAfter.threadDirty, bAfter.threadDirty]).toEqual([false, false]);
   });
 });
