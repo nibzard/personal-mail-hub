@@ -102,8 +102,10 @@ services:
     restart: unless-stopped
     environment:
       MAIL_HUB_API_HOST: api:3000
-    ports:
-      - "${WEB_PORT:-8080}:8080"
+    # Coolify parses `expose` (not env-var `ports` mappings) into the
+    # Traefik loadbalancer port label; routing stays internal to the proxy.
+    expose:
+      - "8080"
     depends_on:
       - api
 
