@@ -290,27 +290,49 @@ export function useCleanView(messageId: string | null, enabled: boolean): Resour
   );
 }
 
+/**
+ * The folder index, plus the accounts whose reads rejected while the others
+ * answered. A partial index degrades per account: the accounts that answered
+ * keep their folders, and `failedAccounts` names the rest.
+ */
+export type FolderIndex = Resource<Map<string, FolderSummary[]>> & {
+  /** Account ids whose folder read rejected while other accounts answered. */
+  failedAccounts: string[];
+};
+
 /** Folder lists for every account, keyed by account id. */
-export function useFolderIndex(accounts: AccountSummary[]) {
+export function useFolderIndex(accounts: AccountSummary[]): FolderIndex {
   const key = accounts.map((account) => account.id).join("|");
-  const resource = useResource<Map<string, FolderSummary[]>>(async (signal) => {
-    if (accounts.length === 0) {
-      return new Map<string, FolderSummary[]>();
-    }
-    const responses = await Promise.all(
-      accounts.map((account) =>
-        apiGet<AccountFoldersResponse>(`/accounts/${account.id}/folders`, signal),
-      ),
-    );
-    const index = new Map<string, FolderSummary[]>();
-    accounts.forEach((account, position) => {
-      const response = responses[position];
-      if (response !== undefined) {
-        index.set(account.id, response.folders);
+  const resource = useResource<{ index: Map<string, FolderSummary[]>; failedAccounts: string[] }>(
+    async (signal) => {
+      if (accounts.length === 0) {
+        return { index: new Map<string, FolderSummary[]>(), failedAccounts: [] };
       }
-    });
-    return index;
-  }, [key]);
+      // Each account settles on its own, so one transient failure drops only
+      // that account's folders instead of failing the whole index. Only a
+      // total failure rejects, so the existing error path still renders.
+      const responses = await Promise.allSettled(
+        accounts.map((account) =>
+          apiGet<AccountFoldersResponse>(`/accounts/${account.id}/folders`, signal),
+        ),
+      );
+      const index = new Map<string, FolderSummary[]>();
+      const failedAccounts: string[] = [];
+      responses.forEach((outcome, position) => {
+        if (outcome.status === "fulfilled") {
+          index.set(accounts[position]!.id, outcome.value.folders);
+        } else {
+          failedAccounts.push(accounts[position]!.id);
+        }
+      });
+      if (index.size === 0) {
+        const first = responses.find((outcome) => outcome.status === "rejected");
+        throw first?.reason ?? new Error("No account's folders could be read.");
+      }
+      return { index, failedAccounts };
+    },
+    [key],
+  );
 
   // A cold offline start serves the cached copy the same way the session
   // does: the unified inbox needs its folder roles before the list's own
@@ -322,7 +344,7 @@ export function useFolderIndex(accounts: AccountSummary[]) {
 
   useEffect(() => {
     if (resource.phase === "ready" && resource.data !== null) {
-      cacheFolderIndex(resource.data);
+      cacheFolderIndex(resource.data.index);
     }
   }, [resource.phase, resource.data]);
 
@@ -348,13 +370,31 @@ export function useFolderIndex(accounts: AccountSummary[]) {
 
   if (offline) {
     if (cachedIndex === undefined) {
-      return { phase: "loading", data: null, error: null, reload: resource.reload };
+      return {
+        phase: "loading",
+        data: null,
+        error: null,
+        reload: resource.reload,
+        failedAccounts: [],
+      };
     }
     if (cachedIndex !== null) {
-      return { phase: "ready", data: cachedIndex, error: null, reload: resource.reload };
+      return {
+        phase: "ready",
+        data: cachedIndex,
+        error: null,
+        reload: resource.reload,
+        failedAccounts: [],
+      };
     }
   }
-  return resource;
+  return {
+    phase: resource.phase,
+    data: resource.data === null ? null : resource.data.index,
+    error: resource.error,
+    reload: resource.reload,
+    failedAccounts: resource.data === null ? [] : resource.data.failedAccounts,
+  };
 }
 
 /** Caches the folder index as entries, the offline store's plain shape. */

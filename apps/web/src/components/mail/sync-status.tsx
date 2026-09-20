@@ -250,11 +250,17 @@ function FailedItemRow({
   onDiscard: (localId: string) => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
 
+  // A refused step stays owned by its row: the rejection surfaces here, not
+  // as an unhandled one, and the busy flag settles either way.
   const run = async (action: () => Promise<void>) => {
     setBusy(true);
+    setNote(null);
     try {
       await action();
+    } catch (error) {
+      setNote(actionFailureText(error, "The change could not be applied. Try again."));
     } finally {
       setBusy(false);
     }
@@ -264,6 +270,11 @@ function FailedItemRow({
     <li className="rounded-md border p-3">
       <p className="font-medium">{reviewKindLabel(item.kind)}</p>
       <p className="text-muted-foreground">{item.failure}</p>
+      {note !== null && (
+        <p role="status" className="mt-2 text-sm text-destructive">
+          {note}
+        </p>
+      )}
       <div className="mt-2 flex flex-wrap gap-2">
         <Button
           variant="outline"
@@ -296,24 +307,33 @@ function ReviewItemRow({
   onResolve: (localId: string, choice: ReviewChoice) => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
   const [warningAcknowledged, setWarningAcknowledged] = useState(false);
   const [comparison, setComparison] = useState<{
     server: DraftView | null;
     localMarkdown: string | null;
   } | null>(null);
 
-  const run = async (choice: ReviewChoice) => {
+  // Every step a row can take runs through one guard: a rejection — a
+  // choice the queue no longer holds, a comparison the server refused —
+  // shows its words in the row instead of escaping unhandled, and the busy
+  // flag settles either way.
+  const run = async (action: () => Promise<void>) => {
     setBusy(true);
+    setNote(null);
     try {
-      await onResolve(item.localId, choice);
+      await action();
+    } catch (error) {
+      setNote(actionFailureText(error, "The step could not be applied. Try again."));
     } finally {
       setBusy(false);
     }
   };
 
-  const compare = async () => {
-    setBusy(true);
-    try {
+  const resolve = (choice: ReviewChoice) => run(() => onResolve(item.localId, choice));
+
+  const compare = () =>
+    run(async () => {
       const [server, local] = await Promise.all([
         item.draftId === null ? Promise.resolve(null) : fetchServerDraft(item.draftId),
         item.draftId === null
@@ -321,10 +341,14 @@ function ReviewItemRow({
           : (offlineSync()?.localDraft(item.draftId) ?? Promise.resolve(null)),
       ]);
       setComparison({ server, localMarkdown: local?.markdown ?? null });
-    } finally {
-      setBusy(false);
-    }
-  };
+    });
+
+  /** Adopts the server copy first; only then resolves the item as discarded. */
+  const keepServer = (server: DraftView) =>
+    run(async () => {
+      await keepServerCopy(item, server);
+      await onResolve(item.localId, { choice: "discard" });
+    });
 
   return (
     <li className="rounded-md border p-3">
@@ -344,14 +368,14 @@ function ReviewItemRow({
             I understand this may send a duplicate.
           </label>
           <div className="flex flex-wrap gap-2">
-            <Button variant="outline" size="sm" disabled={busy} onClick={() => run({ choice: "discard" })}>
+            <Button variant="outline" size="sm" disabled={busy} onClick={() => void resolve({ choice: "discard" })}>
               Don&apos;t send
             </Button>
             <Button
               size="sm"
               disabled={busy || !warningAcknowledged}
               onClick={() =>
-                run({ choice: "rebase", duplicateWarningAcknowledged: true })
+                void resolve({ choice: "rebase", duplicateWarningAcknowledged: true })
               }
             >
               Send again with a new key
@@ -385,11 +409,7 @@ function ReviewItemRow({
                   variant="outline"
                   size="sm"
                   disabled={busy || comparison.server === null}
-                  onClick={() =>
-                    void keepServerCopy(item, comparison.server!).then(() =>
-                      run({ choice: "discard" }),
-                    )
-                  }
+                  onClick={() => void keepServer(comparison.server!)}
                 >
                   Keep the server copy
                 </Button>
@@ -397,7 +417,7 @@ function ReviewItemRow({
                   size="sm"
                   disabled={busy || comparison.server === null}
                   onClick={() =>
-                    run({
+                    void resolve({
                       choice: "rebase",
                       comparedWithServer: true,
                       serverRevision: comparison.server!.revision,
@@ -412,17 +432,31 @@ function ReviewItemRow({
         </div>
       ) : (
         <div className="mt-2 flex flex-wrap gap-2">
-          <Button variant="outline" size="sm" disabled={busy} onClick={() => run({ choice: "discard" })}>
+          <Button variant="outline" size="sm" disabled={busy} onClick={() => void resolve({ choice: "discard" })}>
             Discard
           </Button>
-          <Button size="sm" disabled={busy} onClick={() => run({ choice: "rebase" })}>
+          <Button size="sm" disabled={busy} onClick={() => void resolve({ choice: "rebase" })}>
             Keep it queued
           </Button>
         </div>
       )}
+      {note !== null && (
+        <p role="status" className="mt-2 text-sm text-destructive">
+          {note}
+        </p>
+      )}
       <Separator className="mt-3" />
     </li>
   );
+}
+
+/**
+ * The words one failed row step shows: the error's own message when it
+ * carries one — an `ApiError` refusal, a `ReviewChoiceError` for a queued
+ * action that no longer exists — and the fallback otherwise.
+ */
+function actionFailureText(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message.length > 0 ? error.message : fallback;
 }
 
 /** Adopt the server copy locally after a discard (SPEC F9: explicit choice). */

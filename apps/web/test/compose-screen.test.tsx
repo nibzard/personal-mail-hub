@@ -20,14 +20,20 @@ const harness = vi.hoisted(() => ({
     lockedBySend: string | null;
     recipients: { to: Array<{ address: string }> };
     updatedAt: string;
-  }>,
+  }> | null,
+  phase: "ready" as "loading" | "ready" | "error",
   reload: vi.fn(),
   createNew: null as ((draft: { id: string }) => void) | null,
   createReply: null as ((error: unknown) => void) | null,
 }));
 
 vi.mock("../src/mail/compose-data.ts", () => ({
-  useDrafts: () => ({ phase: "ready", data: harness.drafts, error: null, reload: harness.reload }),
+  useDrafts: () => ({
+    phase: harness.phase,
+    data: harness.drafts,
+    error: null,
+    reload: harness.reload,
+  }),
   createNewDraft: () =>
     new Promise((resolve) => {
       harness.createNew = (draft) => resolve(draft);
@@ -133,6 +139,7 @@ afterEach(() => {
     made.cleanup();
   }
   harness.drafts = [];
+  harness.phase = "ready";
   harness.createNew = null;
   harness.createReply = null;
   harness.reload.mockClear();
@@ -212,5 +219,37 @@ describe("the compose screen", () => {
     await act(async () => {});
     expect(made.text()).toContain("d-9");
     expect(made.text()).not.toContain("Which account holds the message");
+  });
+
+  it("keeps the drafts list on screen while a reload runs", () => {
+    harness.drafts = [
+      {
+        id: "d-existing",
+        subject: "Existing draft",
+        lockedBySend: null,
+        recipients: { to: [{ address: "someone@example.com" }] },
+        updatedAt: "2026-09-18T10:00:00Z",
+      },
+    ];
+    // A reload in flight keeps the last answer (SPEC F12): the list stays
+    // mounted and the spinner overlays it instead of replacing it.
+    harness.phase = "loading";
+    const made = freshScreen();
+    made.render(null);
+
+    expect(document.querySelector('[data-testid="draft-list"]')).not.toBeNull();
+    expect(made.text()).toContain("Existing draft");
+    expect(made.text()).not.toContain("Loading drafts.");
+    expect(document.querySelector('[data-testid="drafts-refreshing"]')).not.toBeNull();
+  });
+
+  it("shows the loading line only before the first answer arrives", () => {
+    harness.drafts = null;
+    harness.phase = "loading";
+    const made = freshScreen();
+    made.render(null);
+
+    expect(document.querySelector('[data-testid="draft-list"]')).toBeNull();
+    expect(made.text()).toContain("Loading drafts.");
   });
 });

@@ -233,7 +233,9 @@ export function ComposeScreen({
     [startIntent],
   );
 
-  const draftsList = drafts.phase === "ready" ? (drafts.data ?? []) : null;
+  // The last answer stays through a refresh: a reload keeps the list on
+  // screen (SPEC F12), so the data alone decides what renders.
+  const draftsList = drafts.data ?? null;
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -301,7 +303,16 @@ export function ComposeScreen({
               </div>
             )}
             {draftsList !== null && (
-              <ul className="flex flex-col gap-1" data-testid="draft-list">
+              <ul className="relative flex flex-col gap-1" data-testid="draft-list">
+                {/* A refresh keeps the rows on screen; its spinner overlays
+                    them instead of replacing them (SPEC F12). */}
+                {drafts.phase === "loading" && (
+                  <Spinner
+                    aria-hidden="true"
+                    data-testid="drafts-refreshing"
+                    className="absolute end-1 top-1 z-10 size-4 text-muted-foreground"
+                  />
+                )}
                 {draftsList.length === 0 && (
                   <li className="rounded-md border border-dashed p-2 text-sm text-muted-foreground">
                     No drafts.

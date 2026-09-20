@@ -1,11 +1,14 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toApiError, type ApiError } from "@/lib/api";
 
 /*
  * One async read with loading, ready, and error phases (SPEC F12: keep
  * existing content visible during refresh, and keep failures inspectable).
  * `deps` name the load's inputs, like an effect dependency list; `reload`
- * re-runs the loader for the same inputs.
+ * re-runs the loader for the same inputs. A rerun over the same inputs keeps
+ * the last ready answer in `data` while it loads, so a refresh never blanks
+ * the content it refreshes; new inputs start from `data: null`, so one
+ * input's answer never shows under another's load.
  */
 
 export interface Resource<T> {
@@ -25,12 +28,25 @@ export function useResource<T>(
     error: ApiError | null;
   }>({ phase: "loading", data: null, error: null });
   const [nonce, setNonce] = useState(0);
+  // The inputs the last run loaded for. A rerun over the same inputs — only
+  // a `reload` — is a refresh, the one case that keeps the last answer
+  // visible while the read runs (SPEC F12).
+  const lastDeps = useRef<ReadonlyArray<unknown> | null>(null);
 
   useEffect(
     () => {
       const controller = new AbortController();
       let live = true;
-      setEntry({ phase: "loading", data: null, error: null });
+      const refresh =
+        lastDeps.current !== null &&
+        lastDeps.current.length === deps.length &&
+        lastDeps.current.every((value, index) => Object.is(value, deps[index]));
+      lastDeps.current = deps;
+      setEntry((current) =>
+        refresh && current.data !== null
+          ? { phase: "loading", data: current.data, error: null }
+          : { phase: "loading", data: null, error: null },
+      );
       load(controller.signal).then(
         (data) => {
           if (live) {
