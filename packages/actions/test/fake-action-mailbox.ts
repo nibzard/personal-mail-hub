@@ -30,9 +30,13 @@ export interface FakeMailboxMessage {
 
 /** What one write does. Unscripted writes apply and answer like a server. */
 export type ScriptedWrite =
-  /** `vanishAfter` applies the write, then removes the target: the write
-   * landed but the readback cannot find it. */
-  | { kind: "apply"; vanishAfter?: boolean }
+  /**
+   * `vanishAfter` applies the write, then removes the target: the write
+   * landed but the readback cannot find it. `dropReadbackAfter` applies the
+   * write, then breaks the connection: the next flags fetch throws, so the
+   * readback of the accepted write is lost.
+   */
+  | { kind: "apply"; vanishAfter?: boolean; dropReadbackAfter?: boolean }
   /** The server accepts the command but the value does not end up holding. */
   | { kind: "accept_without_effect" }
   | { kind: "reject" }
@@ -57,6 +61,8 @@ export class FakeActionMailbox implements WritableActionMailbox {
 
   private readonly script: ScriptedWrite[] = [];
   private current: string | null = null;
+  /** Set by a scripted write; the next flags fetch throws, once. */
+  private dropReadback = false;
 
   /** Load one folder's messages. */
   load(folder: string, messages: FakeMailboxMessage[], uidValidity = 1): this {
@@ -87,6 +93,10 @@ export class FakeActionMailbox implements WritableActionMailbox {
   }
 
   async fetchFlags(uids: number[]): Promise<ActionMailboxFlags[]> {
+    if (this.dropReadback) {
+      this.dropReadback = false;
+      throw new Error("The connection dropped during the readback.");
+    }
     const current = this.current;
     if (current === null) {
       throw new Error("No mailbox is selected.");
@@ -138,6 +148,9 @@ export class FakeActionMailbox implements WritableActionMailbox {
       if (behavior.vanishAfter === true) {
         const folder = this.current!;
         this.mailboxes.set(folder, this.messagesOf(folder).filter((candidate) => candidate.uid !== request.uid));
+      }
+      if (behavior.dropReadbackAfter === true) {
+        this.dropReadback = true;
       }
     }
     return { result: "accepted" };

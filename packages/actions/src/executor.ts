@@ -41,7 +41,12 @@ export interface PreparedActionItem {
 export type ExecutorOutcome =
   | { outcome: "confirmed"; observed: ActionMailboxFlags; movedTo?: MoveDestination }
   | { outcome: "conflicted"; reason: string; observed: ActionMailboxFlags }
-  | { outcome: "unknown"; reason: string }
+  /**
+   * The write's outcome could not be proved. `observed` carries the last
+   * state a completed read saw, so the receipt shows what held before the
+   * answer was lost (SPEC F2).
+   */
+  | { outcome: "unknown"; reason: string; observed?: ActionMailboxFlags }
   | { outcome: "failed"; code: string; message: string };
 
 /**

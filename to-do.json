@@ -1698,30 +1698,32 @@
         "backup",
         "security"
       ],
-      "updated_at": "2026-09-20T00:16:24Z",
+      "updated_at": "2026-09-20T00:17:13Z",
       "files": [
-        "deploy/backup.sh",
-        "deploy/restore.sh",
-        "deploy/nginx-web.conf.template",
-        "deploy/README.md",
         "apps/web/index.html",
-        "apps/web/test/gateway-csp.test.ts"
+        "apps/web/test/gateway-csp.test.ts",
+        "deploy/README.md",
+        "deploy/backup.sh",
+        "deploy/nginx-web.conf.template",
+        "deploy/restore.sh"
       ]
     },
     {
       "id": "T054",
       "title": "Harden action execution claims and readback classification",
       "priority": 3,
-      "status": "todo",
-      "details": "Two defects in packages/actions. execute takes no per-action claim (src/service.ts:236-245), so a concurrent reconcileIncomplete marks an in-flight item unknown-interrupted and the still-pending guard in commitDisposition (line 455) then drops the real confirmed receipt; a move that succeeded remotely is recorded unknown and the source occurrence is never marked expunged locally. Claim executing items or version the disposition so the live worker receipt wins. And the post-write readback fetch is unguarded inside applyFlags (src/two-way-executor.ts:69), so a connection drop after an accepted conditional STORE propagates as a definitive executor error although the write almost certainly applied; classify a lost readback as unknown with the last observed state, per the F2 lost-response rule.",
+      "status": "done",
+      "details": "Done. A receipt from the claim that ran the remote write now supersedes the unknown interrupted hold a concurrent run recorded: the four executor dispositions in executeFolderGroup pass supersedesHold, and the commitDisposition guard accepts a still-pending item or an item holding outcome reason interrupted (restored_generation and lost-answer holds stay final), so a confirmed move still records its receipt and expunges the source occurrence locally. The post-write readback in applyFlags is guarded: a fetch that throws after an answered write classifies as unknown with the last observed state attached (ExecutorOutcome unknown gained optional observed; the receipt records it, the local observation stays untouched), per the F2 lost-response rule. Both defects carry regression tests that fail on the pre-fix code.",
       "tags": [
         "actions",
         "safety"
       ],
-      "updated_at": "2026-09-19T17:39:46Z",
+      "updated_at": "2026-09-20T00:37:17Z",
       "files": [
+        "packages/actions/src/executor.ts",
         "packages/actions/src/service.ts",
         "packages/actions/src/two-way-executor.ts",
+        "packages/actions/test/fake-action-mailbox.ts",
         "packages/actions/test/service.test.ts",
         "packages/actions/test/two-way-executor.test.ts"
       ]

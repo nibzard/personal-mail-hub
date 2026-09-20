@@ -155,7 +155,27 @@ describe("TwoWayActionExecutor flags", () => {
     expect(outcome).toEqual({
       outcome: "unknown",
       reason: "The target left the folder before the write could be read back.",
+      observed: { uid: 4, unread: true, flagged: false },
     });
+  });
+
+  it("holds a lost readback unknown with the last observed state", async () => {
+    const mailbox = mailboxWithMessage("5");
+    mailbox.writes.condstore = true;
+    // The server accepts the conditional STORE, then the connection drops
+    // before the flag can be read back (SPEC F2, the lost-response rule).
+    mailbox.queue({ kind: "apply", dropReadbackAfter: true });
+    const outcome = await executor.apply(
+      mailbox,
+      prepared({ type: "flags", desire: { flag: "flagged", value: true } }, target({ modseq: "5" })),
+    );
+    expect(outcome).toEqual({
+      outcome: "unknown",
+      reason: "The accepted write could not be read back: The connection dropped during the readback.",
+      observed: { uid: 4, unread: true, flagged: false },
+    });
+    // The write almost certainly applied; the receipt still claims no result.
+    expect(mailbox.mailboxes.get("INBOX")![0]!.flagged).toBe(true);
   });
 
   it("conflicts a rejected write whose target already left", async () => {

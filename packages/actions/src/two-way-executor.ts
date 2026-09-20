@@ -12,10 +12,13 @@ import type { ActionMailboxFlags, WritableActionMailbox } from "./mailbox.ts";
  *   server modification sequence, the write carries `UNCHANGEDSINCE` with that
  *   sequence. Otherwise the write applies only the requested flag, exactly as
  *   a `+FLAGS` or `-FLAGS` would. Either way the executor reads the flag back
- *   before it confirms anything. A conditional write whose readback misses the
- *   desired value conflicts, with the refreshed state attached. A plain write
- *   that raced a concurrent change confirms with the latest observed state;
- *   the specification forbids claiming timestamp-based ordering for it.
+ *   before it confirms anything. A readback that never returns — the UID left,
+ *   or the connection dropped — classifies as unknown with the last observed
+ *   state, because an accepted write almost certainly applied (SPEC F2). A
+ *   conditional write whose readback misses the desired value conflicts, with
+ *   the refreshed state attached. A plain write that raced a concurrent change
+ *   confirms with the latest observed state; the specification forbids
+ *   claiming timestamp-based ordering for it.
  * - Moves: IMAP `MOVE` only, and only when the server advertises it. Without
  *   the capability the item fails as unavailable; this version defines no
  *   `EXPUNGE` fallback. A lost move response stays unknown so reconciliation
@@ -66,14 +69,35 @@ export class TwoWayActionExecutor implements ActionExecutor<WritableActionMailbo
       return { outcome: "unknown", reason: write.reason };
     }
 
-    const readback = await this.readback(mailbox, item.target.uid);
+    let readback: ActionMailboxFlags | null;
+    try {
+      readback = await this.readback(mailbox, item.target.uid);
+    } catch (cause) {
+      // The write's answer arrived, but the read that proves the resulting
+      // state was lost. An accepted write almost certainly applied, so a
+      // dropped readback stays unknown with the last observed state, never
+      // a definitive error (SPEC F2, the lost-response rule).
+      const detail =
+        cause instanceof Error && cause.message
+          ? cause.message
+          : "The connection dropped.";
+      return {
+        outcome: "unknown",
+        reason: `The ${write.result} write could not be read back: ${detail}`,
+        observed: item.remote,
+      };
+    }
     if (readback === null) {
       // The refreshed mailbox no longer holds the UID. A definitive
       // rejection means the target left before the write; an accepted
       // command may still have applied before it left, so only that
       // outcome stays unknown.
       return write.result === "accepted"
-        ? { outcome: "unknown", reason: "The target left the folder before the write could be read back." }
+        ? {
+            outcome: "unknown",
+            reason: "The target left the folder before the write could be read back.",
+            observed: item.remote,
+          }
         : { outcome: "conflicted", reason: "absent_remote", observed: item.remote };
     }
     if (readback[desire.flag] === desire.value) {

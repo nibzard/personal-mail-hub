@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import {
   accounts,
   actionItems,
@@ -45,7 +45,9 @@ import type { ActionMailbox, ActionMailboxFlags } from "./mailbox.ts";
  *    that already holds the desired flag value confirms as a no-op (SPEC F2).
  * 4. The recovery generation is rechecked before every remote mutation, and
  *    each item shows `executing` before its executor call, so a partial bulk
- *    failure never replays a finished item.
+ *    failure never replays a finished item. The receipt of that claim replaces
+ *    the interrupted hold a concurrent run may have recorded, so the live
+ *    worker's answer wins.
  * 5. Observed state, per-item receipts, and events commit together.
  * 6. Restart reconciliation replays a flag assignment only after refreshing
  *    its target. An interrupted move or a restored action is never replayed
@@ -234,7 +236,9 @@ export class ActionService<M extends ActionMailbox = ActionMailbox> {
     }
 
     // An interrupted item of a non-replayable kind never replays: hold it
-    // unknown until reconciliation proves the outcome (SPEC F4).
+    // unknown until reconciliation proves the outcome (SPEC F4). The hold is
+    // a guess about an in-flight claim, so the receipt of the claim that
+    // actually ran the remote write replaces it afterwards.
     for (const item of await this.loadItems(action.id)) {
       if (item.status === "executing" && !isReplayableKind(action.kind)) {
         await this.commitDisposition(action, item, {
@@ -471,6 +475,9 @@ export class ActionService<M extends ActionMailbox = ActionMailbox> {
         desired: this.desiredState(action, desire, destination),
       };
       const outcome = await this.applyPrepared(mailbox, prepared);
+      // Each receipt below belongs to the claim that ran the remote write, so
+      // it supersedes the interrupted hold a concurrent run may have recorded
+      // while the write was in flight.
       if (outcome.outcome === "confirmed") {
         await this.commitDisposition(action, item, {
           status: "confirmed",
@@ -483,19 +490,32 @@ export class ActionService<M extends ActionMailbox = ActionMailbox> {
           // A confirmed move emptied the source occurrence; the destination
           // copy arrives through synchronization (SPEC F4).
           expunge: outcome.movedTo !== undefined,
+          supersedesHold: true,
         });
       } else if (outcome.outcome === "conflicted") {
         await this.commitDisposition(action, item, {
           status: "conflicted",
           outcome: { reason: outcome.reason, observed: observedFlags(outcome.observed) },
           observed: outcome.observed,
+          supersedesHold: true,
         });
       } else if (outcome.outcome === "unknown") {
-        await this.commitDisposition(action, item, { status: "unknown", outcome: { reason: outcome.reason } });
+        await this.commitDisposition(action, item, {
+          status: "unknown",
+          // A lost answer keeps the last observed state in its receipt; the
+          // local observation stays untouched, because the write may or may
+          // not have applied (SPEC F2).
+          outcome: {
+            reason: outcome.reason,
+            ...(outcome.observed === undefined ? {} : { observed: observedFlags(outcome.observed) }),
+          },
+          supersedesHold: true,
+        });
       } else {
         await this.commitDisposition(action, item, {
           status: "failed",
           outcome: { code: outcome.code, message: outcome.message },
+          supersedesHold: true,
         });
       }
     }
@@ -536,6 +556,13 @@ export class ActionService<M extends ActionMailbox = ActionMailbox> {
    * event (step 5). A confirmed move also expunges the source occurrence, and
    * an observation that carried a server modification sequence records it, so
    * the next queued action captures a fresher condition (SPEC F2).
+   *
+   * A receipt flagged `supersedesHold` comes from the claim that ran the
+   * remote write. It also replaces the `unknown` interrupted hold a
+   * concurrent run recorded while that write was in flight: the live worker
+   * holds the real outcome, and a confirmed move must still expunge its
+   * source occurrence locally. Every other hold — a lost answer, a restored
+   * generation — stays final.
    */
   private async commitDisposition(
     action: ActionRow,
@@ -546,21 +573,26 @@ export class ActionService<M extends ActionMailbox = ActionMailbox> {
       observed?: ActionMailboxFlags;
       applied?: boolean;
       expunge?: boolean;
+      /** Replace the interrupted hold a concurrent run recorded. */
+      supersedesHold?: boolean;
     },
   ): Promise<void> {
     await this.db.transaction(async (tx) => {
       // Only a still-pending item accepts a disposition, so a concurrent run
-      // of the same action cannot overwrite a finished receipt.
+      // of the same action cannot overwrite a finished receipt — except the
+      // interrupted hold, which exists only until the claim's own receipt
+      // arrives.
+      const interruptedHold = and(
+        eq(actionItems.status, "unknown"),
+        sql`(${actionItems.outcome} ->> 'reason') = 'interrupted'`,
+      );
+      const eligible = write.supersedesHold
+        ? or(inArray(actionItems.status, [...PENDING_ITEM_STATUSES]), interruptedHold)
+        : inArray(actionItems.status, [...PENDING_ITEM_STATUSES]);
       const updated = await tx
         .update(actionItems)
         .set({ status: write.status, outcome: write.outcome, updatedAt: new Date() })
-        .where(
-          and(
-            eq(actionItems.actionId, action.id),
-            eq(actionItems.itemKey, item.itemKey),
-            inArray(actionItems.status, [...PENDING_ITEM_STATUSES]),
-          ),
-        )
+        .where(and(eq(actionItems.actionId, action.id), eq(actionItems.itemKey, item.itemKey), eligible))
         .returning({ itemKey: actionItems.itemKey });
       if (updated.length === 0) {
         return;

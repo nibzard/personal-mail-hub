@@ -633,6 +633,30 @@ suite("ActionService", () => {
     expect([row.flagged, row.revision, row.modseq]).toEqual([true, 2, "8"]);
   });
 
+  it("holds a lost readback unknown with the last observed state", async () => {
+    const { accountId, inboxId } = await setupAccount();
+    const occurrence = await seedOccurrence(accountId, inboxId, 56, { unread: true });
+    const mailbox = mailboxOf([occurrence]);
+    mailbox.queue({ kind: "apply", dropReadbackAfter: true });
+    const service = new ActionService(db, controls, new TwoWayActionExecutor());
+
+    const queued = await service.submit(submission(accountId, "mark_read", [occurrence.id]));
+    const result = await service.execute(queued.receipt.actionId, mailbox);
+    // The connection dropped after the accepted write, so the receipt claims
+    // no result and keeps what the refresh last observed (SPEC F2).
+    expect(result.receipt.items[0]).toMatchObject({
+      status: "unknown",
+      outcome: {
+        reason: "The accepted write could not be read back: The connection dropped during the readback.",
+        observed: { unread: true, flagged: false },
+      },
+    });
+    // The local observation claims nothing the readback did not prove.
+    const row = await occurrenceRow(occurrence.id);
+    expect([row.unread, row.revision]).toEqual([true, 1]);
+    expect(await eventsOf(ACTION_APPLIED_EVENT, occurrence.id)).toHaveLength(0);
+  });
+
   it("commits a rejected conditional write as a conflict with the refreshed state", async () => {
     const { accountId, inboxId } = await setupAccount();
     const occurrence = await seedOccurrence(accountId, inboxId, 53, { unread: true });
@@ -685,6 +709,42 @@ suite("ActionService", () => {
     expect(mailbox.mailboxes.get("Archive")).toEqual([{ uid: 101, unread: true, flagged: false }]);
     const row = await occurrenceRow(occurrence.id);
     expect(row.expungedAt).not.toBeNull();
+    expect(await eventsOf(ACTION_APPLIED_EVENT, occurrence.id)).toHaveLength(1);
+  });
+
+  it("lets the live claim's receipt replace the interrupted hold of a concurrent run", async () => {
+    const { accountId, inboxId, archiveId } = await setupAccount();
+    const occurrence = await seedOccurrence(accountId, inboxId, 57, { unread: true });
+    const mailbox = mailboxOf([occurrence]);
+    mailbox.load("Archive", []);
+    const inner = new TwoWayActionExecutor();
+    let held: unknown = null;
+    // The remote move runs; while it is in flight, restart reconciliation of
+    // a concurrent run holds the executing item unknown as interrupted.
+    const service = new ActionService<FakeActionMailbox>(db, controls, {
+      async apply(box, item) {
+        const outcome = await inner.apply(box, item);
+        await service.reconcileIncomplete(accountId, box);
+        held = await service.receipt(item.actionId);
+        return outcome;
+      },
+    });
+
+    const queued = await service.submit(
+      submission(accountId, "archive", [occurrence.id], { destinationFolderId: archiveId }),
+    );
+    const result = await service.execute(queued.receipt.actionId, mailbox);
+
+    // The concurrent run really recorded the interrupted hold first.
+    expect(held).toMatchObject({ items: [{ status: "unknown", outcome: { reason: "interrupted" } }] });
+    // The live claim's receipt replaced it: the move is confirmed and the
+    // source occurrence is expunged locally (SPEC section 7, step 5).
+    expect(result.receipt.items[0]).toMatchObject({
+      status: "confirmed",
+      outcome: { movedTo: { folder: "Archive" } },
+    });
+    expect(mailbox.mailboxes.get("INBOX")).toEqual([]);
+    expect((await occurrenceRow(occurrence.id)).expungedAt).not.toBeNull();
     expect(await eventsOf(ACTION_APPLIED_EVENT, occurrence.id)).toHaveLength(1);
   });
 
