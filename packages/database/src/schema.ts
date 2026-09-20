@@ -101,6 +101,12 @@ export type ThreadLinkState = "root" | "pending" | "linked" | "ambiguous";
 export type OutboundStatus = "queued" | "sending" | "sent" | "failed" | "outcome_unknown";
 export type SentCopyStatus = "pending" | "appending" | "stored" | "failed" | "unknown";
 export type ActionItemStatus = "queued" | "executing" | "confirmed" | "conflicted" | "failed" | "unknown";
+/** What one saved work record asks of you (SPEC F13). */
+export type HomeWorkKind = "reply_later" | "reminder";
+/** Saved work life cycle: explicit completion, explicit reopening (SPEC F13). */
+export type HomeWorkStatus = "open" | "done";
+/** What one priority choice points at (SPEC F13). */
+export type HomePriorityTargetKind = "sender" | "thread";
 
 /** Why one WebAuthn challenge exists. A challenge never changes purpose. */
 export type ChallengePurpose =
@@ -232,6 +238,12 @@ export const messages = pgTable(
     recipients: jsonb("recipients").$type<Recipients>(),
     subject: text("subject"),
     sentAt: timestamp("sent_at", { withTimezone: true }),
+    /**
+     * When the row appeared locally, in ingestion order (SPEC F13). Home's
+     * visit boundary and arrival selection read this; the sender's date
+     * never stands in for arrival.
+     */
+    ingestedAt: timestamp("ingested_at", { withTimezone: true }).notNull().defaultNow(),
     snippet: text("snippet"),
     hasAttachments: boolean("has_attachments").notNull().default(false),
     sizeBytes: bigint("size_bytes", { mode: "number" }),
@@ -284,6 +296,7 @@ export const messages = pgTable(
     ),
     index("messages_thread_id_idx").on(t.threadId),
     index("messages_account_id_sent_at_idx").on(t.accountId, sql`${t.sentAt} desc`),
+    index("messages_ingested_at_idx").on(t.ingestedAt),
     index("messages_message_id_idx").on(t.messageId),
     index("messages_account_id_in_reply_to_idx").on(t.accountId, t.inReplyTo),
     index("messages_reference_ids_idx").using("gin", t.referenceIds),
@@ -609,11 +622,128 @@ export const senderOverrides = pgTable(
   (t) => [primaryKey({ columns: [t.accountId, t.sender] })],
 );
 
-/** Reserved for phase 2 work states. No code path reads it in this version. */
-export const conversationState = pgTable("conversation_state", {
-  conversationId: uuid("conversation_id").primaryKey(),
-  workState: text("work_state"),
-  snoozedUntil: timestamp("snoozed_until", { withTimezone: true }),
+/**
+ * One explicit priority choice (SPEC F13): an account-scoped sender or
+ * thread the owner prioritized. Priority never changes classification; it
+ * only orders attention.
+ */
+export const homePriorities = pgTable(
+  "home_priorities",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    accountId: uuid("account_id")
+      .notNull()
+      .references(() => accounts.id),
+    targetKind: text("target_kind").$type<HomePriorityTargetKind>().notNull(),
+    /** Lowercased sender address; set for sender targets only. */
+    sender: text("sender"),
+    /** Thread the choice names; set for thread targets only. */
+    threadId: uuid("thread_id"),
+    revision: bigint("revision", { mode: "number" }).notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      "home_priorities_target_shape_check",
+      sql`("target_kind" = 'sender' and "sender" is not null and "thread_id" is null)
+          or ("target_kind" = 'thread' and "thread_id" is not null and "sender" is null)`,
+    ),
+    // The coalesces close the NULL holes a plain unique constraint leaves,
+    // so two sender choices or two thread choices for one target cannot
+    // both stand.
+    uniqueIndex("home_priorities_target_uidx").on(
+      t.accountId,
+      t.targetKind,
+      sql`coalesce(${t.sender}, '')`,
+      sql`coalesce(${t.threadId}, '00000000-0000-0000-0000-000000000000'::uuid)`,
+    ),
+  ],
+);
+
+/**
+ * One saved work record (SPEC F13): a reply-later commitment or a dated
+ * reminder. The kinds stay distinct rows so both can sit on one
+ * conversation and complete independently. The anchor message carries no
+ * foreign key on purpose: a byte-identical merge reassigns it, and a lost
+ * anchor reports unavailable instead of blocking the merge.
+ */
+export const homeWork = pgTable(
+  "home_work",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    accountId: uuid("account_id")
+      .notNull()
+      .references(() => accounts.id),
+    anchorMessageId: uuid("anchor_message_id").notNull(),
+    /** The anchor's thread when saved; grouping re-resolves it per read. */
+    threadId: uuid("thread_id"),
+    kind: text("kind").$type<HomeWorkKind>().notNull(),
+    status: text("status").$type<HomeWorkStatus>().notNull().default("open"),
+    /** The due instant; required for reminders, absent for reply later. */
+    dueAt: timestamp("due_at", { withTimezone: true }),
+    /** The IANA zone that interpreted the chosen local time (SPEC F13). */
+    timeZone: text("time_zone"),
+    revision: bigint("revision", { mode: "number" }).notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (t) => [
+    check("home_work_kind_check", sql`"kind" in ('reply_later', 'reminder')`),
+    check("home_work_status_check", sql`"status" in ('open', 'done')`),
+    check(
+      "home_work_reminder_due_check",
+      sql`("kind" = 'reminder' and "due_at" is not null and "time_zone" is not null)
+          or ("kind" = 'reply_later' and "due_at" is null and "time_zone" is null)`,
+    ),
+    check(
+      "home_work_completed_shape_check",
+      sql`("status" = 'done') = ("completed_at" is not null)`,
+    ),
+    // One open record of each kind per anchor; completion frees the slot
+    // for a later, separate commitment.
+    uniqueIndex("home_work_open_uidx")
+      .on(t.accountId, t.kind, t.anchorMessageId)
+      .where(sql`"status" = 'open'`),
+    // The reminders list reads due order over open rows; the review list
+    // reads completion order over done rows.
+    index("home_work_due_idx")
+      .on(t.dueAt)
+      .where(sql`"status" = 'open' and "kind" = 'reminder'`),
+    index("home_work_anchor_idx").on(t.anchorMessageId),
+    index("home_work_done_idx")
+      .on(sql`${t.completedAt} desc`)
+      .where(sql`"status" = 'done'`),
+  ],
+);
+
+/**
+ * One dismissed suggestion (SPEC F13), keyed by the incoming message it
+ * hides. A new incoming reply is a different message and surfaces again;
+ * reclassification of the same message never restores it.
+ */
+export const homeDismissals = pgTable(
+  "home_dismissals",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    accountId: uuid("account_id")
+      .notNull()
+      .references(() => accounts.id),
+    messageId: uuid("message_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique("home_dismissals_account_id_message_id_key").on(t.accountId, t.messageId),
+    index("home_dismissals_message_id_idx").on(t.messageId),
+  ],
+);
+
+/** The per-device Home visit boundary (SPEC F13). */
+export const homeVisits = pgTable("home_visits", {
+  deviceId: text("device_id").primaryKey(),
+  /** The ingestion boundary this device's last successful Home read froze. */
+  boundary: timestamp("boundary", { withTimezone: true }).notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -806,6 +936,10 @@ export type Decision = typeof decisions.$inferSelect;
 export type Event = typeof events.$inferSelect;
 export type Setting = typeof settings.$inferSelect;
 export type SavedSearch = typeof savedSearches.$inferSelect;
+export type HomePriority = typeof homePriorities.$inferSelect;
+export type HomeWorkRecord = typeof homeWork.$inferSelect;
+export type HomeDismissal = typeof homeDismissals.$inferSelect;
+export type HomeVisit = typeof homeVisits.$inferSelect;
 export type Owner = typeof owner.$inferSelect;
 export type OwnerCredential = typeof ownerCredentials.$inferSelect;
 export type OwnerSession = typeof ownerSessions.$inferSelect;

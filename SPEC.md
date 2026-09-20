@@ -33,7 +33,9 @@ route into the same mailbox appear as send identities.
 ## 3. Non-goals for this version
 
 - AI drafting, agents, and summaries.
-- Commitment tracking and work states (phase 2; schema reserved).
+- Broader task management, agent actions, and calendar integration
+  (phase 2). The Home release (F13) ships only reply-later commitments,
+  dated reminders, and explicit completion.
 - Calendar, contacts, and notifications beyond install-time basics.
 - Multi-user support. This product serves one person: you.
 - Native mobile or desktop shells. The PWA (progressive web app) only.
@@ -443,7 +445,8 @@ or **edit the deterministic rule**. Corrections are events.
 - Stored in the `settings` table as key-value pairs.
 - Keys include: classification enabled, monthly Jev cost cap, backfill
    classification on or off, reading density, clean view default, theme,
-   and single-key shortcuts enabled. Theme choices are system, light, and dark.
+   single-key shortcuts enabled, and Home startup (F13, `home.enabled`).
+   Theme choices are system, light, and dark.
 - Compact density is the default. Comfortable density remains available.
 
 ### F11 — Command palette
@@ -455,8 +458,9 @@ The command palette is the application's control panel. It ships in the MVP.
 - Reserve `Cmd+P` and `Ctrl+P` for printing. Do not override them.
 - Open one searchable dialog. Group results into navigation, message actions,
   compose, and settings. Show labels, shortcut hints, and current target scope.
-- Include Inbox, All Mail, account and folder switching, search, new message,
-  reply, reply all, read/unread, star/unstar, archive, move, theme, and settings.
+- Include Home, Inbox, All Mail, account and folder switching, search, new
+  message, reply, reply all, read/unread, star/unstar, archive, move, theme,
+  and settings.
 - Use local command filtering. Opening and filtering commands must not depend
   on the network or classification. Mail search opens F5 with the query.
 - Contextual commands use the focused message or explicit selection. Display
@@ -558,6 +562,154 @@ skeletons under reduced motion. All state information remains available.
   Preserve focus when virtualized rows leave the viewport.
 - Support 200% text zoom and 320px viewport reflow for application controls.
   Wide email tables scroll inside the reader rather than widening the shell.
+
+### F13 — Home screen
+
+Home is an optional overview before the Inbox. It collects important mail,
+your explicit commitments, and your reminders across every account. Core mail
+never depends on it: Inbox, All Mail, and search stay complete, and Home
+stays useful with Jev disabled, paused, or unconfigured.
+
+**Entry and startup**
+
+- **Show Home when the app opens** is a settings key (`home.enabled`), on by
+  default. It follows you across devices through the settings service.
+- Resolve the initial view from the last confirmed choice before paint, so
+  the app never shows Inbox and then switches to Home.
+- An explicit destination, such as a message link, takes precedence over
+  startup selection. Returning from a background tab never forces Home.
+- Home stays in navigation when the startup setting is off.
+
+**Screen structure**
+
+Compact rows in one main column: **Due now** (reminders whose time passed),
+**Needs attention**, **Reply later**, **Since your last visit**, and
+**Saved** (starred mail). Hide empty sections; collapse Saved by default.
+Show about eight rows per section first, with accurate totals and expansion
+controls. Expose the count of every due reminder; never omit some silently.
+On desktop, open the existing reader beside Home when space permits. On
+mobile, the reader opens with a **Back to Home** control. Selection, focus,
+and scroll position restore when you return. The order stays stable while
+you interact; new items announce themselves behind an update control.
+
+**Selection and ranking**
+
+Opening Home performs no model call and no mailbox mutation. Home reads
+stored answers, your choices, and your saved work.
+
+| Section | Selection | Order |
+| --- | --- | --- |
+| Due now | Open reminders whose due time has passed | Earliest due time first |
+| Needs attention | Priority choices, security alerts, action or reply suggestions | Leading tier first (protected security or action items and explicit priority), then other suggestions; recency breaks ties |
+| Reply later | Open reply-later commitments | Oldest commitment first |
+| Since your last visit | Newly ingested incoming mail after the visit boundary | Newest ingestion first |
+| Saved | Starred mail | Message date order (no star timestamps exist) |
+
+- The ranking is a deterministic tuple per section: `(tier, sentAt desc,
+  messageId)`. No opaque score mixes signals.
+- Priority never demotes a protected security or high-confidence action item
+  into routine groups. The action breakout threshold stays `0.75`.
+- Classification precedence is unchanged: manual placement, sender override,
+  deterministic rule, then Jev. Priority is a separate preference and never
+  changes classification. Priority choices are scoped to one account and one
+  sender or thread.
+- Read confidence from the stored decision that matches the current answer.
+  When another precedence level answered, confidence is unknown. Missing
+  answers and missing confidence stay unknown.
+- Every row explains why it appears with a fixed reason label, marked as
+  **your choice** or **a suggestion**.
+- Automatic suggestions exclude junk, trash, drafts, and sent-only mail.
+  Saved work may reference any message, including sent or archived ones.
+  When a target is unavailable or in trash, its saved work says so; nothing
+  is silently deleted or restored.
+- One main entry per conversation, in the highest applicable section, using
+  stored thread links only. A shared subject alone never groups messages.
+  An entry carries every applicable reason and names the messages it covers.
+
+**Actions**
+
+| Action | Meaning | Effect on provider mail |
+| --- | --- | --- |
+| Reply later | I intend to answer this | None |
+| Remind me | Return this at a chosen time | None |
+| Star | Keep this easy to find | Existing synchronized star |
+| Complete | I finished this saved work item | None |
+| Reopen | Restore a completed item | None |
+| Dismiss suggestion | Remove this suggestion from Home | None |
+| Archive | Move mail out of the provider inbox | Existing archive service |
+| Wrong suggestion | Correct classification with a scope | Existing correction service |
+
+- Reply later and a reminder coexist on one conversation. Completing one
+  never completes the other. Reading or archiving never completes work.
+  Completion is explicit; a queued or uncertain send never implies it.
+- Reminder presets are **Later today**, **Tomorrow**, and **Choose date and
+  time**. The resolved date, time, and timezone show before saving. The due
+  instant and the timezone used to interpret it are stored. Invalid,
+  ambiguous, or past resolutions are refused, including daylight-saving
+  edge times.
+- Reminders appear inside the app only. Every reminder, future ones
+  included, stays listed with reschedule, cancel, complete, and reopen
+  controls and clear save feedback. Completed work stays reviewable.
+- Dismissal applies to one incoming message, never a whole thread. A new
+  incoming reply can surface the conversation again; reclassification alone
+  cannot restore a dismissed suggestion. Dismissal and completion offer
+  undo. Correction stays separate from dismissal.
+
+**Visit tracking**
+
+- New arrivals use ingestion order (`messages.ingested_at`), never the
+  sender's date. The boundary freezes for the session and advances only
+  after Home data loads successfully; failed or offline reads never advance
+  it.
+- Tracking is per device, so opening Home on one device never clears
+  another device's overview. Reminders and commitments never depend on the
+  arrival boundary.
+
+**Data and service design**
+
+- `packages/home` owns the service: explicit read and mutation interfaces,
+  ranking and reason generation separate from persistence. `GET /home`
+  returns typed sections, items, reasons, totals, freshness, classification
+  coverage, and stable pagination cursors. Queries are bounded, ranking is
+  resolved before pagination, and the complete mailbox never enters the
+  browser.
+- Storage: `home_priorities` (account, sender or thread target, revision,
+  timestamps), `home_work` (id, account, anchor message, kind, status, due
+  time, timezone, revision, timestamps), `home_dismissals` (account and
+  incoming message), `home_visits` (per-device cursor). Reply later and
+  reminders are distinct records; one `work_state` value never carries both.
+  The reserved `conversation_state` table is dropped; `home_work` replaces
+  it.
+- Mutations pass the recovery-generation gate before any duplicate lookup,
+  validate every input at the boundary, reject conflicting edits by
+  revision, and record audit events without message bodies or credentials.
+- Due status is computed from persisted timestamps when Home is read. No
+  worker or mailbox write exists for in-app reminders.
+- Offline, Home-specific mutations require connectivity; the controls
+  disable with an explanation, and nothing unsaved reports as saved.
+
+**Offline and failure states**
+
+Skeletons while loading; account setup when no account exists; explicit
+choices plus new arrivals when classification is disabled; stored answers
+with their age and paused status when it is paused; coverage, never a claim
+that all important mail was found; **No suggestions right now** and **Open
+Inbox** when empty; cached data with its timestamp when offline; retry
+feedback that keeps the item visible on mutation failure; the existing
+recovery review flow when recovery is required; an unavailable-message
+explanation when saved work loses its target. Cached Home data carries the
+recovery generation and is invalidated when the generation changes.
+
+**Generative boundary**
+
+The first release composes deterministic rows from stored answers only: no
+second model call and no json-render dependency. A small vocabulary of
+reminder rows, attention rows, message rows, and status notices; application
+code owns content, references, labels, and actions. A later experiment may
+let Jev pick approved variants; navigation, due reminders, commitments, and
+action meanings stay fixed, and every result validates with fallback to the
+standard layout. Message content can never introduce components, code,
+destinations, or actions.
 
 ## 6. Architecture
 
@@ -930,11 +1082,48 @@ create table sender_overrides (
   primary key (account_id, sender)
 );
 
-create table conversation_state (   -- reserved for phase 2; unused now
-  conversation_id uuid primary key,
-  work_state      text,             -- needs_reply|waiting|later|done
-  snoozed_until   timestamptz,
-  updated_at      timestamptz not null default now()
+create table home_priorities (      -- F13: explicit attention choices
+  id           uuid primary key default gen_random_uuid(),
+  account_id   uuid not null references accounts,
+  target_kind  text not null,       -- sender|thread
+  sender       text,                -- lowercased address for sender targets
+  thread_id    uuid,                -- for thread targets
+  revision     bigint not null default 1,
+  created_at   timestamptz not null default now(),
+  updated_at   timestamptz not null default now(),
+  unique (account_id, target_kind, sender, thread_id)
+);
+
+create table home_work (            -- F13: reply intentions and reminders
+  id                 uuid primary key default gen_random_uuid(),
+  account_id         uuid not null references accounts,
+  anchor_message_id  uuid not null, -- survives thread reconciliation
+  thread_id          uuid,          -- thread when saved, for grouping
+  kind               text not null, -- reply_later|reminder
+  status             text not null default 'open',   -- open|done
+  due_at             timestamptz,   -- required for reminders
+  time_zone          text,          -- IANA zone that interpreted the choice
+  revision           bigint not null default 1,
+  created_at         timestamptz not null default now(),
+  updated_at         timestamptz not null default now(),
+  completed_at       timestamptz
+);
+
+create unique index home_work_open_uidx on home_work (account_id, kind, anchor_message_id)
+  where status = 'open';
+
+create table home_dismissals (      -- F13: one dismissed incoming message
+  id          uuid primary key default gen_random_uuid(),
+  account_id  uuid not null references accounts,
+  message_id  uuid not null,
+  created_at  timestamptz not null default now(),
+  unique (account_id, message_id)
+);
+
+create table home_visits (          -- F13: per-device arrival cursor
+  device_id   text primary key,
+  boundary    timestamptz not null,
+  updated_at  timestamptz not null default now()
 );
 
 create table events (
@@ -1014,8 +1203,17 @@ Notes:
   generation with `RECOVERY_GENERATION` from deployment configuration on startup.
   Missing state or a mismatch blocks mail mutations and all workers. Only fresh
   installation or the operator recovery command can initialize this state.
-- `conversation_state` exists to reserve the three-state separation from
-  the report. No code path reads it in this version.
+- `conversation_state` reserved a phase 2 work-state value that one column
+  could not carry. The Home release (F13) replaces it: `home_work` keeps
+  reply-later commitments and reminders as distinct records anchored to one
+  message, so they can coexist, complete, and reopen independently.
+- `messages.ingested_at` records when the row appeared locally, in
+  ingestion order. Home's visit boundary and Since-arrival selection read
+  it; the sender's date never stands in for arrival.
+- `home_work.anchor_message_id` carries no foreign key on purpose: a
+  byte-identical merge reassigns the anchor to the surviving message, and
+  an anchor whose row is gone reports as unavailable instead of blocking
+  the merge.
 
 ## 9. Security and privacy
 
@@ -1301,6 +1499,36 @@ and Sent copies independently. Include these cases:
 4. Enable routing only when critical false negatives are zero in the
    labeled set. Until then, shadow mode.
 
+**Home acceptance**
+
+- Home opens by default; the saved setting reliably restores Inbox startup;
+  explicit destinations and open reading or composing are never
+  interrupted.
+- Loading Home makes no model request and performs no mailbox mutation.
+- Home stays useful with Jev disabled or unconfigured: explicit choices and
+  new arrivals still show.
+- Priority is independent of class and scoped to its account. Security and
+  high-confidence action items stay visible outside routine groups, and
+  ranking resolves before pagination (large-mailbox check with bounded
+  queries).
+- Reading or archiving never completes work. Reply later and a reminder
+  coexist; completing one leaves the other open.
+- Reminder instants survive restarts, device changes, timezone changes, and
+  restore review. Invalid, ambiguous, and past local times are refused.
+- Concurrent reschedule and completion produce explicit revision conflicts;
+  old recovery generations fail before any duplicate lookup.
+- A new incoming reply restores a dismissed conversation; reclassification
+  alone cannot.
+- Duplicate-merge reconciliation reassigns anchored work; unrelated
+  commitments never merge.
+- Future reminders and completed work stay accessible outside the default
+  sections. Offline and incomplete states never imply that no important
+  mail exists.
+- Selection evaluate runs separately from the routing gate: measure
+  important-message coverage, irrelevant suggestions, ranking past page
+  limits, and missing-classification cases. A passed routing gate is not
+  proof of Home quality.
+
 **Interface acceptance**
 
 - Complete Inbox triage, search, reply, and send with the keyboard alone.
@@ -1356,8 +1584,10 @@ estimates. Do not defer send recovery or identifier checks to week 6.
 | 5 | Jev shadow mode | Classify job, decisions table, visible suggestions, eval script. |
 | 6 | Hardening | Full restore with device replay rehearsed, attachment caches regenerated, offline conflicts tested, and clean view verified. |
 
-Phase 2 (later): work states on `conversation_state`, rules with shadow
-mode and replay, agent actions through the action service.
+Phase 2 (later): rules with shadow mode and replay, agent actions through
+the action service, remind-if-no-reply anchored to verified sends, sender
+grouping, and Focus & Reply over reply-later commitments. The Home release
+(F13) ships the limited subset above on `home_work`.
 
 ## 15. Risks
 

@@ -921,6 +921,8 @@ export interface AppSettings {
   cleanViewDefault: boolean;
   /** Whether Jev classification runs for enabled accounts (SPEC F8). */
   classificationEnabled: boolean;
+  /** Whether the app opens on Home instead of Inbox (SPEC F13). */
+  homeEnabled: boolean;
   /** Monthly Jev cost ceiling in US dollars; `null` means no cap (SPEC F8). */
   classificationMonthlyCostCapUsd: number | null;
   /** Whether the historical backfill classifies stored messages (SPEC F8). */
@@ -999,4 +1001,236 @@ export interface SmtpConnectionReport {
 export interface ConnectionTestResponse {
   imap: ImapConnectionReport;
   smtp: SmtpConnectionReport;
+}
+
+/** Home rejection codes, from `SPEC.md` F13. */
+export type HomeErrorCode =
+  | "invalid_request"
+  | "not_found"
+  | "work_stale"
+  | "due_time_invalid"
+  | "time_zone_invalid";
+
+/** The body of a Home route rejection. */
+export interface HomeErrorBody {
+  error: {
+    code: HomeErrorCode;
+    message: string;
+    /** Present on `work_stale`: the revision the server currently holds. */
+    currentRevision?: number;
+  };
+}
+
+/** The Home sections, in display order (SPEC F13). */
+export const HOME_SECTIONS = [
+  "due_now",
+  "needs_attention",
+  "reply_later",
+  "since_visit",
+  "saved",
+] as const;
+
+/** One Home section identifier. */
+export type HomeSectionIdWire = (typeof HOME_SECTIONS)[number];
+
+/** Whether one reason is your choice, a suggestion, or a plain notice. */
+export type HomeReasonOrigin = "choice" | "suggestion" | "notice";
+
+/**
+ * The fixed reason vocabulary (SPEC F13). Labels live in the client; a row
+ * never carries a free-text reason.
+ */
+export const HOME_REASON_CODES = [
+  "you_prioritized_sender",
+  "you_prioritized_thread",
+  "security_alert",
+  "may_need_action",
+  "may_need_reply",
+  "time_sensitive",
+  "reminder_due",
+  "reply_planned",
+  "new_arrival",
+  "you_starred",
+] as const;
+
+/** One reason a Home row appears. */
+export type HomeReasonCode = (typeof HOME_REASON_CODES)[number];
+
+/** One reason a Home row shows, with its origin. */
+export interface HomeReasonView {
+  code: HomeReasonCode;
+  origin: HomeReasonOrigin;
+}
+
+/** The saved work kinds (SPEC F13): a reply intention or a dated reminder. */
+export type HomeWorkKindWire = "reply_later" | "reminder";
+
+/** Saved work life cycle: explicit completion, explicit reopening. */
+export type HomeWorkStatusWire = "open" | "done";
+
+/** One message a Home row summarizes, with its account identity. */
+export interface HomeMessageSummary {
+  messageId: string;
+  accountId: string;
+  accountLabel: string;
+  accountColor: string;
+  threadId: string | null;
+  subject: string | null;
+  snippet: string | null;
+  sender: MessageAddress | null;
+  sentAt: string | null;
+  unread: boolean;
+  flagged: boolean;
+  hasAttachments: boolean;
+}
+
+/** One saved work record as a Home row carries it. */
+export interface HomeWorkSummary {
+  id: string;
+  kind: HomeWorkKindWire;
+  status: HomeWorkStatusWire;
+  /** The due instant of a reminder; `null` for reply later. */
+  dueAt: string | null;
+  /** The IANA zone that interpreted the chosen local time. */
+  timeZone: string | null;
+  revision: number;
+  /** True when the anchor message row is gone; the work stays visible. */
+  anchorUnavailable: boolean;
+}
+
+/** One Home entry: one conversation in one section (SPEC F13). */
+export interface HomeItemView {
+  /** The conversation key: the thread id, or the message id without one. */
+  entryKey: string;
+  message: HomeMessageSummary;
+  /** Every message this entry covers; the representative comes first. */
+  messageIds: string[];
+  reasons: HomeReasonView[];
+  /** Saved work anchored in this conversation, due soonest first. */
+  work: HomeWorkSummary[];
+  /** Occurrences of the representative message, frozen for mail actions. */
+  occurrences: OccurrenceRefWire[];
+  /** True when no server copy of the representative remains anywhere. */
+  noServerCopy: boolean;
+}
+
+/** One Home section with its page of entries (SPEC F13). */
+export interface HomeSectionView {
+  id: HomeSectionIdWire;
+  /** Every entry the section holds, past the returned page. */
+  total: number;
+  items: HomeItemView[];
+  /** Keyset cursor the next page needs; `null` after the last entry. */
+  nextCursor: string | null;
+}
+
+/** How much classification stands behind Home suggestions (SPEC F13). */
+export interface HomeClassificationCoverage {
+  state: "active" | "paused" | "disabled" | "not_configured";
+  description: string;
+  /** Candidate inbox messages examined, bounded by the coverage window. */
+  considered: number;
+  /** Candidates that carry any stored answer. */
+  answered: number;
+  /** When the newest stored answer was recorded; `null` when none. */
+  newestAnswerAt: string | null;
+}
+
+/** Response of `GET /home`. */
+export interface HomeResponse {
+  /** When the server assembled this answer. */
+  generatedAt: string;
+  sections: HomeSectionView[];
+  classification: HomeClassificationCoverage;
+  /** The visit boundary this answer used; `null` on the first visit. */
+  visitBoundary: string | null;
+}
+
+/** Response of `GET /home/sections/:id`. */
+export interface HomeSectionResponse {
+  section: HomeSectionView;
+}
+
+/** One saved work record in full, for the reminders and review lists. */
+export interface HomeWorkRecordView extends HomeWorkSummary {
+  accountId: string;
+  anchorMessageId: string;
+  /** The anchor message when its row still exists; `null` otherwise. */
+  anchor: HomeMessageSummary | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+}
+
+/** Response of `GET /home/work`. */
+export interface HomeWorkListResponse {
+  work: HomeWorkRecordView[];
+}
+
+/** The body of `POST /home/work`. */
+export interface CreateHomeWorkBody {
+  accountId: string;
+  /** The message the work anchors to; reconciliation keeps it findable. */
+  anchorMessageId: string;
+  kind: HomeWorkKindWire;
+  /** The resolved due instant; required for reminders. */
+  dueAt?: string | null;
+  /** The IANA zone that interpreted the choice; required for reminders. */
+  timeZone?: string | null;
+}
+
+/** The body that names the revision a work mutation based itself on. */
+export interface HomeWorkRevisionBody {
+  revision: number;
+}
+
+/** The body of `POST /home/work/:id/reschedule`. */
+export interface RescheduleHomeWorkBody extends HomeWorkRevisionBody {
+  dueAt: string;
+  timeZone: string;
+}
+
+/** Response of the work mutations. */
+export interface HomeWorkResponse {
+  work: HomeWorkRecordView;
+}
+
+/** What one priority choice points at: one sender or one thread. */
+export type HomePriorityTargetWire =
+  | { kind: "sender"; sender: string }
+  | { kind: "thread"; threadId: string };
+
+/** One priority choice in its wire form. */
+export interface HomePriorityView {
+  id: string;
+  accountId: string;
+  target: HomePriorityTargetWire;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Response of `GET /home/priorities`. */
+export interface HomePrioritiesResponse {
+  priorities: HomePriorityView[];
+}
+
+/** The body of `PUT /home/priorities`. */
+export interface SetHomePriorityBody {
+  accountId: string;
+  target: HomePriorityTargetWire;
+  /** `false` removes the choice; `revision` then guards the removal. */
+  prioritized: boolean;
+  revision?: number;
+}
+
+/** The body of `POST /home/dismissals`. */
+export interface CreateHomeDismissalBody {
+  accountId: string;
+  messageId: string;
+}
+
+/** Response of `POST /home/dismissals`. */
+export interface HomeDismissalResponse {
+  dismissed: { accountId: string; messageId: string };
 }

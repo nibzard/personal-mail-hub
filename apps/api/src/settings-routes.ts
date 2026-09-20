@@ -82,6 +82,7 @@ export async function registerSettingsRoutes(
               singleKeyShortcuts: { type: "boolean" },
               cleanViewDefault: { type: "boolean" },
               classificationEnabled: { type: "boolean" },
+              homeEnabled: { type: "boolean" },
               classificationMonthlyCostCapUsd: {
                 anyOf: [{ type: "number", minimum: 0, maximum: 1_000_000 }, { type: "null" }],
               },

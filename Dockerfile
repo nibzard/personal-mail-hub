@@ -32,6 +32,7 @@ COPY packages/contracts/package.json packages/contracts/package.json
 COPY packages/content/package.json packages/content/package.json
 COPY packages/database/package.json packages/database/package.json
 COPY packages/harness/package.json packages/harness/package.json
+COPY packages/home/package.json packages/home/package.json
 COPY packages/ingestion/package.json packages/ingestion/package.json
 COPY packages/observability/package.json packages/observability/package.json
 COPY packages/offline/package.json packages/offline/package.json
@@ -74,6 +75,7 @@ COPY packages/contracts/package.json packages/contracts/package.json
 COPY packages/content/package.json packages/content/package.json
 COPY packages/database/package.json packages/database/package.json
 COPY packages/harness/package.json packages/harness/package.json
+COPY packages/home/package.json packages/home/package.json
 COPY packages/ingestion/package.json packages/ingestion/package.json
 COPY packages/observability/package.json packages/observability/package.json
 COPY packages/offline/package.json packages/offline/package.json

@@ -16,7 +16,7 @@ import { SettingsError } from "./errors.ts";
  * stays minimal anyway (SPEC sections 7 and 11).
  */
 
-/** The storage key of every setting the screen manages (SPEC F10). */
+/** The storage key of every setting the screen manages (SPEC F10, F13). */
 const STORAGE_KEYS = {
   theme: "theme",
   density: "reading.density",
@@ -25,12 +25,13 @@ const STORAGE_KEYS = {
   classificationEnabled: "classification.enabled",
   classificationMonthlyCostCapUsd: "classification.monthly_cost_cap_usd",
   backfillClassification: "classification.backfill",
+  homeEnabled: "home.enabled",
 } as const;
 
 /** The audit event one settings change records. */
 const SETTINGS_EVENT = "settings.updated";
 
-/** The settings a fresh installation starts with (SPEC F10). */
+/** The settings a fresh installation starts with (SPEC F10, F13). */
 export const DEFAULT_SETTINGS: AppSettings = {
   theme: "system",
   density: "compact",
@@ -39,6 +40,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   classificationEnabled: false,
   classificationMonthlyCostCapUsd: null,
   backfillClassification: false,
+  homeEnabled: true,
 };
 
 /** Context for one durable mutation: the generation the client captured. */
@@ -80,6 +82,8 @@ export class SettingsService {
       backfillClassification:
         booleanValue(stored.get(STORAGE_KEYS.backfillClassification)) ??
         DEFAULT_SETTINGS.backfillClassification,
+      homeEnabled:
+        booleanValue(stored.get(STORAGE_KEYS.homeEnabled)) ?? DEFAULT_SETTINGS.homeEnabled,
     };
   }
 
@@ -137,7 +141,7 @@ function mergePatch(current: AppSettings, patch: Partial<AppSettings>): AppSetti
     }
     next.density = patch.density;
   }
-  for (const key of ["singleKeyShortcuts", "cleanViewDefault", "classificationEnabled", "backfillClassification"] as const) {
+  for (const key of ["singleKeyShortcuts", "cleanViewDefault", "classificationEnabled", "backfillClassification", "homeEnabled"] as const) {
     const value = patch[key];
     if (value !== undefined) {
       if (typeof value !== "boolean") {

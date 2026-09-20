@@ -1,4 +1,4 @@
-import { and, eq, ne, notInArray } from "drizzle-orm";
+import { and, eq, ne, notInArray, sql } from "drizzle-orm";
 import type { MailHubDatabase, Storage } from "@mail-hub/database";
 import {
   attachments,
@@ -474,6 +474,40 @@ export class IngestionService {
       .update(outboundMessages)
       .set({ replyParentId: survivorId })
       .where(eq(outboundMessages.replyParentId, removedId));
+
+    // Anchored saved work follows the surviving message (SPEC F13). When the
+    // survivor already holds an open record of the same kind, both records
+    // stay — the losing one keeps the removed anchor and reports unavailable,
+    // because unrelated commitments never merge. A dismissal moves too: the
+    // bytes it hid still arrived.
+    await tx.execute(sql`
+      update home_work w
+      set anchor_message_id = ${survivorId}, updated_at = now()
+      where w.anchor_message_id = ${removedId}
+        and not (
+          w.status = 'open'
+          and exists (
+            select 1 from home_work other
+            where other.account_id = w.account_id
+              and other.kind = w.kind
+              and other.status = 'open'
+              and other.anchor_message_id = ${survivorId}
+              and other.id <> w.id
+          )
+        )
+    `);
+    await tx.execute(sql`
+      delete from home_dismissals d
+      where d.message_id = ${removedId}
+        and exists (
+          select 1 from home_dismissals s
+          where s.account_id = d.account_id and s.message_id = ${survivorId}
+        )
+    `);
+    await tx.execute(sql`
+      update home_dismissals set message_id = ${survivorId}
+      where message_id = ${removedId}
+    `);
 
     await tx.delete(attachments).where(eq(attachments.messageId, removedId));
     await tx.delete(bodies).where(eq(bodies.messageId, removedId));
