@@ -1,8 +1,9 @@
 /**
  * Errors raised by the synchronization services.
  *
- * Codes stay coarse on purpose: workers log the message and retry a bounded
- * window later, and no message content ever enters an error string.
+ * Codes stay coarse on purpose: contained failures are logged as their code
+ * through `classifyFailure` (diagnostics.ts), never as their message, and no
+ * message content ever enters an error string.
  */
 
 export type SyncErrorCode =

@@ -1,5 +1,6 @@
 import { and, eq, isNull, or, sql } from "drizzle-orm";
 import { folders, type Folder, type MailHubDatabase } from "@mail-hub/database";
+import { classifyFailure } from "./diagnostics.ts";
 import { SyncError } from "./errors.ts";
 import type { BackfillService } from "./backfill.ts";
 import type { BodyFetchOutcome, BodyFetchService } from "./bodies.ts";
@@ -32,6 +33,9 @@ export const DEFAULT_BODIES_PER_CYCLE = 25;
 
 /** Thread jobs one cycle resolves per account. */
 export const DEFAULT_THREADS_PER_CYCLE = 100;
+
+/** Approved failure kinds one cycle records per failure surface. */
+const MAX_RECORDED_KINDS = 8;
 
 export interface SyncRunnerOptions {
   /** Windows one cycle fetches per folder. */
@@ -80,6 +84,12 @@ export interface AccountCycleSummary {
   bodyErrors: number;
   /** Thread passes that failed and were contained. */
   threadErrors: number;
+  /** Approved failure kinds among contained folder failures, first seen first. */
+  folderFailureKinds: string[];
+  /** Approved failure kinds among contained body failures, first seen first. */
+  bodyFailureKinds: string[];
+  /** Approved failure kinds among contained thread failures, first seen first. */
+  threadFailureKinds: string[];
 }
 
 export interface CycleControl {
@@ -137,6 +147,9 @@ export class SyncRunner {
       folderErrors: 0,
       bodyErrors: 0,
       threadErrors: 0,
+      folderFailureKinds: [],
+      bodyFailureKinds: [],
+      threadFailureKinds: [],
     };
 
     const accountFolders = await this.db
@@ -154,10 +167,15 @@ export class SyncRunner {
       } catch (cause) {
         // One failing folder never stops the folders that follow, the body
         // jobs, or the status event; the next cycle retries it. The count
-        // alone cannot say why, so the diagnostic goes to the logger.
+        // alone cannot say why, so the diagnostic goes to the logger — with
+        // the folder's internal id and an approved failure kind only: a
+        // folder name is personal data, and error text can repeat query
+        // parameters with private mail content (SPEC section 9).
+        const kind = classifyFailure(cause);
         summary.folderErrors += 1;
+        recordFailureKind(summary.folderFailureKinds, kind);
         this.logger?.warn(
-          `Sync folder ${folder.name} (${folder.id}) of account ${accountId} failed and was contained: ${failureText(cause)}`,
+          `folder sync failed and was contained: account=${accountId} folder=${folder.id} kind=${kind}`,
         );
       }
       await yieldControl();
@@ -176,10 +194,14 @@ export class SyncRunner {
       } catch (cause) {
         // One stale job — its occurrence moved or expired after the listing —
         // is skipped, not allowed to abort the account cycle. The count alone
-        // cannot say which job or why, so the diagnostic goes to the logger.
+        // cannot say which job or why, so the diagnostic goes to the logger,
+        // carrying the job's internal identifiers and an approved kind. The
+        // folder name stays out: it is personal data (SPEC section 9).
+        const kind = classifyFailure(cause);
         summary.bodyErrors += 1;
+        recordFailureKind(summary.bodyFailureKinds, kind);
         this.logger?.warn(
-          `Body job ${job.messageId} (uid ${job.uid} of ${job.folderName}) failed and was contained: ${failureText(cause)}`,
+          `body fetch failed and was contained: account=${accountId} folder=${job.folderId} message=${job.messageId} uid=${job.uid} kind=${kind}`,
         );
       }
       await yieldControl();
@@ -197,10 +219,12 @@ export class SyncRunner {
         // A failed thread pass must not cost the status event: the account
         // still completed its folders, bodies, and polls, and the next cycle
         // retries the links. The count cannot say why, so the diagnostic
-        // goes to the logger.
+        // goes to the logger with an approved kind only.
+        const kind = classifyFailure(cause);
         summary.threadErrors += 1;
+        recordFailureKind(summary.threadFailureKinds, kind);
         this.logger?.warn(
-          `Thread pass for account ${accountId} failed and was contained: ${failureText(cause)}`,
+          `thread pass failed and was contained: account=${accountId} kind=${kind}`,
         );
       }
     }
@@ -363,6 +387,11 @@ export class SyncRunner {
       folderErrors: summary.folderErrors,
       bodyErrors: summary.bodyErrors,
       threadErrors: summary.threadErrors,
+      // Approved failure kinds, so a durable status read can tell a database
+      // fault from a mailbox fault without any private error text.
+      folderFailureKinds: summary.folderFailureKinds,
+      bodyFailureKinds: summary.bodyFailureKinds,
+      threadFailureKinds: summary.threadFailureKinds,
       // Header sync progress: how many folders still owe historical windows.
       backfillPendingFolders: pending[0]?.count ?? 0,
       // Body sync progress, independent of headers.
@@ -382,12 +411,11 @@ function aborted(control: CycleControl): boolean {
   return control.signal?.aborted === true;
 }
 
-/** One failure line without credentials or message content. */
-function failureText(cause: unknown): string {
-  if (cause instanceof Error) {
-    return cause.message.length > 0 ? cause.message : cause.name;
+/** Record one approved failure kind, deduplicated and bounded per surface. */
+function recordFailureKind(kinds: string[], kind: string): void {
+  if (!kinds.includes(kind) && kinds.length < MAX_RECORDED_KINDS) {
+    kinds.push(kind);
   }
-  return String(cause);
 }
 
 /** One turn of the event loop between remote batches. */

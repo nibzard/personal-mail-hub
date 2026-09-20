@@ -2677,7 +2677,7 @@
       "id": "T104",
       "title": "Remove private data from sync diagnostics",
       "priority": 1,
-      "status": "todo",
+      "status": "done",
       "details": "Plan: docs/sync-repair-plan.md (section T104).\n\nThe sync runner logs arbitrary error messages and folder names. Database errors can include private mail parameters. Replace raw errors with approved codes and internal identifiers. Test nested causes and arbitrary thrown values with sentinel secrets. Preserve containment and durable error counters.",
       "steps": [
         "Follow the T104 procedure and acceptance checks in docs/sync-repair-plan.md.",
@@ -2690,13 +2690,21 @@
       ],
       "files": [
         "docs/sync-repair-plan.md",
+        "packages/sync/src/diagnostics.ts",
         "packages/sync/src/runner.ts",
         "packages/sync/src/errors.ts",
-        "apps/worker/src/main.ts"
+        "packages/sync/src/index.ts",
+        "packages/sync/test/diagnostics.test.ts",
+        "packages/sync/test/steady.test.ts",
+        "apps/worker/src/main.ts",
+        "apps/worker/test/account-cycle.test.ts",
+        "apps/worker/test/storage-diagnostics.test.ts",
+        "packages/compose/src/service.ts"
       ],
       "depends_on": [],
       "created_at": "2026-09-20T21:45:35Z",
-      "updated_at": "2026-09-20T21:45:35Z"
+      "updated_at": "2026-09-20T22:45:00Z",
+      "notes": "Done 2026-09-20. New packages/sync/src/diagnostics.ts classifies every contained failure into an approved kind (sync/storage/ingestion codes, database_<sqlstate>, system_<errno>, error_<name>, unknown); the SQLSTATE branch requires a digit so five-letter errnos (EPIPE, EPERM) stay system_*. runner.ts logs folder/body/thread containment with internal ids and the kind only, and adds deduplicated, bounded *FailureKinds arrays to the summary and sync.status payload. Worker main.ts logs classifyFailure kinds for the outer cycle, temp sweep, and durable collection; the full-volume pause emits fixed text and {kind, code}; the pause, sweep, and collection handlers are now exported and tested. compose upload-pause event aligned to {kind, code}. Verification: diagnostics 22, steady 28 (storage_* through the real runner; dedup and 8-kind bound), worker 21; fail-pre-fix proofs for the classifier and mutation proofs for every new log/payload pin; npm run check clean; full suite 99 files / 1067 tests / 0 failed. Plan step 6 (live worker-log review) blocked: awc-pilot SSH unreachable; folds into T107/T110."
     },
     {
       "id": "T105",
@@ -3068,5 +3076,6 @@
       "created_at": "2026-09-20T21:51:56Z",
       "updated_at": "2026-09-20T21:51:56Z"
     }
-  ]
+  ],
+  "updated_at": "2026-09-20T22:45:00Z"
 }

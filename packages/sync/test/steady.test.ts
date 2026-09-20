@@ -14,6 +14,7 @@ import {
   messages,
   originalMessageKey,
   runMigrations,
+  StorageError,
   type Folder,
   type Storage,
   dropTestDatabase,
@@ -1128,7 +1129,7 @@ suite("SteadyStateService and ReconciliationService", () => {
     expect(marked.rows[0].count).toBe(65_536);
   }, 120_000);
 
-  it("logs the reason a contained folder failure was contained", async () => {
+  it("logs a contained folder failure with its id and an approved kind", async () => {
     const { accountId, folderIds } = await setupAccount([{ name: "INBOX", role: "inbox" }]);
     const folder = folderIds.get("INBOX")!;
     // No mailbox is loaded, so the folder's select fails inside the cycle.
@@ -1144,10 +1145,173 @@ suite("SteadyStateService and ReconciliationService", () => {
     // The failure was contained and the cycle still closed.
     expect(summary.folderErrors).toBe(1);
     expect(await eventsOf("sync.status", accountId)).toHaveLength(1);
-    // The diagnostic names the folder without credentials or content.
+    // The diagnostic names the folder by internal id with an approved kind;
+    // the folder name and the error text stay out (SPEC section 9).
     expect(warns).toHaveLength(1);
-    expect(warns[0]).toContain(folder.name);
     expect(warns[0]).toContain(folder.id);
+    expect(warns[0]).toContain("kind=mailbox_error");
+    expect(warns[0]).not.toContain(folder.name);
     expect(warns[0]).toContain("contained");
+    const status = (await eventsOf("sync.status", accountId))[0]!;
+    expect(status).toMatchObject({
+      folderErrors: 1,
+      folderFailureKinds: ["mailbox_error"],
+    });
+  });
+
+  it("keeps private error text, folder names, and content out of every contained diagnostic", async () => {
+    const SENTINEL = "SENTINEL-private-7f3a1";
+    const folderName = `Folder ${SENTINEL}`;
+    const { accountId, folderIds } = await setupAccount([{ name: folderName }]);
+    const folder = folderIds.get(folderName)!;
+
+    // Doubles fail every surface the cycle contains, with private values
+    // planted in the folder name, the body job's folder name, nested database
+    // error text, plain error text, and a thrown non-Error value.
+    const db = createDatabase(pool);
+    const backfill = {
+      runBatch: async () => {
+        throw Object.assign(new Error(`Failed query: insert into messages … ${SENTINEL}`), {
+          cause: Object.assign(
+            new Error(`invalid byte sequence for encoding "UTF8": 0x00 — ${SENTINEL}`),
+            { code: "22021" },
+          ),
+        });
+      },
+    } as unknown as BackfillService;
+    const bodyMessageId = randomUUID();
+    const bodies = {
+      pendingBodies: async () => [
+        { messageId: bodyMessageId, folderId: folder.id, folderName: `Jobs ${SENTINEL}`, uid: 9, uidvalidity: 1 },
+      ],
+      fetchBody: async () => {
+        throw new Error(`body fetch failed for subject '${SENTINEL}'`);
+      },
+      pendingBodyCount: async () => 0,
+    } as unknown as BodyFetchService;
+    const threads = {
+      reconcileAccount: async () => {
+        throw `thread pass ${SENTINEL} threw a string`;
+      },
+      pendingCount: async () => 0,
+    } as unknown as ThreadService;
+
+    const warns: string[] = [];
+    const runner = new SyncRunner(db, backfill, bodies, threads, {} as SteadyStateService, {} as ReconciliationService, {
+      logger: { warn: (message) => { warns.push(message); } },
+    });
+    const summary = await runner.runAccountCycle(new FakeMailboxSession(), accountId);
+
+    // Containment held: every surface failed, the cycle still closed.
+    expect(summary).toMatchObject({
+      folderErrors: 1,
+      bodyErrors: 1,
+      threadErrors: 1,
+      folderFailureKinds: ["database_22021"],
+      bodyFailureKinds: ["unknown"],
+      threadFailureKinds: ["unknown"],
+    });
+    expect(await eventsOf("sync.status", accountId)).toHaveLength(1);
+
+    // Every diagnostic names internal identifiers and approved kinds only.
+    expect(warns).toHaveLength(3);
+    expect(warns[0]).toContain(`folder=${folder.id}`);
+    expect(warns[0]).toContain("kind=database_22021");
+    expect(warns[1]).toContain(`message=${bodyMessageId}`);
+    expect(warns[1]).toContain("uid=9");
+    expect(warns[1]).toContain("kind=unknown");
+    expect(warns[2]).toContain("kind=unknown");
+
+    const status = (await eventsOf("sync.status", accountId))[0]!;
+    const recorded = JSON.stringify({ warns, summary, payload: status });
+    expect(recorded).not.toContain(SENTINEL);
+    expect(recorded).not.toContain(folderName);
+  });
+
+  it("carries a contained storage fault's code into every kind record", async () => {
+    const SENTINEL = "SENTINEL-private-7f3a1";
+    const { accountId, folderIds } = await setupAccount([{ name: "INBOX" }]);
+    const folder = folderIds.get("INBOX")!;
+    const backfill = {
+      runBatch: async () => {
+        throw new StorageError("io_failed", `read of the durable object failed: ${SENTINEL}`);
+      },
+    } as unknown as BackfillService;
+    const bodies = {
+      pendingBodies: async () => [],
+      pendingBodyCount: async () => 0,
+    } as unknown as BodyFetchService;
+    const threads = {
+      reconcileAccount: async () => ({ examined: 0, linksChanged: 0 }),
+      pendingCount: async () => 0,
+    } as unknown as ThreadService;
+
+    const warns: string[] = [];
+    const runner = new SyncRunner(createDatabase(pool), backfill, bodies, threads, {} as SteadyStateService, {} as ReconciliationService, {
+      logger: { warn: (message) => { warns.push(message); } },
+    });
+    const summary = await runner.runAccountCycle(new FakeMailboxSession(), accountId);
+
+    // The storage family reaches the log line and both durable records
+    // through the real containment path, as a code only.
+    expect(summary.folderErrors).toBe(1);
+    expect(summary.folderFailureKinds).toEqual(["storage_io_failed"]);
+    expect(warns[0]).toContain(`folder=${folder.id}`);
+    expect(warns[0]).toContain("kind=storage_io_failed");
+    const status = (await eventsOf("sync.status", accountId))[0]!;
+    expect(status).toMatchObject({ folderFailureKinds: ["storage_io_failed"] });
+    expect(JSON.stringify({ warns, summary, payload: status })).not.toContain(SENTINEL);
+  });
+
+  it("records one entry per failure kind and stops at eight distinct kinds", async () => {
+    const SENTINEL = "SENTINEL-private-7f3a1";
+    const names = Array.from({ length: 10 }, (_unused, index) => `Kind ${index}`);
+    const { accountId } = await setupAccount(names.map((name) => ({ name })));
+    // Ten failing folders, nine distinct codes, the first one repeated: the
+    // repeated kind collapses and the ninth distinct kind stays off the
+    // record.
+    const codes = ["22001", "22001", "22002", "22003", "22004", "22005", "22006", "22007", "22008", "22009"];
+    let call = 0;
+    const backfill = {
+      runBatch: async () => {
+        const code = codes[call]!;
+        call += 1;
+        throw Object.assign(new Error(`Failed query: insert into messages … ${SENTINEL}`), {
+          cause: Object.assign(
+            new Error(`invalid byte sequence for encoding "UTF8" — ${SENTINEL}`),
+            { code },
+          ),
+        });
+      },
+    } as unknown as BackfillService;
+    const bodies = {
+      pendingBodies: async () => [],
+      pendingBodyCount: async () => 0,
+    } as unknown as BodyFetchService;
+    const threads = {
+      reconcileAccount: async () => ({ examined: 0, linksChanged: 0 }),
+      pendingCount: async () => 0,
+    } as unknown as ThreadService;
+
+    const warns: string[] = [];
+    const runner = new SyncRunner(createDatabase(pool), backfill, bodies, threads, {} as SteadyStateService, {} as ReconciliationService, {
+      logger: { warn: (message) => { warns.push(message); } },
+    });
+    const summary = await runner.runAccountCycle(new FakeMailboxSession(), accountId);
+
+    expect(summary.folderErrors).toBe(10);
+    expect(summary.folderFailureKinds).toEqual([
+      "database_22001",
+      "database_22002",
+      "database_22003",
+      "database_22004",
+      "database_22005",
+      "database_22006",
+      "database_22007",
+      "database_22008",
+    ]);
+    const status = (await eventsOf("sync.status", accountId))[0]!;
+    expect(status).toMatchObject({ folderFailureKinds: summary.folderFailureKinds });
+    expect(JSON.stringify({ warns, summary, payload: status })).not.toContain(SENTINEL);
   });
 });
