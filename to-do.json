@@ -2073,7 +2073,7 @@
       "id": "T069",
       "title": "Revalidate folder generations inside bulk action loops",
       "priority": 2,
-      "status": "todo",
+      "status": "done",
       "details": "executeFolderGroup compares the folder generation once when it selects the group (packages/actions/src/service.ts:404-407) and then performs up to 500 remote writes against frozen UIDs with no recheck. A UIDVALIDITY change during the batch can retarget a later write onto a different message, and a move with no condition can expunge the wrong local occurrence (service.ts:492). The mailbox port already exposes revalidate (packages/actions/src/mailbox.ts:47-48) and sync calls it before every mutation window (packages/sync/src/steady.ts:243), but no actions path calls it. Recheck the generation through the loop, at a bounded interval or before each write, and stop the group as conflicted when the folder moved. This covers the execution window; T061 covers the freeze-time race in the same file.",
       "depends_on": [
         "T061"
@@ -2082,12 +2082,13 @@
         "actions",
         "safety"
       ],
-      "updated_at": "2026-09-20T02:52:12Z",
+      "updated_at": "2026-09-20T11:05:00Z",
       "files": [
         "packages/actions/src/service.ts",
         "packages/actions/src/mailbox.ts",
         "packages/actions/test/service.test.ts"
-      ]
+      ],
+      "notes": "Done. executeFolderGroup now revalidates the selected folder's generation through the item loop, before every item, and stops the group the moment the generation moved: the current item and the rest of the group conflict as generation_changed with the observed generation, keeping the receipts already committed. Per-item was chosen over a bounded interval because the port's revalidate is one SELECT on the open connection and both the write and the no-op confirm read flags fetched against the old generation.\nRegression test: two mark_read items in one group; the executor wrapper rebuilds the folder (uidvalidity 1 -> 2) after the first write. Asserts [confirmed, conflicted], outcome reason generation_changed observed 2, one executor call, and the untouched occurrence keeps revision 1. Pre-fix failure (service.ts stashed): 'expected [ confirmed, confirmed ] to deeply equal [ confirmed, conflicted ]' - the second write landed against the rebuilt folder.\nT061 (same file) covers the freeze-time race this task left; verification: actions tsc clean, 39/39 tests."
     },
     {
       "id": "T070",

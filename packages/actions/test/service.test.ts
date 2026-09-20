@@ -26,6 +26,7 @@ import {
   ActionService,
   TwoWayActionExecutor,
   type MailActionSubmission,
+  type PreparedActionItem,
 } from "../src/index.ts";
 import { FakeActionMailbox } from "./fake-action-mailbox.ts";
 import { FakeActionExecutor } from "./fake-executor.ts";
@@ -471,6 +472,41 @@ suite("ActionService", () => {
     // The write refused to guess, so the executor and the row stayed idle.
     expect(executor.calls).toHaveLength(0);
     expect((await occurrenceRow(occurrence.id)).revision).toBe(1);
+  });
+
+  it("stops the group when the folder generation moves mid-batch", async () => {
+    const { accountId, inboxId } = await setupAccount();
+    const first = await seedOccurrence(accountId, inboxId, 1, { unread: true });
+    const second = await seedOccurrence(accountId, inboxId, 2, { unread: true });
+    const mailbox = mailboxOf([first, second]);
+    const { service, executor } = newService();
+
+    // The server rebuilds the folder right after the first write lands: the
+    // second UID now belongs to the new UID space, where it names anything.
+    const originalApply = executor.apply.bind(executor);
+    let writes = 0;
+    executor.apply = async (box: FakeActionMailbox, item: PreparedActionItem) => {
+      const outcome = await originalApply(box, item);
+      writes += 1;
+      if (writes === 1) {
+        box.setUidValidity("INBOX", 2);
+      }
+      return outcome;
+    };
+
+    const queued = await service.submit(submission(accountId, "mark_read", [first.id, second.id]));
+    const result = await service.execute(queued.receipt.actionId, mailbox);
+    expect(result.state).toBe("executed");
+    // The first item committed; the rest of the group conflicts instead of
+    // writing against the rebuilt folder.
+    expect(result.receipt.items.map((item) => item.status)).toEqual(["confirmed", "conflicted"]);
+    expect(result.receipt.items[1]!.outcome).toMatchObject({
+      reason: "generation_changed",
+      observed: 2,
+    });
+    expect(executor.calls).toHaveLength(1);
+    // The untouched item keeps its local state.
+    expect((await occurrenceRow(second.id)).revision).toBe(1);
   });
 
   it("conflicts a target the refreshed mailbox no longer holds", async () => {

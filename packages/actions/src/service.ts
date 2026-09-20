@@ -411,8 +411,22 @@ export class ActionService<M extends ActionMailbox = ActionMailbox> {
     // no-op and prove the targets still exist.
     const remoteFlags = await mailbox.fetchFlags(items.map((item) => item.target.uid));
     const remoteByUid = new Map(remoteFlags.map((flags) => [flags.uid, flags]));
+    const generation = folder.uidvalidity;
 
-    for (const item of items) {
+    for (const [index, item] of items.entries()) {
+      // A generation change during the batch retargets every later UID onto
+      // whatever the new UID space holds, so no write and no no-op confirm
+      // may run against the stale selection (SPEC F2). Revalidate before
+      // each item; the moment the folder moved, the rest of the group
+      // conflicts instead of guessing.
+      const recheck = await mailbox.revalidate();
+      if (recheck.uidValidity !== generation) {
+        await this.conflictItems(action, items.slice(index), "generation_changed", {
+          observed: recheck.uidValidity,
+        });
+        return null;
+      }
+
       const remote = remoteByUid.get(item.target.uid);
       if (remote === undefined) {
         await this.commitDisposition(action, item, this.conflict("absent_remote"));
