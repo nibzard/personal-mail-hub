@@ -130,8 +130,8 @@ export function AddAccountCard({
           : `IMAP failed: ${test.imap.error?.message ?? test.imap.stage}`,
         test.smtp.ok ? "SMTP ok" : `SMTP failed: ${test.smtp.error?.message ?? test.smtp.stage}`,
       ];
-      setNote(`Mailbox added. ${halves.join("; ")}.`);
       reset();
+      setNote(`Mailbox added. ${halves.join("; ")}.`);
       setOpen(false);
     } catch (cause: unknown) {
       setError(toApiError(cause));
@@ -142,9 +142,12 @@ export function AddAccountCard({
 
   if (!open) {
     return (
-      <Button variant="outline" className="w-full" onClick={() => setOpen(true)}>
-        Add mailbox
-      </Button>
+      <div className="flex flex-col gap-3">
+        {note !== null && <p role="status" className="text-sm">{note}</p>}
+        <Button variant="outline" className="w-full" onClick={() => setOpen(true)}>
+          Add mailbox
+        </Button>
+      </div>
     );
   }
 

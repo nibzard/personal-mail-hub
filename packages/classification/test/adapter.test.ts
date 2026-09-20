@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_JEV_API_BASE_URL,
   JEV_MODEL,
+  QUESTION_SET_VERSION,
   TypeSafeJevAdapter,
   jevAdapterFromEnv,
   type JevAdapterError,
@@ -28,25 +29,25 @@ function recordingTransport(payload: unknown, status = 200) {
   return { transport, requests };
 }
 
-/** A valid answer payload for the whole question set. */
-function validPayload(): Record<string, unknown> {
+/** Wire shape documented at https://docs.typesafe.ai/api (2026-09-20). */
+function validPayload() {
   return {
-    model: JEV_MODEL,
+    model: "jev-1.13.0",
     answers: {
-      class_hint: "newsletter",
-      sender_relationship: "bulk_sender",
-      asks_action: false,
-      asks_reply: false,
-      time_sensitive: false,
+      class_hint: {
+        type: "choice", choice: "newsletter", confidence: 0.91,
+        probabilities: { correspondence: 0.02, receipt: 0, newsletter: 0.95,
+          notification: 0.01, marketing: 0.01, security_alert: 0, bounce: 0, other: 0.01 },
+      },
+      sender_relationship: {
+        type: "choice", choice: "bulk_sender", confidence: 0.8,
+        probabilities: { known_contact: 0.02, service_in_use: 0.06, bulk_sender: 0.9, unknown: 0.02 },
+      },
+      asks_action: { type: "noul", noul: 0.2 },
+      asks_reply: { type: "noul", noul: 0.1 },
+      time_sensitive: { type: "noul", noul: 0.05 },
     },
-    confidence: {
-      class_hint: 0.91,
-      sender_relationship: 0.8,
-      asks_action: 0.2,
-      asks_reply: 0.1,
-      time_sensitive: 0.05,
-    },
-    usage: { inputTokens: 1843 },
+    usage: { input_tokens: 1843, output_tokens: 65 },
   };
 }
 
@@ -60,16 +61,18 @@ describe("type-safe jev adapter", () => {
     const decision = await adapter(transport).ask({ text: "From: a@b.example\nSubject: s\n\nbody" });
 
     expect(requests).toHaveLength(1);
-    expect(requests[0]!.url).toBe(`${DEFAULT_JEV_API_BASE_URL}/v1/evaluations`);
+    expect(requests[0]!.url).toBe(`${DEFAULT_JEV_API_BASE_URL}/v1/systemone`);
     expect((requests[0]!.init.headers as Record<string, string>).Authorization).toBe("Bearer test-key");
     const body = JSON.parse(String(requests[0]!.init.body)) as {
       model: string;
-      input: { text: string };
-      questions: { id: string; kind: string }[];
+      state: string;
+      questions: Record<string, { type: string; instructions: string; criteria?: Record<string, string> }>;
     };
-    expect(body.model).toBe(JEV_MODEL);
-    expect(body.input.text).toBe("From: a@b.example\nSubject: s\n\nbody");
-    expect(body.questions.map((question) => question.id)).toEqual([
+    expect(body.model).toBe("jev-1.13.0");
+    expect(QUESTION_SET_VERSION).toBe("classify-2");
+    expect(body).not.toHaveProperty("input");
+    expect(body.state).toBe("From: a@b.example\nSubject: s\n\nbody");
+    expect(Object.keys(body.questions)).toEqual([
       "class_hint",
       "sender_relationship",
       "asks_action",
@@ -77,6 +80,15 @@ describe("type-safe jev adapter", () => {
       "time_sensitive",
     ]);
 
+    expect(body.questions.class_hint?.type).toBe("choice");
+    expect(body.questions.class_hint?.criteria).toHaveProperty("correspondence");
+    expect(body.questions.sender_relationship?.criteria).toHaveProperty("unknown");
+    for (const key of ["asks_action", "asks_reply", "time_sensitive"]) {
+      expect(body.questions[key]?.type).toBe("noul");
+    }
+    for (const question of Object.values(body.questions)) {
+      expect(question.instructions.length).toBeGreaterThan(10);
+    }
     expect(decision.model).toBe(JEV_MODEL);
     expect(decision.answers).toEqual({
       classHint: "newsletter",
@@ -136,16 +148,50 @@ describe("type-safe jev adapter", () => {
 
   it("reports an invalid response when an answer sits outside the offered set", async () => {
     const payload = validPayload();
-    (payload.answers as Record<string, unknown>).class_hint = "urgent_letter";
+    payload.answers.class_hint.choice = "urgent_letter";
     const { transport } = recordingTransport(payload);
     await expect(adapter(transport).ask({ text: "x" })).rejects.toMatchObject({ kind: "invalid_response" });
   });
 
-  it("reports an invalid response when a yes/no answer is not boolean", async () => {
+  it.each([0, 0.2, 0.5, 0.8, 1])("preserves a Noul probability of %s for the action gate", async (probability) => {
     const payload = validPayload();
-    (payload.answers as Record<string, unknown>).asks_action = "yes";
+    payload.answers.asks_action.noul = probability;
+    const { transport } = recordingTransport(payload);
+    const decision = await adapter(transport).ask({ text: "x" });
+    expect(decision.answers.asksAction).toBe(probability > 0.5);
+    expect(decision.confidence.asksAction).toBe(probability);
+  });
+
+  it.each([-0.1, 1.1, null, "yes", true])("rejects an invalid Noul value (%s)", async (value) => {
+    const payload = validPayload();
+    Object.assign(payload.answers.asks_action, { noul: value });
     const { transport } = recordingTransport(payload);
     await expect(adapter(transport).ask({ text: "x" })).rejects.toMatchObject({ kind: "invalid_response" });
+  });
+
+  it.each(["class_hint", "sender_relationship", "asks_action", "asks_reply", "time_sensitive"])(
+    "rejects a missing or wrongly typed %s answer", async (key) => {
+      for (const replacement of [undefined, { type: "score", score: 1 }]) {
+        const payload = validPayload();
+        Object.assign(payload.answers, { [key]: replacement });
+        const { transport } = recordingTransport(payload);
+        await expect(adapter(transport).ask({ text: "x" })).rejects.toMatchObject({ kind: "invalid_response" });
+      }
+    },
+  );
+
+  it("rejects a response from a different model", async () => {
+    const payload = validPayload();
+    payload.model = "different-model";
+    const { transport } = recordingTransport(payload);
+    await expect(adapter(transport).ask({ text: "x" })).rejects.toMatchObject({ kind: "invalid_response" });
+  });
+
+  it("does not invent confidence when the choice omits it", async () => {
+    const payload = validPayload();
+    Object.assign(payload.answers.class_hint, { confidence: undefined });
+    const { transport } = recordingTransport(payload);
+    expect((await adapter(transport).ask({ text: "x" })).confidence.classHint).toBeNull();
   });
 
   it("reports an invalid response when the body is not JSON", async () => {
