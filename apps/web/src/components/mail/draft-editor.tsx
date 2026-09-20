@@ -296,20 +296,43 @@ export function DraftEditor({
     setPendingUploads(await localUploadsOf(draftId));
   }, [draftId]);
 
+  // A replay pass can begin and end with the same queue counters: work
+  // queued while no pass was running never moved the published snapshot,
+  // and the drain settles it back to the same numbers. The pass boundary
+  // itself is the reliable signal, so the lists re-read the store when a
+  // pass ends — the acknowledged upload still needs its attach step, and
+  // the waiting list must drop it (SPEC F6).
   useEffect(() => {
+    if (sync.syncing) {
+      return;
+    }
     void refreshAttachments();
-  }, [refreshAttachments, sync.snapshot?.pendingActions, sync.snapshot?.pendingUploads]);
+  }, [
+    refreshAttachments,
+    sync.syncing,
+    sync.snapshot?.pendingActions,
+    sync.snapshot?.pendingUploads,
+  ]);
 
   // Uploads the queue acknowledged while the editor was closed still need
-  // their attach step (SPEC F6).
+  // their attach step (SPEC F6). A refused attach must reach the editor:
+  // the send stays queued behind the missing link until it succeeds.
   useEffect(() => {
     if (!sync.online || session.recoveryGeneration === null || attachments === null) {
       return;
     }
     let live = true;
-    void attachAcknowledgedUploads(session, draftId, attachments).then((changed) => {
-      if (live && changed) {
+    void attachAcknowledgedUploads(session, draftId, attachments).then((outcome) => {
+      if (!live) {
+        return;
+      }
+      if (outcome.changed) {
         void refreshAttachments();
+      }
+      if (outcome.failed > 0) {
+        setFileNote(
+          `${outcome.failed} attachment(s) could not be linked to the draft. The send waits until they are.`,
+        );
       }
     });
     return () => {

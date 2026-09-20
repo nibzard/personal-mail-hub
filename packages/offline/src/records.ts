@@ -68,6 +68,8 @@ export interface LocalUpload {
   bytes: Blob;
   /** The upload id the server issued, once it acknowledges the bytes. */
   serverId: string | null;
+  /** When the draft referenced this upload on the server, once it does. */
+  attachedAt: number | null;
   /** The generation the upload request was created under. */
   recoveryGeneration: string;
   createdAt: number;

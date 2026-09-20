@@ -198,6 +198,11 @@ export class OfflineStore {
     await this.db.uploads.update(localId, { serverId, bytes: new Blob([]) });
   }
 
+  /** Record that the server draft now references one acknowledged upload. */
+  async markUploadAttached(localId: string): Promise<void> {
+    await this.db.uploads.update(localId, { attachedAt: this.now() });
+  }
+
   /** Drop one upload record and its bytes, with the action that named them. */
   async deleteUpload(localId: string): Promise<void> {
     await this.db.uploads.delete(localId);
@@ -246,7 +251,9 @@ export class OfflineStore {
   /** The actions still waiting to leave this device. */
   async pendingActions(): Promise<QueuedAction[]> {
     const pending = await this.db.queue.where("state").equals("pending").toArray();
-    return pending.sort((a, b) => a.queuedAt - b.queuedAt);
+    return pending.sort(
+      (a, b) => a.queuedAt - b.queuedAt || replayRank(a.payload.kind) - replayRank(b.payload.kind),
+    );
   }
 
   /** One queued action by its local id, when it still exists. */
@@ -340,4 +347,26 @@ function compareCachedRows(a: SearchResultItem, b: SearchResultItem): number {
     return bt - at;
   }
   return a.messageId < b.messageId ? -1 : a.messageId > b.messageId ? 1 : 0;
+}
+
+/**
+ * The replay order of equal timestamps. One editor burst can queue a save
+ * and its send in the same millisecond, and the store's key order is
+ * meaningless there, so the kinds carry their own order: bytes reach the
+ * server before the work that needs them, and a draft's save reaches the
+ * server before its send. Otherwise the send can replay first and mail the
+ * pre-edit content.
+ */
+function replayRank(kind: QueuedPayload["kind"]): number {
+  switch (kind) {
+    case "upload":
+      return 0;
+    case "draft-save":
+      return 1;
+    case "flag":
+    case "move":
+      return 2;
+    case "send":
+      return 3;
+  }
 }

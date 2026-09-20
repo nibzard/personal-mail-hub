@@ -1079,6 +1079,63 @@ test.describe("compose and send", () => {
     await expect(list).toBeHidden();
   });
 
+  test("an offline attachment links to the draft before its send leaves", async ({
+    page,
+    context,
+  }) => {
+    await openInbox(page);
+    const dialog = await startNewDraft(page, "Personal");
+    await dialog.getByLabel("To").fill("sam@personal.example");
+    await dialog.getByLabel("Subject").fill("Offline attachment");
+
+    // The file queues on this device; nothing about it is on the server.
+    await context.setOffline(true);
+    await dialog.locator("#draft-file-input").setInputFiles({
+      name: "offline-notes.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from("offline attachment bytes"),
+    });
+    const list = dialog.getByTestId("draft-attachments");
+    await expect(list).toContainText("offline-notes.txt");
+    await expect(list.getByText("Waits to upload")).toBeVisible();
+
+    // The send cannot leave while the file holds no server link: the editor
+    // holds its button, and the queue would refuse the send anyway.
+    const send = dialog.getByRole("button", { name: "Send", exact: true });
+    await expect(send).toBeDisabled();
+    await expect(dialog.getByText(/The send queues after 1 file/u)).toBeVisible();
+
+    // On return the bytes upload and the draft links them; only a linked
+    // file lets the send leave.
+    const uploaded = page.waitForRequest(
+      (request) => request.url().includes("/api/uploads") && request.method() === "POST",
+    );
+    const attached = page.waitForRequest(
+      (request) => /\/api\/drafts\/d-\d+\/uploads$/u.test(request.url()) && request.method() === "POST",
+    );
+    await context.setOffline(false);
+    await (await uploaded).response();
+    await (await attached).response();
+    await expect(list).toContainText("offline-notes.txt");
+    await expect(list.getByText("Attached")).toBeVisible();
+
+    await expect(send).toBeEnabled();
+    await send.click();
+    const status = dialog.getByRole("region", { name: "Send status" });
+    await expect(status).toBeVisible({ timeout: 15_000 });
+
+    // Nothing may poll the attachment list once the flow settles: a refresh
+    // that re-triggers itself would hammer this route forever.
+    let listReads = 0;
+    page.on("request", (request) => {
+      if (/\/api\/drafts\/d-\d+\/uploads$/u.test(request.url()) && request.method() === "GET") {
+        listReads += 1;
+      }
+    });
+    await page.waitForTimeout(600);
+    expect(listReads).toBeLessThanOrEqual(2);
+  });
+
   test("a send settles, keeps its states separate from the Sent copy, and locks the draft", async ({
     page,
   }) => {

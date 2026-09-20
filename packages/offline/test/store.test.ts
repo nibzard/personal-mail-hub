@@ -150,6 +150,7 @@ describe("uploads", () => {
       sizeBytes: 3,
       bytes: new Blob([new Uint8Array([1, 2, 3])]),
       serverId: null,
+      attachedAt: null,
       recoveryGeneration: GENERATION,
     });
 

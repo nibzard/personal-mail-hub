@@ -314,6 +314,14 @@ export class OfflineSync {
       }
       // A resend is new work: a new key, never the old one (SPEC F7).
       payload.idempotencyKey = this.store.generateId();
+      // The draft may have moved while the send waited in review. The local
+      // record holds the newest server revision this device's saves earned,
+      // and the resend carries it: left frozen, the send replays against a
+      // revision its own preceding edit moved and lands back in review.
+      const local = await this.store.getLocalDraft(payload.draftId);
+      if (local !== null && local.baseRevision > payload.baseRevision) {
+        payload.baseRevision = local.baseRevision;
+      }
     }
     if (payload.kind === "draft-save") {
       if (choice.comparedWithServer !== true || typeof choice.serverRevision !== "number") {
@@ -391,8 +399,12 @@ export class OfflineSync {
     idempotencyKey: string,
     baseRevision: number,
   ): Promise<QueuedAction> {
+    // An upload counts ready only once the server draft references it: the
+    // bytes alone do not travel with a send, the link does. A file that was
+    // acknowledged but never attached would otherwise leave the mail without
+    // its attachment (SPEC F6).
     const waiting = (await this.store.uploadsForDraft(draftId)).filter(
-      (upload) => upload.serverId === null,
+      (upload) => upload.serverId === null || upload.attachedAt === null,
     );
     if (waiting.length > 0) {
       throw new UploadsUnverifiedError(waiting.length);
@@ -547,10 +559,13 @@ export class OfflineSync {
       // save that just synced moved that revision, so chain it forward:
       // without the chain, the device's own next edit replays against the
       // revision its earlier edit produced, the server refuses it as
-      // stale, and no competing change ever existed (SPEC F9).
+      // stale, and no competing change ever existed (SPEC F9). A queued
+      // send of the same draft froze its revision the same way, and its
+      // replay against the moved revision would refuse as stale for the
+      // same non-reason, so it chains forward too.
       for (const entry of pending) {
         if (
-          entry.payload.kind === "draft-save" &&
+          (entry.payload.kind === "draft-save" || entry.payload.kind === "send") &&
           entry.payload.draftId === payload.draftId &&
           entry.payload.baseRevision < revision
         ) {

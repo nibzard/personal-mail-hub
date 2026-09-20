@@ -280,6 +280,7 @@ async function queueUpload(
       sizeBytes: file.size,
       bytes: file,
       serverId: null,
+      attachedAt: null,
       recoveryGeneration: generation,
     });
     return { state: "queued-offline", filename: file.name };
@@ -330,19 +331,22 @@ export async function localUploadsOf(draftId: string): Promise<WaitingUpload[]> 
 /**
  * Attaches uploads the server acknowledged but the draft does not reference
  * yet, which happens when a queued upload replayed while the editor was
- * closed. Returns true when the attachment list changed.
+ * closed. Reports whether the attachment list changed and how many attaches
+ * the server refused: a file that stays unlinked keeps its draft's send
+ * queued behind it, so the editor must say so instead of staying quiet.
  */
 export async function attachAcknowledgedUploads(
   session: ComposeSession,
   draftId: string,
   attached: readonly DraftAttachmentView[],
-): Promise<boolean> {
+): Promise<{ changed: boolean; failed: number }> {
   const known = new Set(attached.map((attachment) => attachment.id));
   const store = offlineStore();
   if (store === null) {
-    return false;
+    return { changed: false, failed: 0 };
   }
   let changed = false;
+  let failed = 0;
   try {
     for (const upload of await store.uploadsForDraft(draftId)) {
       if (upload.serverId === null || known.has(upload.serverId)) {
@@ -350,15 +354,18 @@ export async function attachAcknowledgedUploads(
       }
       try {
         await attachUpload(session, draftId, upload.serverId);
+        await store.markUploadAttached(upload.localId);
         changed = true;
       } catch {
-        // The attach retries on the next pass; the acknowledged file is safe.
+        // The attach retries on the next pass; the acknowledged file is
+        // safe, but the send waits until the link lands, so count it.
+        failed += 1;
       }
     }
   } catch {
-    return changed;
+    return { changed, failed };
   }
-  return changed;
+  return { changed, failed };
 }
 
 //

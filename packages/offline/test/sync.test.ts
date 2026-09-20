@@ -123,6 +123,7 @@ describe("replay", () => {
       sizeBytes: 3,
       bytes: new Blob([new Uint8Array([1, 2, 3])]),
       serverId: null,
+      attachedAt: null,
       recoveryGeneration: GENERATION_A,
     });
     await sync.enqueueDraftSave("d1", 1, { markdown: "First" });
@@ -200,6 +201,72 @@ describe("replay", () => {
     expect((await sync.localDraft("d1"))?.dirty).toBe(false);
   });
 
+  it("chains a queued send's base revision when its own save syncs", async () => {
+    // The send froze the revision the editor held at enqueue time; the
+    // device's own save then moved it. A replay against the frozen revision
+    // refuses as stale and lands in review for a change nobody made.
+    const seen: string[] = [];
+    const port: OfflinePort = {
+      saveDraft: async (payload) => {
+        seen.push(`save:${payload.baseRevision}`);
+        return { state: "synced", revision: payload.baseRevision + 1 };
+      },
+      queueSend: async (payload) => {
+        seen.push(`send:${payload.baseRevision}`);
+        return { state: "synced" };
+      },
+    };
+    const { sync, store } = makeSync(port);
+    await sync.observeGeneration(GENERATION_A);
+    await store.putLocalDraft(draftRecord());
+    await sync.enqueueDraftSave("d1", 1, { markdown: "Final text" });
+    await sync.enqueueSend("d1", "key-1", 1);
+
+    const report = await sync.sync();
+    expect(report.synced).toBe(2);
+    expect(seen).toEqual(["save:1", "send:2"]);
+    expect((await sync.snapshot()).reviewActions).toHaveLength(0);
+  });
+
+  it("replays one draft's save before its send when both tie on queuedAt", async () => {
+    // One editor burst can queue the save and the send in the same
+    // millisecond. The store's key order is meaningless there, so the kinds
+    // order themselves: the save must reach the server first, or the send
+    // mails the pre-edit content.
+    const seen: string[] = [];
+    const port: OfflinePort = {
+      saveDraft: async (payload) => {
+        seen.push(`save:${payload.draftId}:${payload.patch.markdown}`);
+        return { state: "synced", revision: payload.baseRevision + 1 };
+      },
+      queueSend: async (payload) => {
+        seen.push(`send:${payload.idempotencyKey}:${payload.baseRevision}`);
+        return { state: "synced" };
+      },
+    };
+    const { sync, store } = makeSync(port);
+    await sync.observeGeneration(GENERATION_A);
+    await store.putLocalDraft(draftRecord());
+    await store.putLocalDraft(draftRecord({ draftId: "d2" }));
+    await sync.enqueueDraftSave("d2", 1, { markdown: "Other" });
+    const save = await sync.enqueueDraftSave("d1", 1, { markdown: "Final text" });
+    for (let index = 0; index < 7; index += 1) {
+      await sync.enqueueDraftSave("d2", 1, { markdown: `Filler ${index}` });
+    }
+    const send = await sync.enqueueSend("d1", "key-1", 1);
+    expect(save.localId).toBe("local-2");
+    expect(send.localId).toBe("local-10");
+    // Every action shares one timestamp, and "local-10" sorts before
+    // "local-2", so key order alone would replay the send first.
+
+    await sync.sync();
+    const saveAt = seen.indexOf("save:d1:Final text");
+    const sendAt = seen.indexOf("send:key-1:2");
+    expect(saveAt).toBeGreaterThanOrEqual(0);
+    expect(sendAt).toBeGreaterThan(saveAt);
+    expect(seen.at(-1)).toBe("send:key-1:2");
+  });
+
   it("never chains a save the queue already rebased past the synced revision", async () => {
     const seen: number[] = [];
     const port: OfflinePort = {
@@ -245,6 +312,7 @@ describe("replay", () => {
       sizeBytes: 5,
       bytes: new Blob([new Uint8Array([9, 9, 9, 9, 9])]),
       serverId: null,
+      attachedAt: null,
       recoveryGeneration: GENERATION_A,
     });
 
@@ -321,6 +389,7 @@ describe("sends", () => {
       sizeBytes: 3,
       bytes: new Blob([new Uint8Array([1, 2, 3])]),
       serverId: null,
+      attachedAt: null,
       recoveryGeneration: GENERATION_A,
     });
 
@@ -329,6 +398,12 @@ describe("sends", () => {
     );
 
     await store.markUploadAcknowledged(upload.localId, "upload-1");
+    // Acknowledged bytes are not enough: the draft must reference them, or
+    // the send leaves without the file it names.
+    await expect(sync.enqueueSend("d1", "key-1", 2)).rejects.toBeInstanceOf(
+      UploadsUnverifiedError,
+    );
+    await store.markUploadAttached(upload.localId);
     const action = await sync.enqueueSend("d1", "key-1", 2);
     expect(action.payload).toEqual({
       kind: "send",
@@ -404,6 +479,37 @@ describe("sends", () => {
     snapshot = (await sync.sync()).snapshot;
     expect(snapshot.pendingActions).toBe(0);
     expect(keys).toEqual(["key-original", expect.any(String)]);
+    expect(keys[1]).not.toBe("key-original");
+  });
+
+  it("rebases a reviewed send onto the revision its device's saves earned", async () => {
+    // While the send waited in review, this device's saves moved the draft.
+    // The resend carries the newest earned revision; left frozen, it refuses
+    // as stale and returns to review for a change this device itself made.
+    const keys: string[] = [];
+    const revisions: number[] = [];
+    const port: OfflinePort = {
+      queueSend: async (payload) => {
+        keys.push(payload.idempotencyKey);
+        revisions.push(payload.baseRevision);
+        return keys.length === 1
+          ? { state: "review", reason: "uncertain_send" }
+          : { state: "synced" };
+      },
+    };
+    const { sync, store } = makeSync(port);
+    await sync.observeGeneration(GENERATION_A);
+    await store.putLocalDraft(draftRecord({ baseRevision: 5, dirty: false }));
+    const action = await sync.enqueueSend("d1", "key-original", 2);
+    await sync.sync();
+
+    await sync.resolveReview(action.localId, {
+      choice: "rebase",
+      duplicateWarningAcknowledged: true,
+    });
+    const report = await sync.sync();
+    expect(report.synced).toBe(1);
+    expect(revisions).toEqual([2, 5]);
     expect(keys[1]).not.toBe("key-original");
   });
 
@@ -589,6 +695,7 @@ describe("orphaned uploads", () => {
       sizeBytes: 3,
       bytes: new Blob([new Uint8Array([1, 2, 3])]),
       serverId: null,
+      attachedAt: null,
       recoveryGeneration: GENERATION_A,
     });
   }
@@ -610,7 +717,9 @@ describe("orphaned uploads", () => {
     expect(uploaded).toEqual(["orphan.pdf"]);
     expect((await store.getUpload(orphan.localId))?.serverId).toBe("upload-9");
 
-    // The drained upload no longer blocks a send for its draft.
+    // The drained upload no longer blocks a send for its draft once the
+    // draft references it.
+    await store.markUploadAttached(orphan.localId);
     const send = await sync.enqueueSend("d1", "key-1", 2);
     expect(send.payload).toMatchObject({ kind: "send", draftId: "d1" });
   });
@@ -630,6 +739,7 @@ describe("orphaned uploads", () => {
       sizeBytes: 3,
       bytes: new Blob([new Uint8Array([1, 2, 3])]),
       serverId: null,
+      attachedAt: null,
       recoveryGeneration: GENERATION_A,
     });
 
@@ -656,6 +766,7 @@ describe("orphaned uploads", () => {
       sizeBytes: 3,
       bytes: new Blob([new Uint8Array([1, 2, 3])]),
       serverId: null,
+      attachedAt: null,
       recoveryGeneration: GENERATION_A,
     });
     await store.updateAction(action.localId, {
@@ -689,6 +800,7 @@ describe("failed actions", () => {
       sizeBytes: 5,
       bytes: new Blob([new Uint8Array([9, 9, 9, 9, 9])]),
       serverId: null,
+      attachedAt: null,
       recoveryGeneration: GENERATION_A,
     });
     await sync.sync();

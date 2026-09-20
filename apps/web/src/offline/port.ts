@@ -143,6 +143,29 @@ export function webOfflinePort(store: OfflineStore): OfflinePort {
       }
     },
     queueSend: async (payload) => {
+      // The bytes alone do not travel with a send, the draft's link to them
+      // does. Attach every acknowledged upload the draft does not reference
+      // yet — the editor was closed when the replay earned the ids — and
+      // stop before the send when an attach fails, so the mail never leaves
+      // without its attachment (SPEC F6).
+      for (const upload of await store.uploadsForDraft(payload.draftId)) {
+        if (upload.serverId === null) {
+          return { state: "retry", reason: "An upload this draft needs has not reached the server yet." };
+        }
+        if (upload.attachedAt !== null) {
+          continue;
+        }
+        try {
+          await apiPost(
+            `/drafts/${payload.draftId}/uploads`,
+            { uploadId: upload.serverId },
+            { headers: await generationHeaders() },
+          );
+          await store.markUploadAttached(upload.localId);
+        } catch (error) {
+          return classifyReplayFailure(error);
+        }
+      }
       try {
         await apiPost<OutboundResponse>(
           `/drafts/${payload.draftId}/send`,
