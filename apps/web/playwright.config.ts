@@ -1,4 +1,4 @@
-import { defineConfig } from "@playwright/test";
+import { defineConfig, type PlaywrightWorkerOptions } from "@playwright/test";
 
 /*
  * Browser checks for the interface (SPEC section 12, "Interface acceptance"
@@ -15,6 +15,10 @@ import { defineConfig } from "@playwright/test";
 
 const port = Number(process.env.E2E_PORT ?? 4180);
 const baseURL = `http://127.0.0.1:${port}`;
+// SPEC F12 records the browsers a release check ran on. The default stays
+// the cached Linux Chromium; a macOS machine overrides the channel, for
+// example E2E_BROWSER_CHANNEL=safari or chrome, and runs the same suites.
+const browserChannel = process.env.E2E_BROWSER_CHANNEL;
 
 export default defineConfig({
   testDir: "e2e",
@@ -34,6 +38,9 @@ export default defineConfig({
     // Pin the locale the interface formats dates and counts with.
     locale: "en-US",
     timezoneId: "UTC",
+    ...(browserChannel === undefined
+      ? {}
+      : { channel: browserChannel as PlaywrightWorkerOptions["channel"] }),
   },
   webServer: {
     command: "npm run build && node e2e/fixture-server.mjs",

@@ -5,7 +5,9 @@
 - `apps/web` contains the React client. Its `e2e` folder holds the browser
   checks: a fixture API server that serves the production `dist` build with
   controlled mail data, the `flows` browser workflows, and the `interface`
-  accessibility and visual suite.
+  accessibility and visual suite. `e2e/DEVICE-MATRIX.md` records which
+  browsers and devices the checks ran on, and which platforms — Safari on
+  macOS and a real iPhone — stay untested (SPEC F12).
 - `apps/api` contains HTTP routes and application services.
 - `apps/worker` contains background job entry points.
 - `apps/admin` contains the operator command line (`npm run admin -- ...`).
