@@ -221,13 +221,15 @@ suite("correction service", () => {
     // owner's own placement, not another sender, not another account.
     expect(result).toMatchObject({ scope: "sender", sender: "News@Example.com", reapplied: 2 });
 
+    // The row keys the address lowercase; the result and the event keep the
+    // address as it stood on the corrected message.
     const [override] = await db
       .select()
       .from(senderOverrides)
       .where(eq(senderOverrides.accountId, accountId));
     expect(override!).toMatchObject({
       accountId,
-      sender: "News@Example.com",
+      sender: "news@example.com",
       classHint: "marketing",
       note: "Retail broadcasts",
     });
@@ -274,6 +276,42 @@ suite("correction service", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.classHint).toBe("notification");
     expect((await corrections()).length).toBe(eventsBefore + 2);
+  });
+
+  it("collapses two corrections that differ only in address case", async () => {
+    const accountId = await insertAccount();
+    const mixedCase = await insertMessage(accountId, {
+      senderAddress: "Cron@Example.com",
+      classHint: "newsletter",
+      classSource: "jev",
+    });
+    const otherCase = await insertMessage(accountId, {
+      senderAddress: "cron@example.com",
+      classHint: "newsletter",
+      classSource: "jev",
+    });
+
+    await service.correct(
+      { requestGeneration: GENERATION },
+      { messageId: mixedCase, scope: "sender", classHint: "other" },
+    );
+    const result = await service.correct(
+      { requestGeneration: GENERATION },
+      { messageId: otherCase, scope: "sender", classHint: "notification" },
+    );
+
+    // One lowercase row holds the newest correction; the raw address stays
+    // in the result and the audit event.
+    expect(result).toMatchObject({ scope: "sender", sender: "cron@example.com", classHint: "notification" });
+    const rows = await db
+      .select()
+      .from(senderOverrides)
+      .where(eq(senderOverrides.accountId, accountId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.sender).toBe("cron@example.com");
+    expect(rows[0]!.classHint).toBe("notification");
+    const recorded = await corrections();
+    expect(recorded.at(-1)!.payload).toMatchObject({ scope: "sender", sender: "cron@example.com" });
   });
 
   it("records a rule correction as the request to edit pinned code", async () => {

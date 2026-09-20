@@ -222,6 +222,36 @@ suite("classification service", () => {
     expect(row!.metadata).toMatchObject({ classSource: "override" });
   });
 
+  it("answers from the canonical override when case variants sit beside it", async () => {
+    adapter = stubAdapter({ classHint: "correspondence" });
+    service = buildService();
+    const { accountId, messageId } = await insertMessage({
+      subject: "Your verification code is 4821",
+      senderAddress: "NOREPLY@shop.example",
+    });
+    // The two rows a database written before the lowercase keying can hold:
+    // an older variant write and the lowercase row every later correction
+    // lands on. New mail must answer from the newest one, not from
+    // whichever row an unordered read happens to return.
+    await db.insert(senderOverrides).values({
+      accountId,
+      sender: "NOREPLY@shop.example",
+      classHint: "other",
+    });
+    await db.insert(senderOverrides).values({
+      accountId,
+      sender: "noreply@shop.example",
+      classHint: "marketing",
+    });
+
+    const summary = await service.runCycle();
+    expect(summary.bySource.override).toBe(1);
+    expect(adapter.texts).toHaveLength(0);
+    const [row] = await db.select().from(messages).where(eq(messages.id, messageId));
+    expect(row!.classHint).toBe("marketing");
+    expect(row!.metadata).toMatchObject({ classSource: "override" });
+  });
+
   it("lets a confirmed manual placement end the question", async () => {
     adapter = stubAdapter();
     service = buildService();

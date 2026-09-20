@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { MESSAGE_CLASSES, type HealthzClassification, type MessageClass, type SuggestionSource } from "@mail-hub/contracts";
 import {
   actionItems,
@@ -449,6 +449,15 @@ export class ClassificationService {
           eq(senderOverrides.accountId, accountId),
           sql`lower(${senderOverrides.sender}) = ${senderAddress.toLowerCase()}`,
         ),
+      )
+      // The row carries no timestamp, so the newest write is named another
+      // way: the lowercase-canonical row is the only one the correction
+      // upsert maintains, so every variant row beside it is older and must
+      // not shadow it. Two stale variants cannot both be canonical; the
+      // sender tiebreak keeps that pick stable instead of unspecified.
+      .orderBy(
+        desc(sql`${senderOverrides.sender} = lower(${senderOverrides.sender})`),
+        senderOverrides.sender,
       )
       .limit(1);
     const row = rows[0];

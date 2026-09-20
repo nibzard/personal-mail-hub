@@ -178,12 +178,15 @@ export class CorrectionService {
         // The override is the durable record; the sweep re-applies it to the
         // sender's mail in this account so the correction takes effect now,
         // not only on the next arrival. Mail the owner placed by hand keeps
-        // its level 1 answer.
+        // its level 1 answer. The sender is keyed lowercase, so two case
+        // variants of one address share a row instead of splitting the
+        // owner's record; the audit event keeps the address as it stood on
+        // the corrected message.
         await tx
           .insert(senderOverrides)
           .values({
             accountId: corrected.account_id,
-            sender,
+            sender: sender.toLowerCase(),
             classHint: request.classHint,
             ...(note === null ? {} : { note }),
           })
