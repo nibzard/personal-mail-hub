@@ -26,4 +26,19 @@ describe("runAdminCommand", () => {
   it("prints usage and fails for the auth group without a subcommand", async () => {
     await expect(runAdminCommand(["auth"], { DATABASE_URL: "postgres://localhost/mail" })).resolves.toBe(1);
   });
+
+  it("rejects extra arguments after a valid command", async () => {
+    // A typo after the command used to run the command anyway; the CLI must
+    // refuse before it opens the database.
+    await expect(
+      runAdminCommand(["recovery", "status", "stauts"], {
+        DATABASE_URL: "postgres://localhost/mail",
+      }),
+    ).resolves.toBe(1);
+    await expect(
+      runAdminCommand(["auth", "bootstrap", "--force"], {
+        DATABASE_URL: "postgres://localhost/mail",
+      }),
+    ).resolves.toBe(1);
+  });
 });

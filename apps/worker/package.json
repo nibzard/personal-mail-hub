@@ -6,7 +6,8 @@
   "scripts": {
     "check": "tsc --noEmit --pretty false",
     "dev": "tsx watch src/main.ts",
-    "start": "tsx src/main.ts"
+    "start": "tsx src/main.ts",
+    "test": "vitest run"
   },
   "dependencies": {
     "@mail-hub/accounts": "0.1.0",
@@ -21,6 +22,7 @@
   },
   "devDependencies": {
     "@types/node": "26.6.1",
-    "tsx": "4.21.0"
+    "tsx": "4.21.0",
+    "vitest": "5.0.1"
   }
 }

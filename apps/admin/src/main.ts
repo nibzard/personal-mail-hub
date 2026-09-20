@@ -40,6 +40,13 @@ export async function runAdminCommand(args: string[], env: AdminEnvironment = pr
     process.stdout.write(USAGE);
     return 1;
   }
+  if (args.length > 2) {
+    // Extra arguments used to be ignored, so a typo after the command ran
+    // the command anyway. Reject what the CLI never understood.
+    process.stderr.write(`Unknown argument(s): ${args.slice(2).join(" ")}\n\n`);
+    process.stdout.write(USAGE);
+    return 1;
+  }
 
   const connectionString = env.DATABASE_URL;
   if (connectionString === undefined || connectionString.length === 0) {

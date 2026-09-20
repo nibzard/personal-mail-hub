@@ -33,6 +33,17 @@ server {
     add_header Referrer-Policy "no-referrer" always;
     add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'sha256-KrF3YERYGpK83OR971bdVpx3o5FZTsPVJM69mQpjg/I='; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" always;
 
+    # Compress the text the build serves. `text/html` is always compressed
+    # when gzip is on; listing it in gzip_types makes nginx warn, so it stays
+    # out. The size floor keeps small responses uncompressed, where the
+    # gzip header costs more than it saves.
+    gzip on;
+    gzip_vary on;
+    gzip_comp_level 5;
+    gzip_min_length 1024;
+    gzip_proxied any;
+    gzip_types text/plain text/css text/javascript application/javascript application/json application/manifest+json image/svg+xml;
+
     # The client reads same-origin /api paths (apps/web/src/lib/api.ts).
     # The trailing slash on proxy_pass strips the /api prefix. Point
     # MAIL_HUB_API_HOST at the app container, for example api:3000.

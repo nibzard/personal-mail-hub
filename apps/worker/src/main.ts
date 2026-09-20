@@ -20,6 +20,7 @@ import {
 import { OutboundService } from "@mail-hub/send";
 import { SettingsService } from "@mail-hub/settings";
 import { submitSmtpMessage } from "@mail-hub/transport";
+import { stopWorker } from "./shutdown.ts";
 import {
   BackfillService,
   BodyFetchService,
@@ -355,14 +356,28 @@ async function main(databaseUrl: string): Promise<void> {
   await armSchedule(queue, ready.generation, CLASSIFY_CYCLE_QUEUE, classifyCycleCron);
   console.log(`Classify cycles scheduled (${classifyCycleCron}).`);
 
-  const stop = async () => {
-    shutdown.abort();
-    await queue.stop();
-    await pool.end();
-    process.exitCode = 0;
+  // SIGTERM stops the worker in two steps: the cycle signal aborts so no
+  // account beyond the current one starts, and the queue stops gracefully so
+  // the in-flight cycle transaction commits first. A rejected queue stop is
+  // reported and fails the exit instead of passing silently. One signal pair
+  // runs the sequence once; a second signal while it runs changes nothing.
+  let stopping = false;
+  const stop = () => {
+    if (stopping) {
+      return;
+    }
+    stopping = true;
+    void stopWorker({
+      queue,
+      pool,
+      shutdown,
+      report: (message) => console.error(message),
+    }).then((code) => {
+      process.exitCode = code;
+    });
   };
-  process.once("SIGINT", () => void stop());
-  process.once("SIGTERM", () => void stop());
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
 }
 
 /**

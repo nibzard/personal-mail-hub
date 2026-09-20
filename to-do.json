@@ -1932,7 +1932,7 @@
       "id": "T062",
       "title": "Finish deployment and worker polish",
       "priority": 3,
-      "status": "todo",
+      "status": "done",
       "details": "The nginx gateway sends no gzip for text assets (deploy/nginx-web.conf.template); add compression with safe defaults. The worker SIGTERM path aborts the cycle controller and stops the queue without awaiting the in-flight cycle transaction. Verify the shutdown waits for the current commit, and surface a rejected queue stop instead of exiting silently. The admin CLI ignores extra arguments after the command, so a typo still runs the intended command; reject unknown arguments. Extend .dockerignore to the e2e fixture outputs so the image context stays small.",
       "depends_on": [
         "T028",
@@ -1942,7 +1942,7 @@
         "deployment",
         "worker"
       ],
-      "updated_at": "2026-09-20T00:56:03Z",
+      "updated_at": "2026-09-20T12:34:44Z",
       "files": [
         ".dockerignore",
         "apps/admin/src/main.ts",

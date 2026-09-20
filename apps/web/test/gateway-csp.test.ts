@@ -41,3 +41,27 @@ describe("gateway content security policy", () => {
     }
   });
 });
+
+describe("gateway compression", () => {
+  it("compresses the text types the build serves, above a size floor", () => {
+    // Without gzip the hashed JS and CSS cross the wire uncompressed on a
+    // cold visit. nginx always compresses text/html when gzip is on, so
+    // listing it in gzip_types would only add a startup warning.
+    expect(template).toContain("gzip on;");
+    expect(template).toContain("gzip_vary on;");
+    expect(template).toContain("gzip_min_length");
+
+    const types = template.match(/^    gzip_types ([^;]+);/m)?.[1] ?? "";
+    for (const mime of [
+      "text/css",
+      "text/javascript",
+      "application/javascript",
+      "application/json",
+      "application/manifest+json",
+      "image/svg+xml",
+    ]) {
+      expect(types).toContain(mime);
+    }
+    expect(types).not.toContain("text/html");
+  });
+});
