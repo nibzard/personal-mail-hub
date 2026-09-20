@@ -25,7 +25,7 @@ import {
 } from "@mail-hub/database";
 import { SANITIZER_VERSION } from "@mail-hub/ingestion";
 import { RecoveryBlockedError, RecoveryControls } from "@mail-hub/recovery";
-import { ComposeService } from "@mail-hub/compose";
+import { ComposeService, ComposeError } from "@mail-hub/compose";
 import { OutboundService, SendError, type OutboundRecord } from "../src/index.ts";
 import { FakeSentFolder } from "./fake-sent-copy.ts";
 
@@ -103,12 +103,40 @@ function unknownReport(): SmtpSubmitReport {
   };
 }
 
+/** One uncertain attempt that still recorded per-recipient statements. */
+function unknownReportWithStatements(responses: Map<string, string>): SmtpSubmitReport {
+  return {
+    state: "unknown",
+    response: null,
+    responseCode: null,
+    recipients: [...responses.entries()].map(([address, response]) => ({
+      address,
+      accepted: response.startsWith("250"),
+      response,
+    })),
+    error: { code: "ESOCKET", message: "connection dropped after the data phase" },
+  };
+}
+
 /** Convert a rejected promise into its typed error, or fail the test. */
 async function rejection(promise: Promise<unknown>): Promise<SendError | RecoveryBlockedError> {
   try {
     await promise;
   } catch (error) {
     if (error instanceof SendError || error instanceof RecoveryBlockedError) {
+      return error;
+    }
+    throw error;
+  }
+  throw new Error("The call was expected to reject, but it resolved.");
+}
+
+/** The compose-service shape of the same conversion. */
+async function composeRejection(promise: Promise<unknown>): Promise<ComposeError> {
+  try {
+    await promise;
+  } catch (error) {
+    if (error instanceof ComposeError) {
       return error;
     }
     throw error;
@@ -306,6 +334,27 @@ suite("outbound snapshots and SMTP sending", () => {
     return rows[0]!;
   }
 
+  /**
+   * One fresh account with no Sent-folder mapping. Earlier tests may map Sent
+   * for the shared accounts, so a test of the unmapped path mints its own.
+   */
+  async function unmappedAccount(): Promise<string> {
+    const suffix = randomUUID().slice(0, 8);
+    const inserted = await db
+      .insert(accountsTable)
+      .values({
+        label: `Unmapped ${suffix}`,
+        color: "#dc2626",
+        username: `unmapped-${suffix}@example.com`,
+        passwordEnc: "v1.unused",
+        identities: [
+          { address: `unmapped-${suffix}@example.com`, name: "Unmapped User", isDefault: true },
+        ],
+      })
+      .returning({ id: accountsTable.id });
+    return inserted[0]!.id;
+  }
+
   it("freezes one snapshot, stores its bytes, and locks the draft", async () => {
     const draft = await makeDraft();
     const outbound = await queueSendOf(draft.id);
@@ -357,6 +406,44 @@ suite("outbound snapshots and SMTP sending", () => {
 
     const conflict = await rejection(composeAndQueue(draft.id, key, 2));
     expect(conflict instanceof SendError && conflict.code).toBe("idempotency_conflict");
+  });
+
+  it("counts a changed attachment set under one key as a changed request", async () => {
+    const draft = await makeDraft();
+    const key = randomUUID();
+    const first = await composeAndQueue(draft.id, key, 1);
+    expect(first.created).toBe(true);
+
+    // A definitive failure unlocks the draft for editing again, and attach
+    // moves no revision: without the file set in the request hash, a reused
+    // key would replay the old failed snapshot as if nothing changed.
+    const { service } = executingService(rejectedReport());
+    await service.executeOutbound(first.outbound.id);
+    expect((await loadRow(first.outbound.id)).status).toBe("failed");
+
+    const unchanged = await composeAndQueue(draft.id, key, 1);
+    expect(unchanged.created).toBe(false);
+    expect(unchanged.outbound.id).toBe(first.outbound.id);
+
+    const upload = await compose.createUpload(readyContext, {
+      accountId,
+      filename: "late.txt",
+      contentType: "text/plain",
+      bytes: new TextEncoder().encode("late bytes"),
+    });
+    await compose.attachUpload(readyContext, draft.id, upload.id);
+
+    const conflict = await rejection(composeAndQueue(draft.id, key, 1));
+    expect(conflict instanceof SendError && conflict.code).toBe("idempotency_conflict");
+
+    // A fresh key freezes the new file set and carries it into the snapshot.
+    const second = await composeAndQueue(draft.id, randomUUID(), 1);
+    expect(second.created).toBe(true);
+    const links = await db
+      .select({ uploadId: outboundUploads.uploadId })
+      .from(outboundUploads)
+      .where(eq(outboundUploads.outboundId, second.outbound.id));
+    expect(links).toEqual([{ uploadId: upload.id }]);
   });
 
   it("rejects a stale base revision with the current one", async () => {
@@ -988,6 +1075,16 @@ suite("outbound snapshots and SMTP sending", () => {
     expect(resolved.sentUid).toBe(1);
     expect(resolved.lastError).toBeNull();
 
+    // The pre-send results held `accepted: false` for every recipient,
+    // because the attempt recorded no per-recipient detail. The verified
+    // copy proves the submission was accepted, so the honest results cover
+    // the whole envelope instead of contradicting the sent state.
+    expect(resolved.recipientResults).toEqual([
+      { address: "to@example.com", accepted: true, response: null },
+      { address: "cc@example.com", accepted: true, response: null },
+      { address: "bcc@example.com", accepted: true, response: null },
+    ]);
+
     const message = (
       await db.select().from(messagesTable).where(eq(messagesTable.id, resolved.logicalMessageId!)).limit(1)
     )[0]!;
@@ -1019,6 +1116,146 @@ suite("outbound snapshots and SMTP sending", () => {
     expect(
       await db.select().from(messagesTable).where(eq(messagesTable.messageId, held.rfcMessageId)),
     ).toHaveLength(0);
+  });
+
+  it("keeps a definitive per-recipient statement when reconciliation proves acceptance", async () => {
+    const folder = new FakeSentFolder("Sent");
+    const report = unknownReportWithStatements(
+      new Map([
+        ["to@example.com", "250 recipient ok"],
+        ["cc@example.com", "550 no such user"],
+      ]),
+    );
+    const { service, script } = appendingService(report, folder);
+    const draft = await makeDraft();
+    const queued = await queueSendOf(draft.id);
+    await service.executeOutbound(queued.id);
+
+    const unknownRow = await loadRow(queued.id);
+    expect(unknownRow.recipientResults).toEqual([
+      { address: "to@example.com", accepted: true, response: "250 recipient ok" },
+      { address: "cc@example.com", accepted: false, response: "550 no such user" },
+      { address: "bcc@example.com", accepted: false, response: null },
+    ]);
+
+    folder.load(unknownRow.rfcMessageId, await storage.durable.get(unknownRow.mimeStorageKey));
+    const summary = await service.reconcileUnknownOutcomes();
+    expect(summary.resolved).toBe(1);
+
+    // The server's own rejection of one recipient survives the evidence;
+    // the recipient without a statement joins the proved acceptance.
+    const resolved = await loadRow(queued.id);
+    expect(resolved.recipientResults).toEqual([
+      { address: "to@example.com", accepted: true, response: "250 recipient ok" },
+      { address: "cc@example.com", accepted: false, response: "550 no such user" },
+      { address: "bcc@example.com", accepted: true, response: null },
+    ]);
+    expect(script.calls).toHaveLength(1);
+  });
+
+  it("preserves a recorded unknown when the account maps no Sent folder", async () => {
+    const folder = new FakeSentFolder("Sent");
+    const { service } = appendingService(unknownReport(), folder);
+    // An account of its own: earlier tests may have mapped Sent for the
+    // shared bare account, and this test needs the mapping genuinely absent.
+    const unmapped = await unmappedAccount();
+    const draft = await makeDraft({ accountId: unmapped });
+    const queued = await queueSendOf(draft.id);
+    await service.executeOutbound(queued.id);
+    expect((await loadRow(queued.id)).status).toBe("outcome_unknown");
+
+    // A missing mapping answers nothing about the uncertain attempt; the
+    // recorded reason stays for review instead of being overwritten.
+    const summary = await service.reconcileUnknownOutcomes();
+    expect(summary.resolved).toBe(0);
+    const held = await loadRow(queued.id);
+    expect(held.status).toBe("outcome_unknown");
+    expect((held.lastError as { code: string }).code).toBe("ESOCKET");
+  });
+
+  it("keeps a recorded append unknown when the Sent folder is unmapped", async () => {
+    const folder = new FakeSentFolder("Sent");
+    const { service } = appendingService(acceptedReport(), folder);
+    const { row } = await acceptedSend(service, { accountId: await unmappedAccount() });
+
+    // The append attempt ended uncertain before the mapping went missing.
+    await db
+      .update(outboundMessages)
+      .set({
+        sentCopyStatus: "unknown",
+        lastError: { code: "append_uncertain", message: "The Sent append response was lost." },
+      })
+      .where(eq(outboundMessages.id, row.id));
+
+    const sweep = await service.appendDueSentCopies();
+    const held = await loadRow(row.id);
+    expect(held.sentCopyStatus).toBe("unknown");
+    expect((held.lastError as { code: string }).code).toBe("append_uncertain");
+    expect(folder.appendsOf(row.rfcMessageId)).toBe(0);
+    // The unmapped answer recorded nothing over the unknown it found.
+    expect((await eventTypesOf(row.id)).filter((type) => type === "send.sent_copy_failed")).toHaveLength(0);
+    expect(sweep.scanned).toBeGreaterThanOrEqual(1);
+  });
+
+  it("issues the deliberate resend copy of an unknown send without resubmitting it", async () => {
+    const folder = new FakeSentFolder("Sent");
+    const { service, script } = appendingService(unknownReport(), folder);
+    const draft = await makeDraft();
+    const upload = await compose.createUpload(readyContext, {
+      accountId,
+      filename: "notes.txt",
+      contentType: "text/plain",
+      bytes: new TextEncoder().encode("attachment bytes"),
+    });
+    await compose.attachUpload(readyContext, draft.id, upload.id);
+    const queued = await queueSendOf(draft.id);
+    await service.executeOutbound(queued.id);
+    expect((await loadRow(queued.id)).status).toBe("outcome_unknown");
+
+    const copy = await compose.createResendDraft(readyContext, queued.id);
+    expect(copy.id).not.toBe(draft.id);
+    expect(copy.accountId).toBe(accountId);
+    expect(copy.identity).toEqual({ address: "user@example.com", name: "Main User" });
+    expect(copy.recipients).toEqual(RECIPIENTS);
+    expect(copy.subject).toBe("One exact message");
+    expect(copy.markdown).toBe(MARKDOWN);
+    expect(copy.revision).toBe(1);
+    expect(copy.lockedBySend).toBeNull();
+
+    // The copy carries the frozen attachment links in their order.
+    expect(await compose.listDraftAttachments(copy.id)).toEqual([
+      expect.objectContaining({ id: upload.id, filename: "notes.txt", ordinal: 0 }),
+    ]);
+
+    // The uncertain attempt keeps its lock and its record; nothing resent.
+    const original = (
+      await db.select().from(draftsTable).where(eq(draftsTable.id, draft.id)).limit(1)
+    )[0]!;
+    expect(original.lockedBySend).toBe(queued.id);
+    expect((await loadRow(queued.id)).status).toBe("outcome_unknown");
+    expect(script.calls).toHaveLength(1);
+    expect(await eventTypesOf(copy.id)).toContain("draft.resend_created");
+  });
+
+  it("offers the resend copy only for an unresolved send", async () => {
+    const folder = new FakeSentFolder("Sent");
+    const accepted = appendingService(acceptedReport(), folder);
+    const sent = await acceptedSend(accepted.service);
+    expect(
+      (await composeRejection(compose.createResendDraft(readyContext, sent.row.id))).code,
+    ).toBe("invalid_request");
+
+    const failed = executingService(rejectedReport());
+    const draft = await makeDraft();
+    const outbound = await queueSendOf(draft.id);
+    await failed.service.executeOutbound(outbound.id);
+    expect(
+      (await composeRejection(compose.createResendDraft(readyContext, outbound.id))).code,
+    ).toBe("invalid_request");
+
+    expect(
+      (await composeRejection(compose.createResendDraft(readyContext, randomUUID()))).code,
+    ).toBe("not_found");
   });
 
   it("skips stale generations in the append and recovery sweeps", async () => {

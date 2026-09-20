@@ -1767,11 +1767,12 @@
         "storage",
         "ingestion"
       ],
-      "updated_at": "2026-09-20T01:21:57Z",
+      "updated_at": "2026-09-20T01:22:29Z",
       "files": [
         "apps/api/src/main.ts",
         "apps/worker/src/main.ts",
         "packages/database/src/storage/fs-object-store.ts",
+        "packages/database/src/storage/index.ts",
         "packages/database/test/storage.test.ts",
         "packages/ingestion/src/service.ts",
         "packages/ingestion/test/service.test.ts"
@@ -1781,7 +1782,7 @@
       "id": "T057",
       "title": "Correct send outcome and snapshot edge cases",
       "priority": 2,
-      "status": "todo",
+      "status": "done",
       "details": "reconcileUnknownOutcome commits the acceptance with the pre-send recipientResults, which hold accepted: false for every recipient (packages/send/src/service.ts:937-946). The send shows as sent while the panel reports no acceptance. Derive honest results from the verified Sent copy, or mark them unknown. A sent_folder_unmapped answer overwrites the recorded unknown outcome instead of preserving it for review. Recipient lists are deduped per list only, so one address in To and Cc receives two copies; dedupe across lists. The send idempotency request hash omits the frozen attachment set, so changed attachments can reuse a key. Per-attachment size caps exist, but no aggregate bound limits the composed MIME size. An empty Markdown body produces no text/plain part at all. Add the deliberate-resend path for a draft locked by an outcome_unknown send: the owner acknowledges the duplicate warning, then a new key or draft is issued. No automatic resend.",
       "depends_on": [
         "T021",
@@ -1791,13 +1792,24 @@
         "send",
         "compose"
       ],
-      "updated_at": "2026-09-20T00:56:03Z",
+      "updated_at": "2026-09-20",
       "files": [
-        "packages/compose/src/service.ts",
         "packages/compose/src/validation.ts",
-        "packages/send/src/mime.ts",
+        "packages/compose/src/service.ts",
+        "packages/compose/src/index.ts",
         "packages/send/src/service.ts",
-        "apps/web/src/mail/send-state.ts"
+        "packages/send/src/mime.ts",
+        "apps/api/src/compose-routes.ts",
+        "apps/web/src/mail/send-state.ts",
+        "apps/web/src/mail/compose-data.ts",
+        "apps/web/src/components/mail/send-panel.tsx",
+        "apps/web/src/components/mail/draft-editor.tsx",
+        "apps/web/src/components/mail/compose-screen.tsx",
+        "packages/send/test/service.test.ts",
+        "packages/send/test/mime.test.ts",
+        "packages/compose/test/service.test.ts",
+        "apps/api/test/compose-routes.test.ts",
+        "apps/web/test/send-state.test.ts"
       ]
     },
     {

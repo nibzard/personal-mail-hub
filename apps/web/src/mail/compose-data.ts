@@ -461,6 +461,24 @@ export async function readOutbound(outboundId: string): Promise<OutboundView> {
   return (await apiGet<OutboundResponse>(`/outbound/${outboundId}`)).outbound;
 }
 
+/**
+ * Issues the deliberate resend of one unresolved send (SPEC F7 step 6). The
+ * owner has acknowledged the duplicate warning; the frozen snapshot becomes
+ * a new, unlocked draft, and the next send takes its own key. The uncertain
+ * attempt itself is not touched — reconciliation still decides it.
+ */
+export async function createResendDraft(
+  session: ComposeSession,
+  outboundId: string,
+): Promise<DraftView> {
+  const response = await apiPost<DraftResponse>(
+    `/outbound/${outboundId}/resend-draft`,
+    {},
+    { headers: generationHeaders(session) },
+  );
+  return response.draft;
+}
+
 /** How fast the send panel polls a snapshot that can still change. */
 const OUTBOUND_POLL_MS = 2000;
 

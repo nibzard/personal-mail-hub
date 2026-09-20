@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, ne, sql } from "drizzle-orm";
 import {
   accounts,
   bodies,
@@ -7,6 +7,7 @@ import {
   events,
   messages,
   outboundMessages,
+  outboundUploads,
   uploads,
   uploadKey,
   type AccountIdentity,
@@ -29,6 +30,7 @@ import {
   replySubject,
 } from "./reply.ts";
 import {
+  ATTACHMENTS_TOTAL_MAX_BYTES,
   MARKDOWN_MAX,
   normalizeContentType,
   normalizeFilename,
@@ -462,6 +464,7 @@ export class ComposeService {
           "The upload belongs to a different account than the draft.",
         );
       }
+      await this.requireAttachmentBudget(tx, draftId, upload);
       const next = await nextOrdinal(tx, draftId);
       await tx.insert(draftUploads).values({ draftId, uploadId, ordinal: next });
       await recordComposeEvent(tx, "user", "draft.upload_attached", "draft", draftId, {
@@ -539,6 +542,99 @@ export class ComposeService {
       throw new ComposeError("not_found", "No account exists with this identifier.");
     }
     return { id: row.id, identities: row.identities };
+  }
+
+  /**
+   * The aggregate attachment bound (SPEC F6). One upload alone obeys its own
+   * cap, but nothing bounded the total a draft could reference, so many files
+   * could compose a message no server accepts. The check runs under the draft
+   * lock, so concurrent attaches cannot each spend the same budget.
+   */
+  private async requireAttachmentBudget(
+    tx: MailHubTransaction,
+    draftId: string,
+    incoming: Upload,
+  ): Promise<void> {
+    const rows = await tx
+      .select({ total: sql<number>`coalesce(sum(${uploads.sizeBytes}), 0)` })
+      .from(draftUploads)
+      .innerJoin(uploads, eq(uploads.id, draftUploads.uploadId))
+      .where(eq(draftUploads.draftId, draftId));
+    const total = Number(rows[0]?.total ?? 0);
+    if (total + incoming.sizeBytes > ATTACHMENTS_TOTAL_MAX_BYTES) {
+      throw new ComposeError(
+        "invalid_request",
+        `The attachments of one draft may hold at most ${ATTACHMENTS_TOTAL_MAX_BYTES} bytes in total; ${incoming.filename} was not attached.`,
+      );
+    }
+  }
+
+  /**
+   * Issue the deliberate resend of one unresolved send (SPEC F7 step 6). The
+   * owner has acknowledged the duplicate warning; the frozen snapshot becomes
+   * a fresh, unlocked draft the next send takes under its own key. The
+   * uncertain attempt keeps its lock and its record for reconciliation —
+   * nothing here resolves it, and no path resends automatically.
+   */
+  async createResendDraft(context: MutationContext, outboundId: string): Promise<DraftRecord> {
+    await this.gate.gateMutation(context.requestGeneration);
+    requireUuid("outbound id", outboundId);
+    return this.db.transaction(async (tx) => {
+      const outboundRows = await tx
+        .select()
+        .from(outboundMessages)
+        .where(eq(outboundMessages.id, outboundId))
+        .limit(1);
+      const outbound = outboundRows[0];
+      if (outbound === undefined) {
+        throw new ComposeError("not_found", "No outbound message exists with this identifier.");
+      }
+      if (outbound.status !== "outcome_unknown") {
+        throw new ComposeError(
+          "invalid_request",
+          "Only a send whose outcome is unknown can be resent from a copy; a failed send unlocks its draft for editing instead.",
+        );
+      }
+      // The snapshot, not the locked draft, is the source of the copy: the
+      // two cannot differ while the lock holds, and the frozen bytes are the
+      // record of what the first attempt may have delivered.
+      const links = await tx
+        .select({ uploadId: outboundUploads.uploadId, ordinal: outboundUploads.ordinal })
+        .from(outboundUploads)
+        .where(eq(outboundUploads.outboundId, outboundId))
+        .orderBy(asc(outboundUploads.ordinal));
+      const inserted = await tx
+        .insert(drafts)
+        .values({
+          accountId: outbound.accountId,
+          identity: { address: outbound.identity.address, name: outbound.identity.name },
+          threadId: outbound.threadId,
+          replyParentId: outbound.replyParentId,
+          inReplyTo: outbound.inReplyTo,
+          referenceIds: outbound.referenceIds,
+          recipients: normalizeRecipients(outbound.recipients),
+          subject: outbound.subject,
+          markdown: outbound.markdownSource,
+        })
+        .returning();
+      const row = inserted[0]!;
+      if (links.length > 0) {
+        await tx.insert(draftUploads).values(
+          links.map((link) => ({
+            draftId: row.id,
+            uploadId: link.uploadId,
+            ordinal: link.ordinal,
+          })),
+        );
+      }
+      await recordComposeEvent(tx, "user", "draft.resend_created", "draft", row.id, {
+        account: outbound.accountId,
+        resendOf: outboundId,
+        rfcMessageId: outbound.rfcMessageId,
+        attachments: links.length,
+      });
+      return toDraftRecord(row);
+    });
   }
 }
 

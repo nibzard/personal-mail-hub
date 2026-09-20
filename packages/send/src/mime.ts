@@ -9,9 +9,9 @@ import { SendError } from "./errors.ts";
  * and its sanitized render as `text/html`. Adding files wraps the whole
  * alternative in `multipart/mixed`. Blind-copy recipients never enter these
  * bytes; they live only in the envelope snapshot the outbound row stores.
- * One corner: an empty Markdown source yields an HTML-only message, because
- * the composer drops an empty plain part and padding it would break the
- * verbatim rule.
+ * An empty Markdown source still owes the reader a plain part, so it is
+ * named as an empty alternative — verbatim, with nothing padded in — ahead
+ * of the HTML it alternatives with.
  *
  * `Message-ID` and `Date` are generated once, before SMTP, and passed in
  * frozen, so the stored bytes and every later submission are identical.
@@ -63,8 +63,18 @@ export async function composeOutboundMime(input: OutboundMimeInput): Promise<Uin
       to: input.to.map((address) => ({ address: address.address, name: address.name ?? undefined })),
       cc: input.cc.map((address) => ({ address: address.address, name: address.name ?? undefined })),
       subject: input.subject ?? "",
-      text: input.markdown,
-      html: input.html,
+      // The composer drops an empty `text` option, which would leave an
+      // HTML-only message. An empty source names both alternatives itself:
+      // the plain part first — zero bytes, exactly the Markdown — and the
+      // render last, the order `multipart/alternative` prescribes.
+      ...(input.markdown === ""
+        ? {
+            alternatives: [
+              { contentType: "text/plain; charset=utf-8", content: Buffer.alloc(0) },
+              { contentType: "text/html; charset=utf-8", content: input.html },
+            ],
+          }
+        : { text: input.markdown, html: input.html }),
       messageId: input.rfcMessageId,
       date: input.date,
       ...(input.inReplyTo === null ? {} : { inReplyTo: input.inReplyTo }),

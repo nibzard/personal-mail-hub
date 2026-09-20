@@ -25,6 +25,7 @@ import {
   LOCATOR_VERSION,
   markThreadJobsDirty,
   BODY_INDEX_MAX_CHARS,
+  MAX_MESSAGE_BYTES,
   makeSnippet,
   normalizeIndexText,
   recipientsIndexText,
@@ -33,6 +34,7 @@ import {
 import type { SmtpSubmitReport } from "@mail-hub/contracts";
 import { assessJob, type ControlStatus, type MailHubTransaction, type MutationGate } from "@mail-hub/recovery";
 import {
+  ATTACHMENTS_TOTAL_MAX_BYTES,
   lockDraftForSend,
   unlockDraftAfterFailure,
   unlockDraftAfterSend,
@@ -249,7 +251,16 @@ export class OutboundService {
       throw new SendError("invalid_request", "The base revision must be a positive integer.");
     }
 
-    const requestHash = hashRequest(input.draftId, input.baseRevision);
+    // The request hash covers the attachment set too: attach and detach move
+    // no revision, so the revision alone cannot tell two requests with
+    // different files apart, and a reused key would silently replay the
+    // first file set. The links are read without a lock here; the freeze
+    // stores the hash of the set it actually froze.
+    const requestHash = hashRequest(
+      input.draftId,
+      input.baseRevision,
+      await this.readAttachmentLinks(input.draftId),
+    );
     const existing = await this.findByIdempotencyKey(input.idempotencyKey);
     if (existing !== null) {
       return { created: false, outbound: await this.existingSnapshot(existing, requestHash) };
@@ -264,7 +275,7 @@ export class OutboundService {
     try {
       return {
         created: true,
-        outbound: await this.freezeSnapshot(input, generation, requestHash),
+        outbound: await this.freezeSnapshot(input, generation),
       };
     } catch (cause) {
       if (isUniqueViolation(cause) || isLostLockRace(cause)) {
@@ -281,11 +292,12 @@ export class OutboundService {
    * Compose and durably store one snapshot, then commit it with its draft
    * lock in one transaction. Only the request that wins the draft lock gets
    * here; every later caller of `queueSend` reads the stored row instead.
+   * The stored request hash describes the attachment set this freeze
+   * actually verified, so a replay compares against what was frozen.
    */
   private async freezeSnapshot(
     input: QueueSendInput,
     generation: string,
-    requestHash: string,
   ): Promise<OutboundRecord> {
     const draft = await this.loadEditableDraft(input.draftId);
     if (draft.revision !== input.baseRevision) {
@@ -304,6 +316,16 @@ export class OutboundService {
     }
 
     const attachments = await this.loadVerifiedAttachments(draft.accountId, draft.id);
+    const attachmentBytes = attachments.reduce(
+      (total, attachment) => total + attachment.upload.sizeBytes,
+      0,
+    );
+    if (attachmentBytes > ATTACHMENTS_TOTAL_MAX_BYTES) {
+      throw new SendError(
+        "invalid_request",
+        `The attachments of this draft hold ${attachmentBytes} bytes in total, above the ${ATTACHMENTS_TOTAL_MAX_BYTES}-byte ceiling one message may carry; remove files before sending.`,
+      );
+    }
     const html = renderMarkdownHtml(draft.markdown, this.sanitizer);
     const rfcMessageId = generateRfcMessageId(draft.identity.address, this.generateId);
     const date = this.now();
@@ -325,9 +347,26 @@ export class OutboundService {
         content: attachment.bytes,
       })),
     });
+    if (bytes.byteLength > MAX_MESSAGE_BYTES) {
+      // The aggregate bound on the referenced bytes should catch this first;
+      // this check is the ceiling itself, so text and framing cannot slip a
+      // message past what this deployment stores and servers accept.
+      throw new SendError(
+        "invalid_request",
+        `The composed message is ${bytes.byteLength} bytes, above the ${MAX_MESSAGE_BYTES}-byte ceiling this deployment sends; remove files before sending.`,
+      );
+    }
     await verifyComposedMessage(bytes, rfcMessageId, attachments.length);
 
     const outboundId = this.generateId();
+    const requestHash = hashRequest(
+      input.draftId,
+      input.baseRevision,
+      attachments.map((attachment) => ({
+        uploadId: attachment.upload.id,
+        ordinal: attachment.ordinal,
+      })),
+    );
     const storageKey = outboundMimeKey(outboundId);
     const mimeSha256 = sha256Hex(bytes);
     const stored = await this.storage.durable.put(storageKey, bytes);
@@ -678,10 +717,15 @@ export class OutboundService {
 
     // The destination must be mapped before anything is appended (SPEC F1).
     // One unmapped folder fails the job once; later sweeps stay quiet until
-    // the map changes, so a missing choice cannot flood the audit trail.
+    // the map changes, so a missing choice cannot flood the audit trail. A
+    // missing mapping also answers nothing about an attempt whose outcome is
+    // unknown: that record stays for review instead of being overwritten.
     const sentFolder = await this.findSentFolder(before.accountId);
     if (sentFolder === null) {
-      if (before.sentCopyStatus === "failed" && before.lastError?.code === "sent_folder_unmapped") {
+      if (
+        before.sentCopyStatus === "unknown" ||
+        (before.sentCopyStatus === "failed" && before.lastError?.code === "sent_folder_unmapped")
+      ) {
         return { ...toOutboundRecord(before), attempted: false };
       }
       const failed = await this.concludeSentCopy(before, "unclaimed", {
@@ -940,7 +984,7 @@ export class OutboundService {
         // The durable responses the uncertain attempt recorded stay as they
         // are; reconciliation evidence is noted on the event instead.
         smtpResponse: before.smtpResponse,
-        recipientResults: before.recipientResults,
+        recipientResults: reconciledRecipientResults(before),
         sentCopy: evidence.destination,
         evidence: "verified_sent_copy",
       });
@@ -1421,6 +1465,15 @@ export class OutboundService {
     return rows[0] ?? null;
   }
 
+  /** The draft's attachment links in ordinal order, read without a lock. */
+  private async readAttachmentLinks(draftId: string): Promise<{ uploadId: string; ordinal: number }[]> {
+    return this.db
+      .select({ uploadId: draftUploads.uploadId, ordinal: draftUploads.ordinal })
+      .from(draftUploads)
+      .where(eq(draftUploads.draftId, draftId))
+      .orderBy(asc(draftUploads.ordinal));
+  }
+
   /** The shared idempotency answer: replay the snapshot, or conflict. */
   private async existingSnapshot(row: OutboundMessage, requestHash: string): Promise<OutboundRecord> {
     if (row.requestHash !== requestHash) {
@@ -1497,6 +1550,26 @@ function smtpResponseOf(report: SmtpSubmitReport): Record<string, unknown> | nul
   return { response: report.response, responseCode: report.responseCode };
 }
 
+/**
+ * Recipient results once a verified Sent copy proved the submission was
+ * accepted (SPEC F7 step 7). A per-recipient statement the uncertain attempt
+ * recorded stays verbatim — a definitive rejection is still the server's
+ * last word for that address. Recipients without their own statement are
+ * covered by the proved acceptance, exactly as one positive final response
+ * covers them; leaving the pre-send `accepted: false` would show a sent
+ * message that reports no acceptance at all.
+ */
+function reconciledRecipientResults(row: OutboundMessage): RecipientResult[] {
+  const recorded = new Map(row.recipientResults.map((result) => [result.address, result]));
+  return row.envelopeRecipients.map((address) => {
+    const prior = recorded.get(address);
+    if (prior !== undefined && prior.response !== null) {
+      return { address, accepted: prior.accepted, response: prior.response };
+    }
+    return { address, accepted: true, response: null };
+  });
+}
+
 async function findMessageByHash(
   tx: MailHubTransaction,
   accountId: string,
@@ -1568,8 +1641,25 @@ function toOutboundRecord(row: OutboundMessage): OutboundRecord {
   };
 }
 
-function hashRequest(draftId: string, baseRevision: number): string {
-  return createHash("sha256").update(JSON.stringify({ draftId: draftId.toLowerCase(), baseRevision })).digest("hex");
+/**
+ * The request one idempotency key commits to: the draft, the revision, and
+ * the frozen attachment set. Attach and detach move no revision, so the file
+ * set is part of the request identity or a changed set could reuse a key.
+ */
+function hashRequest(
+  draftId: string,
+  baseRevision: number,
+  attachments: { uploadId: string; ordinal: number }[],
+): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        draftId: draftId.toLowerCase(),
+        baseRevision,
+        attachments: attachments.map((attachment) => [attachment.uploadId, attachment.ordinal]),
+      }),
+    )
+    .digest("hex");
 }
 
 function sha256Hex(bytes: Uint8Array): string {

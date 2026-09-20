@@ -373,6 +373,7 @@ export function ComposeScreen({
                   reloadDrafts();
                 }}
                 onSessionLost={onSessionLost}
+                onOpenDraft={setActiveDraftId}
               />
             ) : (
               <div className="flex min-h-40 flex-col items-center justify-center gap-2 text-muted-foreground">

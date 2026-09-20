@@ -81,8 +81,8 @@ describe("outboundStillMoving", () => {
 });
 
 describe("resendGateOf", () => {
-  it("offers the gate only after a definitive failure", () => {
-    expect(resendGateOf(outbound({ status: "failed" }))).toEqual({ kind: "offered" });
+  it("offers the unlocked draft only after a definitive failure", () => {
+    expect(resendGateOf(outbound({ status: "failed" }))).toEqual({ kind: "edit-again" });
   });
 
   it("never offers a resend of a partial acceptance", () => {
@@ -98,10 +98,8 @@ describe("resendGateOf", () => {
     expect(gate.kind === "unavailable" && gate.reason).toMatch(/accepted already/u);
   });
 
-  it("preserves an unknown outcome for reconciliation", () => {
-    const gate = resendGateOf(outbound({ status: "outcome_unknown" }));
-    expect(gate.kind).toBe("unavailable");
-    expect(gate.kind === "unavailable" && gate.reason).toMatch(/preserved for review/u);
+  it("offers the deliberate copy of an unknown outcome, never a resubmit", () => {
+    expect(resendGateOf(outbound({ status: "outcome_unknown" }))).toEqual({ kind: "resend-copy" });
   });
 
   it("keeps a definitive success final", () => {

@@ -171,7 +171,8 @@ export function outboundStillMoving(outbound: OutboundView): boolean {
 
 /** Whether a deliberate resend of this attempt may be offered at all. */
 export type ResendGate =
-  | { kind: "offered" }
+  | { kind: "edit-again" }
+  | { kind: "resend-copy" }
   | { kind: "unavailable"; reason: string };
 
 /**
@@ -180,7 +181,11 @@ export type ResendGate =
  * A partial acceptance never resends: the accepted recipients already got
  * the message, and a new snapshot would send to them again. A failed send
  * needs no warning — the server refused it before accepting any content —
- * but it needs the draft unlocked first. Everything else stays as it is.
+ * and its draft is unlocked, so it is edited and queued again under a new
+ * key. An unknown outcome stays preserved for reconciliation and its draft
+ * stays locked; the one deliberate path from there issues a copy of the
+ * frozen snapshot as a new draft, behind the acknowledged duplicate warning.
+ * Nothing resends automatically.
  */
 export function resendGateOf(outbound: OutboundView): ResendGate {
   switch (sendPhaseOf(outbound)) {
@@ -191,13 +196,9 @@ export function resendGateOf(outbound: OutboundView): ResendGate {
           "Some recipients were accepted already. A retry would send to them again, so none is offered.",
       };
     case "failed":
-      return { kind: "offered" };
+      return { kind: "edit-again" };
     case "unknown":
-      return {
-        kind: "unavailable",
-        reason:
-          "The outcome is unknown and preserved for review. Reconciliation decides it; nothing here resubmits it.",
-      };
+      return { kind: "resend-copy" };
     default:
       return {
         kind: "unavailable",

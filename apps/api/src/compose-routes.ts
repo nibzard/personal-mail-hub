@@ -33,6 +33,7 @@ export type ComposeServiceForRoutes = Pick<
   ComposeService,
   | "createDraft"
   | "createReplyDraft"
+  | "createResendDraft"
   | "updateDraft"
   | "readDraft"
   | "listDrafts"
@@ -55,6 +56,12 @@ export interface ComposeRoutesOptions {
 const UUID_PATTERN = "^[0-9a-fA-F-]{36}$";
 
 const draftParams = {
+  type: "object",
+  required: ["id"],
+  properties: { id: { type: "string", pattern: UUID_PATTERN } },
+} as const;
+
+const outboundParams = {
   type: "object",
   required: ["id"],
   properties: { id: { type: "string", pattern: UUID_PATTERN } },
@@ -216,6 +223,19 @@ export async function registerComposeRoutes(
           recipients: body.recipients,
           markdown: body.markdown ?? undefined,
         });
+        return reply.code(201).send({ draft: toDraftView(draft) });
+      },
+    );
+
+    // The deliberate resend of an unresolved send (SPEC F7 step 6): the
+    // frozen snapshot returns as a fresh, unlocked draft. The duplicate
+    // warning is acknowledged on the client before this runs; the uncertain
+    // attempt keeps its lock and its record.
+    scope.post<{ Params: { id: string }; Reply: DraftResponse }>(
+      "/outbound/:id/resend-draft",
+      { schema: { params: outboundParams }, preHandler: [requireOrigin, requireSession] },
+      async (request, reply) => {
+        const draft = await service.createResendDraft(readContext(request), request.params.id);
         return reply.code(201).send({ draft: toDraftView(draft) });
       },
     );

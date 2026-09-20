@@ -96,14 +96,16 @@ describe("MIME composition", () => {
     });
   });
 
-  it("renders an empty body as one empty HTML part", async () => {
+  it("renders an empty body with an empty plain part ahead of the HTML", async () => {
     const bytes = await composeOutboundMime({ ...BASE, markdown: "", html: renderMarkdownHtml("") });
     const text = Buffer.from(bytes).toString("utf8");
     const parsed = await parseMime(bytes);
 
-    // The composer drops an empty plain part rather than padding it; valid
-    // MIME, and the verbatim rule survives.
-    expect(text).toContain("text/html");
+    // The plain part stays verbatim — zero bytes, nothing padded in — and
+    // stays first, the order multipart/alternative prescribes, so every
+    // reader keeps a plain choice even for an empty body.
+    expect(text).toContain("text/plain");
+    expect(text.indexOf("text/plain")).toBeLessThan(text.indexOf("text/html"));
     expect(parsed.textPlain ?? "").toBe("");
     expect(parsed.html).toContain("<!doctype html>");
     expect(parsed.attachments).toHaveLength(0);

@@ -20,6 +20,14 @@ const LIST_MAX = 100;
 export const UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
 
 /**
+ * The most attachment bytes one draft may reference in total. Base64 MIME
+ * framing grows the bytes by about a third, so this bound keeps the composed
+ * message under the 50 MiB ceiling this deployment parses and the largest
+ * providers accept, with the Markdown and headers beside it.
+ */
+export const ATTACHMENTS_TOTAL_MAX_BYTES = 32 * 1024 * 1024;
+
+/**
  * The byte ceiling the draft routes put on their JSON bodies. It covers the
  * worst case of a schema-valid draft — Markdown and subject at their
  * character ceilings with every character escaped, plus full recipient
@@ -64,16 +72,29 @@ export function resolveIdentity(
   return { address: match.address, name: match.name };
 }
 
-/** Normalize one recipient list of a draft. */
+/**
+ * Normalize one recipient list set. Duplicates are removed within each list
+ * and across lists: one address in To and Cc would otherwise receive two
+ * copies of the same message. The earlier list keeps the address — To, then
+ * Cc, then Bcc — matching the reply derivations (SPEC F6).
+ */
 export function normalizeRecipients(input?: MessageRecipients | null): Recipients {
   if (input === undefined || input === null) {
     return { to: [], cc: [], bcc: [] };
   }
-  return {
-    to: normalizeAddressList(input.to, "To"),
-    cc: normalizeAddressList(input.cc, "Cc"),
-    bcc: normalizeAddressList(input.bcc, "Bcc"),
-  };
+  const to = normalizeAddressList(input.to, "To");
+  const cc = dropSeen(normalizeAddressList(input.cc, "Cc"), to);
+  const bcc = dropSeen(normalizeAddressList(input.bcc, "Bcc"), to, cc);
+  return { to, cc, bcc };
+}
+
+/** The entries of one list whose address no earlier list already holds. */
+function dropSeen(list: EmailAddress[], ...earlier: EmailAddress[][]): EmailAddress[] {
+  if (earlier.length === 0) {
+    return list;
+  }
+  const seen = new Set(earlier.flat().map((address) => address.address));
+  return list.filter((address) => !seen.has(address.address));
 }
 
 /** Normalize a list of addresses, rejecting duplicates within one list. */

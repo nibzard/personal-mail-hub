@@ -37,6 +37,7 @@ const ACCOUNT_ID = "9d0a6d15-2a6e-4bb5-9f5e-0f0a9a1b2c3d";
 const DRAFT_ID = "c65d4ac2-1b6e-45f0-9be4-7ac1a89be9a0";
 const UPLOAD_ID = "5f2d51f3-9f0b-4c8e-a4e1-2f0e1e9a1b52";
 const MESSAGE_ID = "3f0c8a21-77aa-4d5b-9e64-1c2b3a4d5e6f";
+const OUTBOUND_ID = "7e1d2c3b-4f5a-6b7c-8d9e-0f1a2b3c4d5e";
 const THREAD_ID = "0aa5b6c4-2211-4c8d-8f22-9b6c5d4e3f2a";
 const NOW = new Date("2026-09-18T10:00:00.000Z");
 
@@ -85,6 +86,7 @@ interface ServiceCalls {
   createdAccounts: string[];
   replyParents: string[];
   replyModes: string[];
+  resentOutbounds: string[];
   updatedIds: string[];
   deletedIds: string[];
   uploadedAccounts: (string | null)[];
@@ -102,6 +104,7 @@ function fakeService(
     createdAccounts: [],
     replyParents: [],
     replyModes: [],
+    resentOutbounds: [],
     updatedIds: [],
     deletedIds: [],
     uploadedAccounts: [],
@@ -139,6 +142,11 @@ function fakeService(
         throw new ComposeError("account_choice_required", "Choose the account to reply from.");
       }
       return { ...REPLY_DRAFT, accountId: input.accountId };
+    },
+    async createResendDraft(context: MutationContext, outboundId: string) {
+      track(context);
+      calls.resentOutbounds.push(outboundId);
+      return { ...DRAFT, subject: "Re-sent copy" };
     },
     async updateDraft(context: MutationContext, id: string, input: { baseRevision: number; markdown?: string }) {
       track(context);
@@ -342,6 +350,63 @@ describe("compose routes", () => {
       payload: { messageId: MESSAGE_ID, mode: "reply" },
     });
     expect(anonymous.statusCode).toBe(401);
+  });
+
+  it("issues the resend copy of an unresolved send from the deployed origin", async () => {
+    const service = fakeService();
+    const app = await makeApp(service);
+
+    const foreignOrigin = await app.inject({
+      method: "POST",
+      url: `/outbound/${OUTBOUND_ID}/resend-draft`,
+      headers: { origin: "https://evil.example", cookie: sessionCookie },
+    });
+    expect(foreignOrigin.statusCode).toBe(403);
+
+    const anonymous = await app.inject({
+      method: "POST",
+      url: `/outbound/${OUTBOUND_ID}/resend-draft`,
+      headers: { origin: ORIGIN },
+    });
+    expect(anonymous.statusCode).toBe(401);
+
+    const created = await app.inject({
+      method: "POST",
+      url: `/outbound/${OUTBOUND_ID}/resend-draft`,
+      headers: { ...originHeaders, "x-recovery-generation": GENERATION },
+    });
+    expect(created.statusCode).toBe(201);
+    const draft = created.json<DraftResponse>().draft;
+    expect(draft.id).toBe(DRAFT_ID);
+    expect(draft.subject).toBe("Re-sent copy");
+    expect(draft.lockedBySend).toBeNull();
+    expect(service.calls.resentOutbounds).toEqual([OUTBOUND_ID]);
+    expect(service.calls.generations).toEqual([GENERATION]);
+
+    const invalid = await app.inject({
+      method: "POST",
+      url: "/outbound/not-a-uuid/resend-draft",
+      headers: originHeaders,
+    });
+    expect(invalid.statusCode).toBe(400);
+
+    // A resolved send refuses the copy through the error contract.
+    const refused = fakeService({
+      createResendDraft: async () => {
+        throw new ComposeError(
+          "invalid_request",
+          "Only a send whose outcome is unknown can be resent from a copy.",
+        );
+      },
+    });
+    const refusalApp = await makeApp(refused);
+    const rejected = await refusalApp.inject({
+      method: "POST",
+      url: `/outbound/${OUTBOUND_ID}/resend-draft`,
+      headers: originHeaders,
+    });
+    expect(rejected.statusCode).toBe(400);
+    expect(rejected.json<ComposeErrorBody>().error.code).toBe("invalid_request");
   });
 
   it("maps stale revisions to 409 with the current revision", async () => {

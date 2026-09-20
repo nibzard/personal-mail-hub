@@ -1,11 +1,14 @@
+import { useState } from "react";
 import { AlertTriangle, Check, RefreshCw, X } from "lucide-react";
 import type { OutboundView, RecipientResultView } from "@mail-hub/contracts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
 import { formatFullTime } from "@/lib/format";
 import {
+  DUPLICATE_SEND_WARNING,
   resendGateOf,
   sendAttemptSettled,
   sendPhaseBadgeVariant,
@@ -22,6 +25,9 @@ import { cn } from "@/lib/utils";
  * The send panel (SPEC F7): the SMTP attempt and the separate Sent-copy
  * append each show their own state, recipient results stay visible, and no
  * control ever resubmits an attempt whose outcome is not known for certain.
+ * The deliberate resend of an unknown outcome sits behind the acknowledged
+ * duplicate warning, and it issues a copy as a new draft; it never repeats
+ * the attempt itself.
  */
 
 export interface SendPanelProps {
@@ -30,13 +36,19 @@ export interface SendPanelProps {
   onRefresh: () => void;
   /** Offered after a definitive failure: edit the unlocked draft again. */
   onEditAgain?: () => void;
+  /**
+   * Offered while the outcome is unknown: issues the acknowledged deliberate
+   * resend, a copy of the frozen snapshot as a new draft.
+   */
+  onResendCopy?: () => void;
   className?: string;
 }
 
-export function SendPanel({ outbound, onRefresh, onEditAgain, className }: SendPanelProps) {
+export function SendPanel({ outbound, onRefresh, onEditAgain, onResendCopy, className }: SendPanelProps) {
   const phase = sendPhaseOf(outbound);
   const gate = resendGateOf(outbound);
   const settled = sendAttemptSettled(outbound);
+  const [duplicateAcknowledged, setDuplicateAcknowledged] = useState(false);
   const rejected = outbound.recipientResults.filter((result) => !result.accepted);
   const accepted = outbound.recipientResults.filter((result) => result.accepted);
 
@@ -133,6 +145,36 @@ export function SendPanel({ outbound, onRefresh, onEditAgain, className }: SendP
         phase === "failed" || phase === "unknown" ? (
           <p className="text-sm text-muted-foreground">{gate.reason}</p>
         ) : null
+      ) : gate.kind === "resend-copy" ? (
+        onResendCopy !== undefined && (
+          <div
+            className="flex flex-col gap-2 rounded-md border border-warning bg-warning-muted p-3 text-sm"
+            data-testid="resend-copy"
+          >
+            <p className="text-warning-muted-foreground">
+              The outcome is unknown and preserved for review. Reconciliation decides it; nothing
+              here resubmits it.
+            </p>
+            <p className="text-warning-muted-foreground">{DUPLICATE_SEND_WARNING}</p>
+            <label className="flex items-center gap-2">
+              <Checkbox
+                checked={duplicateAcknowledged}
+                onCheckedChange={(checked) => setDuplicateAcknowledged(checked === true)}
+              />
+              I understand this may send a duplicate.
+            </label>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!duplicateAcknowledged}
+                onClick={onResendCopy}
+              >
+                Send again from a copy
+              </Button>
+            </div>
+          </div>
+        )
       ) : (
         onEditAgain !== undefined && (
           <div className="flex flex-wrap gap-2">

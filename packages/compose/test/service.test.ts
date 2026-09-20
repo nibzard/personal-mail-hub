@@ -186,6 +186,28 @@ suite("draft editing and durable uploads", () => {
     ).toBe("not_found");
   });
 
+  it("removes an address that appears in two recipient lists", async () => {
+    const draft = await service.createDraft(readyContext, {
+      accountId,
+      recipients: {
+        to: [{ address: "to@example.com", name: null }],
+        cc: [
+          { address: "TO@example.com", name: "Duplicate" },
+          { address: "cc@example.com", name: null },
+        ],
+        bcc: [{ address: "cc@example.com", name: null }],
+      },
+    });
+
+    // The earlier list keeps the address — To, then Cc, then Bcc — so one
+    // reader receives one copy, not one per list (SPEC F6).
+    expect(draft.recipients).toEqual({
+      to: [{ address: "to@example.com", name: null }],
+      cc: [{ address: "cc@example.com", name: null }],
+      bcc: [],
+    });
+  });
+
   it("applies revision-aware edits and rejects a stale base revision", async () => {
     const draft = await service.createDraft(readyContext, { accountId });
 
@@ -296,6 +318,46 @@ suite("draft editing and durable uploads", () => {
     expect(
       (await staleRejection(service.detachUpload(readyContext, draft.id, first.id))).code,
     ).toBe("not_found");
+  });
+
+  it("bounds the total attachment bytes one draft may reference", async () => {
+    const draft = await service.createDraft(readyContext, { accountId });
+    const half = 17 * 1024 * 1024;
+    const first = await service.createUpload(readyContext, {
+      accountId,
+      filename: "first.bin",
+      contentType: "application/octet-stream",
+      bytes: new Uint8Array(half),
+    });
+    await service.attachUpload(readyContext, draft.id, first.id);
+
+    // Each file sits under its own cap; the total crosses the aggregate one,
+    // so the second attach refuses instead of composing an oversized message.
+    const second = await service.createUpload(readyContext, {
+      accountId,
+      filename: "second.bin",
+      contentType: "application/octet-stream",
+      bytes: new Uint8Array(half),
+    });
+    const refused = await rejection(service.attachUpload(readyContext, draft.id, second.id));
+    expect(refused.code).toBe("invalid_request");
+    expect(refused.message).toContain("in total");
+    expect((await service.listDraftAttachments(draft.id)).map((row) => row.filename)).toEqual([
+      "first.bin",
+    ]);
+
+    // A smaller file still attaches beside the first.
+    const small = await service.createUpload(readyContext, {
+      accountId,
+      filename: "small.bin",
+      contentType: "application/octet-stream",
+      bytes: new Uint8Array(1024),
+    });
+    await service.attachUpload(readyContext, draft.id, small.id);
+    expect((await service.listDraftAttachments(draft.id)).map((row) => row.filename)).toEqual([
+      "first.bin",
+      "small.bin",
+    ]);
   });
 
   it("verifies every referenced upload against its durable bytes", async () => {

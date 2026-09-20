@@ -17,6 +17,7 @@ import { useOfflineSync } from "@/offline/sync-context.tsx";
 import {
   addFileToDraft,
   attachAcknowledgedUploads,
+  createResendDraft,
   detachDraftAttachment,
   discardDraft,
   draftSaveRunner,
@@ -102,6 +103,8 @@ export interface DraftEditorProps {
   onDraftChanged: () => void;
   onDraftDiscarded: () => void;
   onSessionLost: () => void;
+  /** Opens another draft in place of this one, after a deliberate resend. */
+  onOpenDraft?: (draftId: string) => void;
 }
 
 export function DraftEditor({
@@ -111,6 +114,7 @@ export function DraftEditor({
   onDraftChanged,
   onDraftDiscarded,
   onSessionLost,
+  onOpenDraft,
 }: DraftEditorProps) {
   const [draft, setDraft] = useState<DraftView | null>(null);
   const [loadMessage, setLoadMessage] = useState<string | null>(null);
@@ -131,6 +135,7 @@ export function DraftEditor({
   const [uncertain, setUncertain] = useState<string | null>(null);
   const [duplicateAcknowledged, setDuplicateAcknowledged] = useState(false);
   const [sendNote, setSendNote] = useState<string | null>(null);
+  const [resendBusy, setResendBusy] = useState(false);
   const [discarding, setDiscarding] = useState(false);
   const [showPreview, setShowPreview] = useState(true);
   const [allowRemoteImages, setAllowRemoteImages] = useState(false);
@@ -434,6 +439,33 @@ export function DraftEditor({
     await load({ adopt: true });
   };
 
+  /**
+   * The deliberate resend of an unresolved send (SPEC F7 step 6). The panel
+   * offers it only behind the acknowledged duplicate warning; issuing the
+   * copy changes no outcome — the uncertain attempt keeps its record, and
+   * the new draft sends under its own key when the owner chooses to.
+   */
+  const resendFromCopy = async () => {
+    if (outboundId === null || resendBusy) {
+      return;
+    }
+    setResendBusy(true);
+    setSendNote(null);
+    try {
+      const copy = await createResendDraft(session, outboundId);
+      onDraftChanged();
+      if (onOpenDraft !== undefined) {
+        onOpenDraft(copy.id);
+        return;
+      }
+      setSendNote("A copy of the send was created as a new draft. Open it to send with a new key.");
+    } catch (error) {
+      setSendNote(toApiError(error).message);
+    } finally {
+      setResendBusy(false);
+    }
+  };
+
   const discard = async () => {
     if (draft === null) {
       return;
@@ -504,9 +536,11 @@ export function DraftEditor({
         <>
           {outbound.phase === "ready" && outbound.outbound !== null ? (
             <SendPanel
+              key={outbound.outbound.id}
               outbound={outbound.outbound}
               onRefresh={outbound.reload}
               onEditAgain={editAgain}
+              onResendCopy={() => void resendFromCopy()}
             />
           ) : (
             <p className="flex items-center gap-2 rounded-md border bg-surface p-3 text-sm text-muted-foreground">
