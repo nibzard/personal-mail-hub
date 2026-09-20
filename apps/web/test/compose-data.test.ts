@@ -287,6 +287,39 @@ describe("addFileToDraft", () => {
     expect(offlineHarness.enqueued).toEqual([]);
   });
 
+  it.each([true, false])("reuses an acknowledged upload after a lost attach response (landed: %s)", async (landed) => {
+    const serverAttachments: DraftAttachmentView[] = [];
+    let uploads = 0;
+    let attaches = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL) => {
+      if (String(url).startsWith("/api/uploads")) {
+        uploads += 1;
+        return json(201, { upload: attachment("u-9") });
+      }
+      attaches += 1;
+      if (attaches === 1) {
+        if (landed) serverAttachments.push(attachment("u-9"));
+        throw new TypeError("Failed to fetch");
+      }
+      serverAttachments.push(attachment("u-9"));
+      return json(201, attachment("u-9"));
+    }));
+
+    expect(await addFileToDraft(session, draft, photo())).toEqual({
+      state: "queued-offline", filename: "photo.png",
+    });
+    expect(offlineHarness.enqueued[0]).toMatchObject({ serverId: "u-9", attachedAt: null });
+    offlineHarness.uploads.push({ localId: "l-new", draftId: "d1", serverId: "u-9", attachedAt: null });
+
+    const result = await attachAcknowledgedUploads(session, draft.id, serverAttachments);
+
+    expect(result.failed).toBe(0);
+    expect(uploads).toBe(1);
+    expect(attaches).toBe(landed ? 1 : 2);
+    expect(serverAttachments).toHaveLength(1);
+    expect(offlineHarness.attached).toEqual(["l-new"]);
+  });
+
   it("queues the bytes again when the upload never received an acknowledgement", async () => {
     vi.stubGlobal(
       "fetch",

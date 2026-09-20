@@ -6,7 +6,7 @@ import { SyncError, type ImapMailboxSessionFactory, type SyncRunner } from "@mai
 
 /*
  * One contained account failure. The cycle resolves so the accounts that
- * follow still run, but it stays visible: the log carries the cause and one
+ * follow still run, but it stays visible: the log carries a code and one
  * `sync.failed` event lands in the audit trail. A full volume is the one
  * contained failure that propagates, so the cycle handler can pause on it.
  */
@@ -91,11 +91,9 @@ describe("runAccountCycle", () => {
         payload: { accountId: ACCOUNT_ID, kind: "unexpected_failure" },
       },
     ]);
-    const lines = logged.mock.calls.map((call) => String(call[0]));
-    // The message line names the cause; the stack follows for a failure no
-    // SyncError classified.
-    expect(lines[0]).toContain(`Sync cycle for account ${ACCOUNT_ID} failed: TypeError: fetch failed`);
-    expect(lines.some((line) => line.startsWith("TypeError: fetch failed\n"))).toBe(true);
+    expect(logged.mock.calls).toEqual([
+      [`Sync cycle for account ${ACCOUNT_ID} failed: unexpected_failure`],
+    ]);
     expect(logout).not.toHaveBeenCalled();
   });
 
@@ -114,7 +112,26 @@ describe("runAccountCycle", () => {
     expect(inserts[0]?.type).toBe("sync.failed");
     expect(inserts[0]?.payload).toEqual({ accountId: ACCOUNT_ID, kind: "mailbox_error" });
     expect(logged).toHaveBeenCalledTimes(1);
-    expect(String(logged.mock.calls[0]?.[0])).toContain("SyncError: The SELECT command failed.");
+    expect(String(logged.mock.calls[0]?.[0])).toBe(`Sync cycle for account ${ACCOUNT_ID} failed: mailbox_error`);
+  });
+
+  it.each([
+    new Error("Failed query: insert into bodies values ($1)\nparams: PRIVATE_BODY_MARKER"),
+    new SyncError("mailbox_error", "Server response: PRIVATE_BODY_MARKER"),
+    "PRIVATE_BODY_MARKER",
+  ])("keeps private error details out of logs and events (%#)", async (cause) => {
+    const { db, inserts } = databaseDouble();
+    const { logout, accounts, sessions, runner, actions } = doubles(async () => ({ logout }));
+    vi.spyOn(runner, "runAccountCycle").mockRejectedValue(cause);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await runAccountCycle(db, accounts, runner, actions, sessions, ACCOUNT_ID, new AbortController().signal);
+
+    expect(logged).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(logged.mock.calls)).not.toContain("PRIVATE_BODY_MARKER");
+    expect(inserts).toHaveLength(1);
+    expect(JSON.stringify(inserts)).not.toContain("PRIVATE_BODY_MARKER");
+    expect(logout).toHaveBeenCalledTimes(1);
   });
 
   it("propagates a full-volume pause without logging or recording an event", async () => {

@@ -242,11 +242,9 @@ export async function addFileToDraft(
     return { state: "attached", attachment };
   } catch (error) {
     const failure = toApiError(error);
-    if (failure.network) {
-      // Whether the lost attach request landed is unknown; the file
-      // re-queues whole, bytes included, as an offline add would.
-      return queueUpload(draft, file);
-    }
+    // The upload was acknowledged even if the attach response was lost.
+    // Keep its id so reconciliation retries the same link without uploading
+    // and attaching a second copy of the file.
     return rememberAcknowledgedUpload(draft, file, uploaded.upload.id, failure.message);
   }
 }

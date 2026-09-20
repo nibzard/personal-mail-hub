@@ -548,16 +548,11 @@ export async function runAccountCycle(
       // is a state to report, not a failure to contain.
       throw cause;
     }
-    // Contained failures stay visible on both surfaces: the log carries the
-    // cause (the stack too when it is not a classified sync failure), and
-    // one event per failure lands in the audit trail the same way the
-    // classification cycle records its `class.error` events.
+    // Error messages and stacks can contain query parameters or server
+    // responses with private content. Log only the account and error code;
+    // the audit event uses the same safe fields.
     const kind = cause instanceof SyncError ? cause.code : "unexpected_failure";
-    const detail = cause instanceof Error ? `${cause.name}: ${cause.message}` : String(cause);
-    console.error(`Sync cycle for account ${accountId} failed: ${detail}`);
-    if (!(cause instanceof SyncError) && cause instanceof Error && cause.stack !== undefined) {
-      console.error(cause.stack);
-    }
+    console.error(`Sync cycle for account ${accountId} failed: ${kind}`);
     await db
       .insert(events)
       .values({
