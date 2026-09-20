@@ -26,6 +26,8 @@ import {
 } from "@/mail/commands";
 import { scopeKey, scopeTitle, type MailScope } from "@/mail/view";
 import { runMailAction, type MailActionOutcome } from "@/mail/actions";
+import { readCachedHomeStartup } from "@/settings/home-startup";
+import { HomeScreen } from "@/components/home/home-screen";
 import { ComposeScreen, type ComposeIntent } from "./compose-screen";
 import { CommandPalette } from "./command-palette";
 import { MessageListPane } from "./message-list";
@@ -45,10 +47,13 @@ import { SyncStatusChip } from "./sync-status";
  * two actions.
  */
 
-/** Which pane is visible below the three-pane breakpoint. */
-type Pane = "nav" | "list" | "reader";
+/** Which surface the shell shows: the Home overview or the mail list. */
+type View = "home" | "mail";
 
-const PANE_ORDER: Record<Pane, number> = { nav: 0, list: 1, reader: 2 };
+/** Which pane is visible below the three-pane breakpoint. */
+type Pane = "nav" | "home" | "list" | "reader";
+
+const PANE_ORDER: Record<Pane, number> = { nav: 0, home: 1, list: 2, reader: 3 };
 
 /** The width at which navigation, list, and reader show side by side. */
 const THREE_PANE_QUERY = "(min-width: 1024px)";
@@ -94,6 +99,10 @@ export function AppShell({
   /** Refetches the account list after a settings mutation changes it. */
   onAccountsChanged: () => void;
 }) {
+  // The startup view resolves from the cached setting before the first
+  // render, so the app never paints Inbox and then switches to Home (SPEC
+  // F13). The stored setting changes take effect on the next startup only.
+  const [view, setView] = useState<View>(() => (readCachedHomeStartup() ? "home" : "mail"));
   const [scope, setScope] = useState<MailScope>({ kind: "unified-inbox" });
   const [query, setQuery] = useState("");
   const debouncedQuery = useDebouncedValue(query, 300);
@@ -106,7 +115,7 @@ export function AppShell({
   const retryList =
     scope.kind === "unified-inbox" && folderIndexError !== null ? folders.reload : list.reload;
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [pane, setPane] = useState<Pane>("list");
+  const [pane, setPane] = useState<Pane>(() => (view === "home" ? "home" : "list"));
   const threePane = useMediaQuery(THREE_PANE_QUERY);
   const { theme, setTheme } = useTheme();
   const singleKeyShortcuts = useSingleKeyShortcuts();
@@ -180,6 +189,8 @@ export function AppShell({
   selectedRef.current = selected;
   const singleKeyRef = useRef(singleKeyShortcuts);
   singleKeyRef.current = singleKeyShortcuts;
+  const viewRef = useRef(view);
+  viewRef.current = view;
 
   /** Shows one action result for a while, replacing any earlier note. */
   const showActionNote = useCallback((text: string | null) => {
@@ -279,8 +290,20 @@ export function AppShell({
   const handleScopeChange = useCallback((next: MailScope) => {
     setScope(next);
     setSelectedId(null);
+    setView("mail");
     setPane("list");
   }, []);
+
+  /** Opens Home; leaving Home ends that visit, so the next open reloads. */
+  const openHome = useCallback(() => {
+    setView("home");
+    setPane("home");
+  }, []);
+
+  /** The plan's **Open Inbox** control: the unified inbox, one click away. */
+  const openInbox = useCallback(() => {
+    handleScopeChange({ kind: "unified-inbox" });
+  }, [handleScopeChange]);
 
   const handleSelect = useCallback(
     (item: SearchResultItem) => {
@@ -479,6 +502,11 @@ export function AppShell({
     if (event.metaKey || event.ctrlKey || event.altKey) {
       return;
     }
+    if (viewRef.current === "home") {
+      // The single-key mail commands would act on the covered list; Home
+      // rows keep their own buttons and the palette keeps working.
+      return;
+    }
     if (!singleKeyRef.current) {
       return;
     }
@@ -560,7 +588,7 @@ export function AppShell({
           <PanelLeft aria-hidden="true" className="size-4" />
         </Button>
         <h1 className="font-semibold">Mail</h1>
-        <span className="truncate text-muted-foreground">{title}</span>
+        <span className="truncate text-muted-foreground">{view === "home" ? "Home" : title}</span>
         <div className="ms-auto flex items-center gap-1">
           <SyncStatusChip onSessionLost={onSessionLost} />
           <Button
@@ -596,12 +624,35 @@ export function AppShell({
             foldersFailed={folders.phase === "error"}
             onRetryFolders={folders.reload}
             scope={scope}
+            homeActive={view === "home"}
+            onOpenHome={openHome}
             onScopeChange={handleScopeChange}
           />
         </div>
 
+        {view === "home" && (
+          <div
+            className={paneWrapperClass("home", "lg:w-[30rem] lg:shrink-0 lg:border-e xl:w-[34rem]")}
+            inert={!threePane && pane !== "home"}
+          >
+            <HomeScreen
+              className="min-h-0 flex-1"
+              accounts={accounts}
+              recoveryGeneration={recoveryGeneration}
+              active={threePane || pane === "home"}
+              onOpenMessage={handleSelect}
+              onOpenInbox={openInbox}
+              onOpenSettings={openSettings}
+              onSessionLost={onSessionLost}
+            />
+          </div>
+        )}
+
         <div
-          className={paneWrapperClass("list", "lg:w-[26rem] lg:shrink-0 lg:border-e xl:w-[28rem]")}
+          className={cn(
+            paneWrapperClass("list", "lg:w-[26rem] lg:shrink-0 lg:border-e xl:w-[28rem]"),
+            view === "home" && "lg:hidden",
+          )}
           inert={!threePane && pane !== "list"}
         >
           {actionNote !== null && (
@@ -636,7 +687,8 @@ export function AppShell({
           <ReaderPane
             className="min-h-0 flex-1"
             message={selected}
-            onBack={() => setPane("list")}
+            onBack={() => setPane(viewRef.current === "home" ? "home" : "list")}
+            backLabel={view === "home" ? "Back to Home" : undefined}
             onSessionLost={onSessionLost}
           />
         </div>

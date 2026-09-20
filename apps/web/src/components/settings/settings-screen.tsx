@@ -142,6 +142,26 @@ export function SettingsScreen({
 
             <Separator />
 
+            <section aria-label="Startup" className="flex flex-col gap-3">
+              <h3 className="font-medium">Startup</h3>
+              <div className="flex items-center justify-between gap-3">
+                <span>
+                  Show Home when the app opens
+                  <span className="block text-muted-foreground">
+                    Start with important mail and reminders. Turn this off to start in Inbox.
+                    The change applies the next time the app opens.
+                  </span>
+                </span>
+                <Switch
+                  checked={settings.settings.homeEnabled}
+                  onCheckedChange={(on) => settings.update({ homeEnabled: on })}
+                  aria-label="Show Home when the app opens"
+                />
+              </div>
+            </section>
+
+            <Separator />
+
             <section aria-label="Keyboard and reading" className="flex flex-col gap-3">
               <h3 className="font-medium">Keyboard and reading</h3>
               <div className="flex items-center justify-between gap-3">

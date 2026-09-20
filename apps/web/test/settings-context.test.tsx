@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppSettings, SettingsResponse, SettingsUpdateBody } from "@mail-hub/contracts";
 
 /*
@@ -55,6 +55,10 @@ import {
   useAppSettings,
   type SettingsState,
 } from "../src/settings/settings-context.tsx";
+import {
+  readCachedHomeStartup,
+  STORAGE_KEY as HOME_STARTUP_KEY,
+} from "../src/settings/home-startup.ts";
 
 const BASE: AppSettings = {
   theme: "system",
@@ -89,7 +93,7 @@ afterEach(() => {
 });
 
 /** Mounts the provider with one probe that records the state it renders. */
-async function mountProvider(): Promise<void> {
+async function mountProvider(stored: AppSettings = { ...BASE }): Promise<void> {
   state = { current: null };
   function Probe() {
     state.current = useAppSettings();
@@ -98,7 +102,7 @@ async function mountProvider(): Promise<void> {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
-  harness.stored = { ...BASE };
+  harness.stored = stored;
   await act(async () => {
     root!.render(
       <SettingsProvider recoveryGeneration="gen-1">
@@ -147,5 +151,47 @@ describe("the settings provider's save ordering", () => {
     });
     expect(state.current!.settings.density).toBe("comfortable");
     expect(state.current!.savePhase).toBe("saved");
+  });
+});
+
+describe("the startup view cache", () => {
+  beforeEach(() => {
+    window.localStorage.removeItem(HOME_STARTUP_KEY);
+  });
+
+  it("records the stored choice after a confirmed read", async () => {
+    await mountProvider({ ...BASE, homeEnabled: false });
+    expect(readCachedHomeStartup()).toBe(false);
+  });
+
+  it("records the choice a confirmed save answered with", async () => {
+    await mountProvider();
+    expect(readCachedHomeStartup()).toBe(true);
+
+    act(() => {
+      state.current!.update({ homeEnabled: false });
+    });
+    await act(async () => {
+      harness.puts[0]!.settle({ ...BASE, homeEnabled: false });
+    });
+    expect(readCachedHomeStartup()).toBe(false);
+  });
+
+  it("keeps the newer choice when an older answer lands late", async () => {
+    await mountProvider();
+
+    // Turn Home off, then back on; the answers settle out of order.
+    act(() => {
+      state.current!.update({ homeEnabled: false });
+      state.current!.update({ homeEnabled: true });
+    });
+    await act(async () => {
+      harness.puts[1]!.settle({ ...BASE, homeEnabled: true });
+    });
+    await act(async () => {
+      harness.puts[0]!.settle({ ...BASE, homeEnabled: false });
+    });
+    expect(state.current!.settings.homeEnabled).toBe(true);
+    expect(readCachedHomeStartup()).toBe(true);
   });
 });

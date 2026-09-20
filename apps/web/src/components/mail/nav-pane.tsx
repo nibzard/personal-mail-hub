@@ -5,6 +5,7 @@ import {
   ChevronRight,
   FilePen,
   Folder,
+  Home,
   Inbox,
   Mail,
   Send,
@@ -39,6 +40,9 @@ interface NavPaneProps {
   foldersFailed: boolean;
   onRetryFolders: () => void;
   scope: MailScope;
+  /** True while the Home overview shows instead of the mail list (SPEC F13). */
+  homeActive: boolean;
+  onOpenHome: () => void;
   onScopeChange: (scope: MailScope) => void;
   className?: string;
 }
@@ -49,6 +53,8 @@ export function NavPane({
   foldersFailed,
   onRetryFolders,
   scope,
+  homeActive,
+  onOpenHome,
   onScopeChange,
   className,
 }: NavPaneProps) {
@@ -60,15 +66,21 @@ export function NavPane({
         <h2 className="px-2 pb-1 font-medium text-muted-foreground">Views</h2>
         <ul className="flex flex-col gap-0.5">
           <NavLeaf
+            icon={Home}
+            label="Home"
+            selected={homeActive}
+            onSelect={onOpenHome}
+          />
+          <NavLeaf
             icon={Inbox}
             label="Inbox"
-            selected={scope.kind === "unified-inbox"}
+            selected={!homeActive && scope.kind === "unified-inbox"}
             onSelect={() => onScopeChange({ kind: "unified-inbox" })}
           />
           <NavLeaf
             icon={Mail}
             label="All Mail"
-            selected={scope.kind === "all-mail"}
+            selected={!homeActive && scope.kind === "all-mail"}
             onSelect={() => onScopeChange({ kind: "all-mail" })}
           />
         </ul>
@@ -89,6 +101,7 @@ export function NavPane({
                 account={account}
                 folders={folders?.get(account.id) ?? null}
                 scope={scope}
+                homeActive={homeActive}
                 collapsed={collapsed.has(account.id)}
                 onToggle={() =>
                   setCollapsed((current) => {
@@ -145,6 +158,7 @@ function AccountSection({
   account,
   folders,
   scope,
+  homeActive,
   collapsed,
   onToggle,
   onScopeChange,
@@ -152,12 +166,16 @@ function AccountSection({
   account: AccountSummary;
   folders: FolderSummary[] | null;
   scope: MailScope;
+  homeActive: boolean;
   collapsed: boolean;
   onToggle: () => void;
   onScopeChange: (scope: MailScope) => void;
 }) {
   const accountSelected =
-    scope.kind === "account" && scope.accountId === account.id && scope.folderId === null;
+    !homeActive &&
+    scope.kind === "account" &&
+    scope.accountId === account.id &&
+    scope.folderId === null;
 
   return (
     <li>
@@ -209,6 +227,7 @@ function AccountSection({
           ) : (
             orderFolders(folders).map((folder) => {
               const selected =
+                !homeActive &&
                 scope.kind === "account" &&
                 scope.accountId === account.id &&
                 scope.folderId === folder.id;

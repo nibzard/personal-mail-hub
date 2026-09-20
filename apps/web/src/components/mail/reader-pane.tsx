@@ -35,11 +35,13 @@ import { SanitizedMessageFrame, useReaderColors } from "./message-body";
 export interface ReaderPaneProps {
   message: SearchResultItem | null;
   onBack: () => void;
+  /** The back control's label, when Home opened the reader (SPEC F13). */
+  backLabel?: string;
   onSessionLost: () => void;
   className?: string;
 }
 
-export function ReaderPane({ message, onBack, onSessionLost, className }: ReaderPaneProps) {
+export function ReaderPane({ message, onBack, backLabel, onSessionLost, className }: ReaderPaneProps) {
   const messageId = message?.messageId ?? null;
   const detailResource = useMessageDetail(messageId);
   const detail = detailResource.phase === "ready" ? (detailResource.data?.message ?? null) : null;
@@ -107,7 +109,7 @@ export function ReaderPane({ message, onBack, onSessionLost, className }: Reader
               size="icon-sm"
               className="-ms-1 max-md:size-11 lg:hidden"
               onClick={onBack}
-              aria-label="Back to the message list"
+              aria-label={backLabel ?? "Back to the message list"}
             >
               <ArrowLeft aria-hidden="true" className="size-4" />
             </Button>

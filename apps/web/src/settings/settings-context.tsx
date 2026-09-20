@@ -11,6 +11,7 @@ import {
 import type { AppSettings, SettingsResponse, SettingsUpdateBody } from "@mail-hub/contracts";
 import { apiGet, apiPut, toApiError, type ApiError } from "@/lib/api";
 import { setDensity } from "@/density";
+import { writeCachedHomeStartup } from "@/settings/home-startup";
 import { setSingleKeyShortcuts } from "@/shortcuts";
 import { setTheme } from "@/theme";
 
@@ -114,6 +115,9 @@ export function SettingsProvider({
         setSettings(response.settings);
         setPhase("ready");
         setError(null);
+        // The startup choice must be known before the first render, so the
+        // last confirmed value reaches the local store here (SPEC F13).
+        writeCachedHomeStartup(response.settings.homeEnabled);
         if (!adopted.current) {
           adopted.current = true;
           setTheme(response.settings.theme);
@@ -167,6 +171,9 @@ export function SettingsProvider({
               ...current,
               ...pickPatched(response.settings, owned),
             }));
+            if (owned.includes("homeEnabled")) {
+              writeCachedHomeStartup(response.settings.homeEnabled);
+            }
           }
           settleSave();
         },
