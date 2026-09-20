@@ -195,8 +195,32 @@ export class OfflineSync {
    * marks the item for review and stops the whole pass. An ended session
    * pauses the pass the same way: the items stay pending, and the pass after
    * sign-in resumes them.
+   *
+   * Passes serialize: a caller that arrives while one runs chains behind it.
+   * Two overlapping passes both snapshot the pending list before either
+   * settles its work, so both run the same action — a duplicate draft-save
+   * PATCH comes back `draft_stale` and parks a good edit in review.
    */
   async sync(): Promise<SyncReport> {
+    while (this.pass !== null) {
+      await this.pass.catch(() => undefined);
+    }
+    const run = this.runPass();
+    this.pass = run;
+    try {
+      return await run;
+    } finally {
+      if (this.pass === run) {
+        this.pass = null;
+      }
+    }
+  }
+
+  /** The pass currently running, when one is. */
+  private pass: Promise<SyncReport> | null = null;
+
+  /** One serialized replay pass; only `sync` starts this. */
+  private async runPass(): Promise<SyncReport> {
     const serverGeneration = await this.store.serverGeneration();
     if (serverGeneration === null) {
       return {
@@ -265,6 +289,7 @@ export class OfflineSync {
       await this.store.writeMeta(META_KEYS.lastSyncedAt, this.store.timestamp());
     }
     await this.store.pruneSyncedActions();
+    await this.store.pruneSettledLocalRecords();
     return {
       attempted,
       synced,

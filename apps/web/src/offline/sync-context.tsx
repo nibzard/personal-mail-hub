@@ -51,21 +51,38 @@ export function OfflineSyncProvider({
   );
   const [syncing, setSyncing] = useState(false);
   const running = useRef(false);
+  // The newest generation any caller handed over, including one that arrives
+  // while a pass already runs; the pass consumes it before it ends.
+  const latestGeneration = useRef<string | null>(null);
 
   const refresh = useCallback(async (generation: string | null) => {
     const controller = offlineSync();
     if (controller === null) {
       return;
     }
+    latestGeneration.current = generation;
     if (running.current) {
       return;
     }
     running.current = true;
     setSyncing(true);
     try {
-      await controller.observeGeneration(generation);
-      const report = await controller.sync();
-      setSnapshot(report.snapshot);
+      // A generation that arrives mid-pass was dropped before: the early
+      // return skipped its observation, so the next pass replayed every
+      // pending item against a restored server and each POST came back
+      // recovery_required, item by item, instead of one clean stop. Loop
+      // until the pass consumed the newest generation it was handed.
+      let applied: string | null | undefined;
+      while (applied !== latestGeneration.current) {
+        applied = latestGeneration.current;
+        await controller.observeGeneration(applied);
+        const report = await controller.sync();
+        setSnapshot(report.snapshot);
+      }
+    } catch {
+      // A failed pass (a Dexie failure, a controller throw) must not become
+      // an unhandled rejection: the last good snapshot stays, and the next
+      // probe or online event retries the pass.
     } finally {
       running.current = false;
       setSyncing(false);

@@ -148,6 +148,43 @@ describe("replay", () => {
     expect((await store.getUpload(upload.localId))?.bytes.size).toBe(0);
   });
 
+  it("serializes overlapping passes so no queued action runs twice", async () => {
+    const calls: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const port: OfflinePort = {
+      saveDraft: async (payload) => {
+        calls.push(`save:${payload.draftId}:${calls.length + 1}`);
+        await gate;
+        return { state: "synced", revision: payload.baseRevision + 1 };
+      },
+    };
+    const { sync } = makeSync(port);
+    await sync.observeGeneration(GENERATION_A);
+    await sync.enqueueDraftSave("d1", 1, { markdown: "Hi." });
+
+    const first = sync.sync();
+    // Hold the first pass inside its in-flight save before the second starts.
+    await vi.waitFor(() => expect(calls).toEqual(["save:d1:1"]));
+    const second = sync.sync();
+    // Without serialization the second pass walks its reads while the first
+    // still hangs in the port and reaches the same pending action; with it,
+    // the second caller parks behind the running pass and stays silent
+    // until the first settles the action.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(calls).toEqual(["save:d1:1"]);
+    release();
+    const [a, b] = await Promise.all([first, second]);
+
+    // The second caller chained behind the first: its fresh pass found the
+    // queue empty instead of replaying the same save a second time, which
+    // the server would answer draft_stale and park in review.
+    expect(calls).toEqual(["save:d1:1"]);
+    expect(a.synced + b.synced).toBe(1);
+  });
+
   it("keeps a draft dirty while a later queued edit still waits", async () => {
     let revision = 1;
     const port: OfflinePort = {

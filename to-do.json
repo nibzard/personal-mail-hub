@@ -2033,21 +2033,24 @@
       "id": "T067",
       "title": "Harden the offline replay controller and local store",
       "priority": 3,
-      "status": "todo",
+      "status": "done",
       "details": "Five defects in the offline wiring. resolve and retry start a second replay pass while one runs (apps/web/src/offline/sync-context.tsx:106; OfflineSync has no re-entrancy lock), so two concurrent passes double-run port calls and a duplicate draft-save PATCH returns draft_stale that lands a good edit in review. refresh drops a generation change observed mid-pass (sync-context.tsx:60) because it returns while a pass is running, so every pending item then fails the generation check on the next pass instead of a clean stop. refresh has no catch (sync-context.tsx:65), so a Dexie failure becomes an unhandled rejection with a null snapshot. cacheMessageRow and cacheMessageDetail do an unlocked read-modify-write (packages/offline/src/store.ts:86) that can drop the cached detail half. And local draft rows and acknowledged upload rows are never deleted (store.ts:135; deleteLocalDraft has no caller), so Dexie grows without bound. Add a re-entrancy guard, observe a generation change after the pass ends, catch refresh failures, make cache updates atomic, and prune settled local records.",
       "tags": [
         "offline",
         "pwa",
         "reliability"
       ],
-      "updated_at": "2026-09-20T02:52:12Z",
+      "updated_at": "2026-09-20T11:46:00Z",
       "files": [
         "apps/web/src/offline/sync-context.tsx",
         "packages/offline/src/store.ts",
         "packages/offline/src/sync.ts",
         "apps/web/test/offline.test.ts",
-        "packages/offline/test/store.test.ts"
-      ]
+        "packages/offline/test/store.test.ts",
+        "apps/web/test/sync-context.test.tsx",
+        "packages/offline/src/index.ts"
+      ],
+      "notes": "Fixed 2026-09-20. Re-entrancy: OfflineSync.sync now serializes passes through a private pass promise — a caller that arrives while a pass runs chains behind it and then runs a fresh pass — so resolve and retry can no longer double-run port calls and land a good edit in review on a false draft_stale (the context itself needed no change; its resolve and retry call controller.sync). Mid-pass generation: refresh records the newest generation handed over in a ref and the running pass loops until it consumed it, so a generation that arrives during a pass is observed when the pass can take it instead of being dropped by the early return and replayed item-by-item into recovery_required refusals later. Refresh failures: the pass body sits in a catch, so a Dexie failure keeps the last good snapshot and leaves syncing false instead of an unhandled rejection. Atomic caches: cacheMessageRow and cacheMessageDetail read and write inside one rw transaction, so a row cache and a detail cache that overlap can no longer read the same base record and each drop the other's half. Pruning: pruneSettledLocalRecords runs at the end of every pass and drops non-dirty draft copies and attached uploads older than SETTLED_RECORD_RETENTION_MS (7 days); dirty drafts and unacknowledged or unlinked uploads stay because the review surface and the send gate read them. Fail-pre-fix proofs: with sync.ts stashed, the serialization test fails with a second save:d1 port call while the first hangs in flight; with sync-context.tsx stashed, both new provider tests fail — the generation test observes only the first generation and the failure test records the unhandled rejection; with store.ts stashed, 24 tests fail on the missing prune API, and with only the two cache transactions reverted, the concurrency test fails on the lost half. Context tests render the real provider through createRoot and act over a mocked offlineSync singleton in a new file, apps/web/test/sync-context.test.tsx."
     },
     {
       "id": "T068",

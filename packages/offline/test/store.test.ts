@@ -1,7 +1,11 @@
 import "fake-indexeddb/auto";
 import { afterEach, describe, expect, it } from "vitest";
 import type { SearchResultItem } from "@mail-hub/contracts";
-import { OfflineStore, isQuotaError } from "../src/index.ts";
+import {
+  OfflineStore,
+  SETTLED_RECORD_RETENTION_MS,
+  isQuotaError,
+} from "../src/index.ts";
 
 /*
  * The Dexie records (SPEC F9): recent mail with details, local drafts,
@@ -113,6 +117,38 @@ describe("recent mail", () => {
     // The two newest downloads stay; the first one cached was pruned.
     expect(rows.map((entry) => entry.messageId)).toEqual(["m2", "m3"]);
   });
+
+  it("keeps both halves when a row and a detail cache concurrently", async () => {
+    const { store } = freshStore();
+    await Promise.all([
+      store.cacheMessageRow(row("m1", "2026-09-18T11:00:00Z")),
+      store.cacheMessageDetail({
+        id: "m1",
+        accountId: "a1",
+        threadId: null,
+        subject: "Subject m1",
+        sender: null,
+        recipients: null,
+        sentAt: "2026-09-18T11:00:00Z",
+        fetchedBody: true,
+        htmlSanitized: "<p>Safe.</p>",
+        textPlain: "Safe.",
+        attachments: [],
+        classification: {
+          classHint: null,
+          source: null,
+          asksAction: null,
+          asksReply: null,
+          timeSensitive: null,
+        },
+      }),
+    ]);
+
+    // An unlocked read-modify-write pair reads the same empty base record,
+    // and whichever write lands second drops the other's half.
+    expect((await store.cachedRows()).map((entry) => entry.messageId)).toEqual(["m1"]);
+    expect((await store.cachedDetail("m1"))?.htmlSanitized).toBe("<p>Safe.</p>");
+  });
 });
 
 describe("local drafts", () => {
@@ -173,6 +209,71 @@ describe("uploads", () => {
     expect(isQuotaError({ name: "DexieError", inner: { name: "QuotaExceededError" } })).toBe(true);
     expect(isQuotaError({ name: "DataCloneError" })).toBe(false);
     expect(isQuotaError(null)).toBe(false);
+  });
+
+  it("prunes settled local records and keeps what still waits", async () => {
+    const { store, advance } = freshStore();
+    await store.putLocalDraft({
+      draftId: "settled",
+      accountId: "a1",
+      server: null,
+      identity: null,
+      recipients: null,
+      subject: "Synced",
+      markdown: "Acknowledged.",
+      baseRevision: 4,
+      dirty: false,
+      recoveryGeneration: GENERATION,
+      updatedAt: 0,
+    });
+    await store.putLocalDraft({
+      draftId: "dirty",
+      accountId: "a1",
+      server: null,
+      identity: null,
+      recipients: null,
+      subject: "Local edits",
+      markdown: "Not yet acknowledged.",
+      baseRevision: 4,
+      dirty: true,
+      recoveryGeneration: GENERATION,
+      updatedAt: 0,
+    });
+    const attached = await store.putPendingUpload({
+      draftId: "settled",
+      accountId: "a1",
+      filename: "linked.pdf",
+      contentType: "application/pdf",
+      sizeBytes: 3,
+      bytes: new Blob([new Uint8Array([1, 2, 3])]),
+      serverId: null,
+      attachedAt: null,
+      recoveryGeneration: GENERATION,
+    });
+    await store.markUploadAcknowledged(attached.localId, "server-upload-9");
+    await store.markUploadAttached(attached.localId);
+    const waiting = await store.putPendingUpload({
+      draftId: "dirty",
+      accountId: "a1",
+      filename: "waiting.pdf",
+      contentType: "application/pdf",
+      sizeBytes: 3,
+      bytes: new Blob([new Uint8Array([4, 5, 6])]),
+      serverId: null,
+      attachedAt: null,
+      recoveryGeneration: GENERATION,
+    });
+
+    advance(SETTLED_RECORD_RETENTION_MS + 1);
+    await store.pruneSettledLocalRecords();
+
+    // The server owns the settled copy and the linked upload; the sweep
+    // drops them. Dirty edits and unacknowledged bytes stay, because the
+    // review surface and the send gate read them.
+    expect(await store.getLocalDraft("settled")).toBeNull();
+    expect((await store.getLocalDraft("dirty"))?.markdown).toBe("Not yet acknowledged.");
+    expect(await store.getUpload(attached.localId)).toBeNull();
+    expect((await store.getUpload(waiting.localId))?.filename).toBe("waiting.pdf");
   });
 });
 

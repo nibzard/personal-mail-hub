@@ -23,6 +23,12 @@ export const RECENT_MAIL_LIMIT = 500;
 /** How many synced queue entries the store keeps, for the sync history. */
 export const SYNCED_ACTION_LIMIT = 100;
 
+/**
+ * How long settled local records stay: synced draft copies and uploads the
+ * server draft references outlive their queue entries for review, then go.
+ */
+export const SETTLED_RECORD_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
 class OfflineDatabase extends Dexie {
   messages!: EntityTable<CachedMessage, "messageId">;
   drafts!: EntityTable<LocalDraft, "draftId">;
@@ -84,23 +90,30 @@ export class OfflineStore {
 
   /** Cache one list row, keeping any detail already downloaded. */
   async cacheMessageRow(row: SearchResultItem): Promise<void> {
-    const existing = await this.db.messages.get(row.messageId);
-    await this.db.messages.put({
-      messageId: row.messageId,
-      row,
-      detail: existing?.detail ?? null,
-      cachedAt: this.now(),
+    // The read and the write share one transaction: an unlocked pair let a
+    // row cache and a detail cache read the same base record and each write
+    // dropped the other's half.
+    await this.db.transaction("rw", this.db.messages, async () => {
+      const existing = await this.db.messages.get(row.messageId);
+      await this.db.messages.put({
+        messageId: row.messageId,
+        row,
+        detail: existing?.detail ?? null,
+        cachedAt: this.now(),
+      });
     });
   }
 
   /** Cache one sanitized detail after the reader fetched it (SPEC F3). */
   async cacheMessageDetail(detail: MessageDetailView): Promise<void> {
-    const existing = await this.db.messages.get(detail.id);
-    await this.db.messages.put({
-      messageId: detail.id,
-      row: existing?.row ?? null,
-      detail,
-      cachedAt: this.now(),
+    await this.db.transaction("rw", this.db.messages, async () => {
+      const existing = await this.db.messages.get(detail.id);
+      await this.db.messages.put({
+        messageId: detail.id,
+        row: existing?.row ?? null,
+        detail,
+        cachedAt: this.now(),
+      });
     });
   }
 
@@ -289,6 +302,33 @@ export class OfflineStore {
       .map((action) => action.localId);
     if (stale.length > 0) {
       await this.db.queue.bulkDelete(stale);
+    }
+  }
+
+  /**
+   * Drop local records the server owns and nothing waits on: draft copies
+   * with no unsynchronized edits, and uploads the server draft references.
+   * Dirty drafts and unacknowledged or unlinked uploads stay, because the
+   * review surface and the send gate read them. Nothing else deletes these
+   * rows, so without this sweep Dexie grows without bound.
+   */
+  async pruneSettledLocalRecords(
+    retentionMs = SETTLED_RECORD_RETENTION_MS,
+  ): Promise<void> {
+    const cutoff = this.now() - retentionMs;
+    const drafts = await this.db.drafts.toArray();
+    const staleDrafts = drafts
+      .filter((draft) => !draft.dirty && draft.updatedAt < cutoff)
+      .map((draft) => draft.draftId);
+    if (staleDrafts.length > 0) {
+      await this.db.drafts.bulkDelete(staleDrafts);
+    }
+    const uploads = await this.db.uploads.toArray();
+    const staleUploads = uploads
+      .filter((upload) => upload.attachedAt !== null && upload.attachedAt < cutoff)
+      .map((upload) => upload.localId);
+    if (staleUploads.length > 0) {
+      await this.db.uploads.bulkDelete(staleUploads);
     }
   }
 

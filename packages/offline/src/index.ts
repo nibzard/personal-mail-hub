@@ -10,6 +10,7 @@
  */
 export {
   RECENT_MAIL_LIMIT,
+  SETTLED_RECORD_RETENTION_MS,
   SYNCED_ACTION_LIMIT,
   OfflineStore,
   isQuotaError,
