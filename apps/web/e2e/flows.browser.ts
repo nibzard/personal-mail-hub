@@ -1017,9 +1017,9 @@ test.describe("compose and send", () => {
 
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
-    // The fixture asks for the account first, then the identity (SPEC F6).
-    await expect(dialog.getByText("Which account holds the message you reply to?")).toBeVisible();
-    await dialog.getByRole("button", { name: "Work" }).click();
+    // The row names its account, so the request carries it and the fixture
+    // goes straight to the From choice. Rows that cannot name an account
+    // still see the account step first (SPEC F6).
     await expect(dialog.getByText("Which identity sends this reply?")).toBeVisible();
     await dialog
       .getByRole("button", { name: /Alexandra Fernandez-Holmes <alexandra/ })

@@ -161,6 +161,25 @@ export function DraftEditor({
   // Draft loading and the autosaver's life cycle
   //
 
+  /**
+   * Stops the autosaver, saving first. An edit inside the debounce window —
+   * or one parked on an error — still belongs to the draft, so closing the
+   * editor or switching drafts must not drop it. A conflict is the one
+   * exception: nothing saves over it without the explicit choice (SPEC F9).
+   */
+  const retireAutosaver = useCallback(() => {
+    const autosaver = autosaverRef.current;
+    if (autosaver === null) {
+      return;
+    }
+    if (autosaver.pendingPatch !== null && autosaver.state !== "conflict") {
+      void autosaver.flush();
+    }
+    autosaver.dispose();
+    autosaverRef.current = null;
+    autosaverForRef.current = null;
+  }, []);
+
   const load = useCallback(
     async (options: { adopt: boolean }) => {
       try {
@@ -173,8 +192,7 @@ export function DraftEditor({
           fieldsRef.current = fieldsOf(read);
         }
         if (autosaverForRef.current !== read.id) {
-          autosaverRef.current?.dispose();
-          autosaverRef.current = null;
+          retireAutosaver();
           autosaverForRef.current = read.id;
           setSaveError(null);
           setAutosaveState("saved");
@@ -199,7 +217,7 @@ export function DraftEditor({
         );
       }
     },
-    [draftId],
+    [draftId, retireAutosaver],
   );
 
   useEffect(() => {
@@ -214,11 +232,9 @@ export function DraftEditor({
   // The autosaver stops with the editor.
   useEffect(
     () => () => {
-      autosaverRef.current?.dispose();
-      autosaverRef.current = null;
-      autosaverForRef.current = null;
+      retireAutosaver();
     },
-    [draftId],
+    [draftId, retireAutosaver],
   );
 
   // A conflict fetches the server copy, so the choice compares both (SPEC F9).
@@ -522,6 +538,8 @@ export function DraftEditor({
       setSendNote("The draft could not be discarded. Try again.");
       return;
     }
+    // The retire path saves pending edits first, which is right for a close
+    // or a switch; here the draft is gone, and a save into it can only fail.
     autosaverRef.current?.dispose();
     autosaverRef.current = null;
     autosaverForRef.current = null;

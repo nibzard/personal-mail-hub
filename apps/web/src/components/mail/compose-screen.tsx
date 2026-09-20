@@ -81,17 +81,27 @@ export function ComposeScreen({
 
   const session = useMemo<ComposeSession>(() => ({ recoveryGeneration }), [recoveryGeneration]);
 
+  // Every navigation — an intent, a draft click, a close — takes this number.
+  // An in-flight creation captures the value it started with and may move the
+  // surface only while that value is still the newest: a draft the user
+  // clicked meanwhile opens and stays open, instead of being overrun by the
+  // creation's own result.
+  const navigationRef = useRef(0);
+
   /** Runs one reply request, mapping each choice code to its step. */
   const runReply = useCallback(
     async (request: ReplyDraftRequest) => {
+      const run = ++navigationRef.current;
       setChoice(null);
       setCreateError(null);
       setCreating(true);
       try {
         const draft = await createReplyDraft(session, request);
         setCreating(false);
-        setActiveDraftId(draft.id);
         reloadDrafts();
+        if (navigationRef.current === run) {
+          setActiveDraftId(draft.id);
+        }
       } catch (error) {
         setCreating(false);
         const failure = toApiError(error);
@@ -99,13 +109,25 @@ export function ComposeScreen({
           onSessionLost();
           return;
         }
+        if (navigationRef.current !== run) {
+          // The user moved on while the request was out; a choice or an
+          // error from the abandoned attempt must not hijack the new view.
+          return;
+        }
         if (failure.code === "account_choice_required") {
           setChoice({ kind: "account", request });
           return;
         }
         if (failure.code === "identity_choice_required") {
-          const account =
-            accounts.find((entry) => entry.id === request.accountId) ?? accounts[0] ?? null;
+          if (request.accountId === undefined) {
+            // No account was named, so the client cannot tell which one
+            // holds the parent. Offering another account's identities would
+            // list From addresses the server must reject; ask for the
+            // account first, and the repeat that names it gets the true list.
+            setChoice({ kind: "account", request });
+            return;
+          }
+          const account = accounts.find((entry) => entry.id === request.accountId) ?? null;
           setChoice({
             kind: "identity",
             request,
@@ -127,23 +149,32 @@ export function ComposeScreen({
   const startIntent = useCallback(
     async (named: ComposeIntent) => {
       if (named.kind === "draft") {
+        navigationRef.current += 1;
+        setChoice(null);
+        setCreateError(null);
         setActiveDraftId(named.draftId);
         return;
       }
       if (named.kind === "list") {
+        navigationRef.current += 1;
+        setChoice(null);
+        setCreateError(null);
         setActiveDraftId(null);
         return;
       }
       setActiveDraftId(null);
       if (named.kind === "new") {
+        const run = ++navigationRef.current;
         setChoice(null);
         setCreateError(null);
         setCreating(true);
         try {
           const draft = await createNewDraft(session, named.accountId);
           setCreating(false);
-          setActiveDraftId(draft.id);
           reloadDrafts();
+          if (navigationRef.current === run) {
+            setActiveDraftId(draft.id);
+          }
         } catch (error) {
           setCreating(false);
           const failure = toApiError(error);
@@ -151,7 +182,9 @@ export function ComposeScreen({
             onSessionLost();
             return;
           }
-          setCreateError(failure.message);
+          if (navigationRef.current === run) {
+            setCreateError(failure.message);
+          }
         }
         return;
       }
@@ -178,6 +211,7 @@ export function ComposeScreen({
     (next: boolean) => {
       if (!next) {
         // A closed surface starts clean; the drafts themselves persist.
+        navigationRef.current += 1;
         setActiveDraftId(null);
         setChoice(null);
         setCreateError(null);
@@ -284,6 +318,7 @@ export function ComposeScreen({
                           : "bg-surface hover:bg-muted",
                       )}
                       onClick={() => {
+                        navigationRef.current += 1;
                         setChoice(null);
                         setCreateError(null);
                         setActiveDraftId(draft.id);
@@ -354,6 +389,19 @@ export function ComposeScreen({
                 }}
                 onCancel={() => setChoice(null)}
               />
+            ) : activeDraftId !== null ? (
+              <DraftEditor
+                session={session}
+                accounts={accounts}
+                draftId={activeDraftId}
+                onDraftChanged={reloadDrafts}
+                onDraftDiscarded={() => {
+                  setActiveDraftId(null);
+                  reloadDrafts();
+                }}
+                onSessionLost={onSessionLost}
+                onOpenDraft={setActiveDraftId}
+              />
             ) : creating ? (
               <p className="flex items-center gap-2 text-muted-foreground">
                 <Spinner aria-hidden="true" className="size-4" />
@@ -370,19 +418,6 @@ export function ComposeScreen({
                   Back to the drafts list
                 </Button>
               </div>
-            ) : activeDraftId !== null ? (
-              <DraftEditor
-                session={session}
-                accounts={accounts}
-                draftId={activeDraftId}
-                onDraftChanged={reloadDrafts}
-                onDraftDiscarded={() => {
-                  setActiveDraftId(null);
-                  reloadDrafts();
-                }}
-                onSessionLost={onSessionLost}
-                onOpenDraft={setActiveDraftId}
-              />
             ) : (
               <div className="flex min-h-40 flex-col items-center justify-center gap-2 text-muted-foreground">
                 <p>Select a draft, or start a new message.</p>

@@ -367,7 +367,10 @@ export function AppShell({
       if (row === null) {
         return;
       }
-      openCompose({ kind: "reply", messageId: row.messageId, mode });
+      // The row knows its account; naming it keeps a later identity choice
+      // inside the account that holds the parent, instead of making the
+      // server reject every offered From address.
+      openCompose({ kind: "reply", messageId: row.messageId, accountId: row.accountId, mode });
     },
     [openCompose],
   );

@@ -2175,13 +2175,13 @@
       "id": "T074",
       "title": "Fix the compose surface state defects",
       "priority": 2,
-      "status": "todo",
-      "details": "Three defects in the compose surface. A reply request without accountId that the server answers identity_choice_required makes the client offer the identities of accounts[0] (apps/web/src/components/mail/compose-screen.tsx:108), so a reply to mail in a later account lists identities that all fail with identity_invalid; send the row's accountId with the retry, or offer the account choice the server describes. The editor's dispose path drops the autosaver without a flush (apps/web/src/components/mail/draft-editor.tsx:215), so an edit inside the two-second debounce window is lost on close or draft switch, and any pending edit while saves error is lost too; flush on dispose. And an in-flight draft creation outranks navigation: creating renders ahead of activeDraftId (compose-screen.tsx:349), so the draft the user clicked never opens and a resolved creation overwrites the choice, while startIntent never clears a visible choice step or a stale createError (compose-screen.tsx:129-136).",
+      "status": "done",
+      "details": "Done 2026-09-20. The reply shortcut now sends the selected row's accountId with the request, so a reply to mail in a later account asks the server about the account that holds the parent; the identity step that follows lists that account's identities instead of accounts[0]'s. Where a reply request still names no account, the screen no longer guesses: an identity_choice_required without accountId shows the account step, and the repeat that names an account gets the true identity list. The editor's dispose path now retires the autosaver with a flush: an edit inside the two-second debounce window, or one parked on a save error, is saved when the editor closes or switches drafts; a conflict stays excluded because nothing saves over it without the explicit choice, and discarding a draft disposes without flushing since its row is gone. In-flight creation no longer outranks navigation: an open draft renders ahead of the creating spinner, every navigation takes a monotonically increasing number so a creation resolving afterwards reloads the list but cannot overwrite the draft the user opened or surface its error, and the draft and list intents clear a visible choice step and a stale createError. New component tests cover the screen (three of four fail on the pre-fix code) and the editor dispose path (both fail on the pre-fix code); the reply e2e now expects the identity step directly because the row names its account, and all 42 flows pass.",
       "tags": [
         "ui",
         "compose"
       ],
-      "updated_at": "2026-09-20T02:52:12Z",
+      "updated_at": "2026-09-20T12:11:28Z",
       "files": [
         "apps/web/src/components/mail/compose-screen.tsx",
         "apps/web/src/components/mail/draft-editor.tsx",
