@@ -2244,7 +2244,433 @@
         "packages/database/src/storage/object-store.ts",
         "deploy/backup.sh"
       ]
+    },
+    {
+      "id": "T078",
+      "title": "Make the offline send replay converge when the server already holds the attachment link",
+      "priority": 1,
+      "status": "done",
+      "details": "A queued offline send can wait forever when its attachment link already exists on the server. queueSend re-posts the attach for any upload whose attachedAt is null (apps/web/src/offline/port.ts:151). When the first attach response was lost after the server committed the draft_uploads row, every later pass repeats the attach, the server answers 500, and classifyReplayFailure maps that 500 to retryable. The send POST never runs, the message shows 'waiting on this device' indefinitely, and enqueueSend refuses new attempts with UploadsUnverifiedError for the same upload. Fix: before attaching, re-list the server draft's attachments (GET /drafts/:id/uploads) and treat any upload the server already references as attached (call markUploadAttached and continue). Coordinate with the server-side idempotency fix (T079) and the reconciliation fix (T080).\n\nFixed 2026-09-20. queueSend now reads GET /drafts/:id/uploads before the first attach it would repeat (lazily, once per replay) and calls store.markUploadAttached for any upload the server already references, so a lost first attach response converges on the next pass instead of re-POSTing into the committed draft_uploads row forever. A failed list read classifies through classifyReplayFailure like every other replay request.",
+      "tags": [
+        "audit",
+        "offline",
+        "compose",
+        "drafts"
+      ],
+      "updated_at": "2026-09-20T18:05:03Z",
+      "files": [
+        "apps/web/src/offline/port.ts"
+      ]
+    },
+    {
+      "id": "T079",
+      "title": "Make draft upload attachment idempotent on the server",
+      "priority": 2,
+      "status": "done",
+      "details": "attachUpload inserts into draft_uploads without checking for an existing row, so a repeated attach violates the (draftId, uploadId) primary key and the API answers an unclassified 500 internal_error (packages/compose/src/service.ts:487). An offline replay that lost its first attach response hits this on every pass, which wedges the queued send (see T078). Fix: inside the transaction, select the existing draft_uploads row for (draftId, uploadId) first and return it as the attachment record, so a retry after a lost response converges instead of failing.\n\nFixed 2026-09-20. attachUpload selects the existing draft_uploads row through a new findDraftUpload helper inside the transaction and returns it unchanged, so a retry after a lost response converges instead of violating the primary key with an unclassified 500. The idempotent path records no second event and skips the aggregate byte check, whose re-run would double-count the recorded row.",
+      "tags": [
+        "audit",
+        "compose",
+        "drafts"
+      ],
+      "updated_at": "2026-09-20T18:05:03Z",
+      "files": [
+        "packages/compose/src/service.ts"
+      ]
+    },
+    {
+      "id": "T080",
+      "title": "Mark server-attached uploads as attached during draft reconciliation",
+      "priority": 2,
+      "status": "done",
+      "details": "attachAcknowledgedUploads skips uploads the server draft already references without calling store.markUploadAttached, so a local record left at serverId-set and attachedAt-null never converges (apps/web/src/mail/compose-data.ts:352). Offline sends of that draft then reject with UploadsUnverifiedError permanently, and the stuck record is invisible because localUploadsOf lists only rows with serverId null. Fix: when the server references the upload, call markUploadAttached before continuing.\n\nFixed 2026-09-20. attachAcknowledgedUploads calls store.markUploadAttached for uploads the server attachment list already references, so a record left at serverId-set/attachedAt-null converges and OfflineSync.enqueueSend accepts the draft's send again.",
+      "tags": [
+        "audit",
+        "compose",
+        "offline",
+        "drafts"
+      ],
+      "updated_at": "2026-09-20T18:05:03Z",
+      "files": [
+        "apps/web/src/mail/compose-data.ts"
+      ]
+    },
+    {
+      "id": "T081",
+      "title": "Block the send when the autosaver ends in the error or offline state",
+      "priority": 2,
+      "status": "done",
+      "details": "submitSend blocks a send only when the autosaver ends in state 'conflict' (apps/web/src/components/mail/draft-editor.tsx:426). When the flush ends in state 'error' (the PATCH failed with a non-network error, or the offline queue write failed), the code proceeds to requestDraftSend with the last saved revision. The server freezes that stale snapshot and locks the draft, so the pending edits in autosaver memory can never be saved and the mail goes out without them. Fix: after the awaited flush, gate the send on autosaver.pendingPatch === null (or state 'saved'), show a note for the 'error' and 'offline' states that matches the conflict gate, and gate canSend the same way.\n\nFixed 2026-09-20. submitSend gates on autosaver.pendingPatch after the awaited flush, not only on the conflict state, with matching notes for the error and offline states; canSend blocks those states too, and the uncertain panel's send-again path now shares the gate.",
+      "tags": [
+        "audit",
+        "drafts",
+        "ui",
+        "reliability"
+      ],
+      "updated_at": "2026-09-20T18:05:03Z",
+      "files": [
+        "apps/web/src/components/mail/draft-editor.tsx",
+        "packages/compose/src/autosave.ts"
+      ]
+    },
+    {
+      "id": "T082",
+      "title": "Map IngestionError to its documented status in the message routes",
+      "priority": 2,
+      "status": "done",
+      "details": "The scoped handler in apps/api/src/message-routes.ts:48 classifies only ReadingError and AuthError, so IngestionError from attachment regeneration and sanitized-body refresh surfaces as a generic 500 internal_error. The per-code status table in packages/ingestion/src/errors.ts (unsupported_locator 422, not_found 404, and so on) says it exists so the download routes report the same way, but no route consumes it. Fix: add an IngestionError branch that replies with error.httpStatus and the error code and message, mirroring the ReadingError branch.\n\nFixed 2026-09-20. The scoped message-route handler gained an IngestionError branch mirroring the ReadingError branch, replying with error.httpStatus and the code and message, so regeneration failures keep the statuses packages/ingestion/src/errors.ts documents instead of surfacing as generic 500 internal_error.",
+      "tags": [
+        "audit",
+        "api",
+        "ingestion",
+        "reading"
+      ],
+      "updated_at": "2026-09-20T18:05:03Z",
+      "files": [
+        "apps/api/src/message-routes.ts",
+        "packages/ingestion/src/errors.ts"
+      ]
+    },
+    {
+      "id": "T083",
+      "title": "Handle SIGTERM that arrives during worker startup",
+      "priority": 2,
+      "status": "done",
+      "details": "A SIGTERM that arrives during worker startup, after waitForReadyService resolves but before setup completes, never triggers the graceful stop (apps/worker/src/main.ts:83). queue.start(), the durable-object collection pass, the four queue work registrations, and the four armSchedule calls do not observe the abort signal, and only the sync-cycle handler checks shutdown.signal.aborted. The process then lingers with live schedules until SIGKILL, which can kill a cycle mid-transaction. Fix: register one signal handler at the top of main() that aborts the controller and runs stopWorker once the queue and pool exist, or check the abort signal after setup completes and run the stop sequence then.\n\nFixed 2026-09-20. One exported installWorkerSignals helper installs a single SIGINT/SIGTERM listener at the top of main(); before the queue exists a signal only aborts, and armStop installs the stop gate at the end of setup, running the graceful stop itself when the signal already aborted so main returns instead of running cycles on a process asked to stop. The pre-existing once-pair fell through to the default kill on a second signal; the new listener serves the whole lifetime.",
+      "tags": [
+        "audit",
+        "worker",
+        "reliability"
+      ],
+      "updated_at": "2026-09-20T18:05:03Z",
+      "files": [
+        "apps/worker/src/main.ts"
+      ]
+    },
+    {
+      "id": "T084",
+      "title": "Apply one case rule to the reserved INBOX name in folder import",
+      "priority": 2,
+      "status": "done",
+      "details": "rolesOf grants the inbox role for any case-insensitive 'inbox' spelling, but folder identity is exact-case: the byName map, the discovery deduplication, and the folders unique key all compare case-sensitively (packages/accounts/src/service.ts:353, packages/accounts/src/validation.ts:202). A discovery run that reports 'Inbox' after 'INBOX' inserts a second folder row for the same mailbox (RFC 3501 permits the spelling change), reports a spurious role conflict, and the duplicate row is permanent because no API deletes folders. Verified by reproduction on a real PostgreSQL. Fix: canonicalize any case-insensitive inbox spelling onto one stored name, or apply one case rule to rolesOf, normalizeDiscoveredFolders, and the byName lookup.\n\nFixed 2026-09-20. One exported case rule folderKey(name) keys the reserved inbox name case-insensitively and every other name exactly; normalizeDiscoveredFolders deduplicates on it (two spellings in one run reject as a duplicate) and importFolders remaps a re-spelled inbox onto the stored row, so the second run inserts nothing and reports no conflict. Regression test imports INBOX then Inbox against PostgreSQL.",
+      "tags": [
+        "audit",
+        "accounts",
+        "imap"
+      ],
+      "updated_at": "2026-09-20T18:05:03Z",
+      "files": [
+        "packages/accounts/src/service.ts",
+        "packages/accounts/src/validation.ts"
+      ]
+    },
+    {
+      "id": "T085",
+      "title": "Make sender override identity case-insensitive and the read deterministic",
+      "priority": 2,
+      "status": "todo",
+      "details": "CorrectionService writes sender overrides with the raw wire-case address and keys the upsert on exact text, so two case variants of one address create two rows. loadSenderOverride reads with lower(sender) = lower(address), limit(1), and no order by, so PostgreSQL returns an unspecified row and an older override can shadow the owner's newest correction for new mail (packages/classification/src/service.ts:450). Fix: normalize the stored sender to lowercase (or replace the primary key with a unique index on (account_id, lower(sender))), and order the read so the newest override wins.",
+      "tags": [
+        "audit",
+        "classification",
+        "database"
+      ],
+      "updated_at": "2026-09-20T16:09:25Z",
+      "files": [
+        "packages/classification/src/service.ts",
+        "packages/classification/src/corrections.ts"
+      ]
+    },
+    {
+      "id": "T086",
+      "title": "Re-mark thread jobs whose stored reference text differs from the extracted identifier",
+      "priority": 2,
+      "status": "todo",
+      "details": "markThreadJobsDirty re-marks children with exact equality on in_reply_to, but resolveParentReference extracts identifiers from the raw stored text and tolerates folded comments such as '<(note) <a@example.com>>' (packages/ingestion/src/thread-jobs.ts:71). A child stored with a folded In-Reply-To and empty reference_ids is never re-marked when its parent's holder set changes, so its pending or ambiguous link is permanent because reconcileAccount resolves only dirty rows. Fix: mark rows whose raw in_reply_to or reference_ids contain one of the identifiers, as extraction does, or normalize the stored reference columns to their extracted identifiers at import and parse time.",
+      "tags": [
+        "audit",
+        "ingestion",
+        "threading"
+      ],
+      "updated_at": "2026-09-20T16:09:25Z",
+      "files": [
+        "packages/ingestion/src/thread-jobs.ts"
+      ]
+    },
+    {
+      "id": "T087",
+      "title": "Clear the draft dirty flag when a queued send finishes its replay",
+      "priority": 2,
+      "status": "todo",
+      "details": "moreEditsPending counts any pending action for the draft, including a queued send, so the local draft keeps its dirty flag after an offline replay finishes (packages/offline/src/sync.ts:604). snapshot.dirtyDrafts stays at 1 forever, which contradicts the records contract ('true while the local edits have no server acknowledgement'), the Dexie record is never pruned, and a later server restore leaves reviewRequired permanently true with no reviewable item. Fix: count only queued draft-saves as unsynchronized edits, and clear the dirty flag in settleSynced when a send of that draft syncs.",
+      "tags": [
+        "audit",
+        "offline",
+        "drafts"
+      ],
+      "updated_at": "2026-09-20T16:09:25Z",
+      "files": [
+        "packages/offline/src/sync.ts"
+      ]
+    },
+    {
+      "id": "T088",
+      "title": "Fall back to the stored sanitized body when a refresh fails",
+      "priority": 2,
+      "status": "todo",
+      "details": "currentSanitizedHtml awaits refreshSanitizedBody with no failure handling; the null fallback covers only a null return (packages/reading/src/service.ts:205). When the refresh throws (original missing, hash mismatch, or parse failure after a sanitizer version bump or a partial restore), GET /messages/:id and /clean-view answer a generic 500, so the user loses subject, recipients, and attachments too, even though only htmlSanitized depends on the refresh. Fix: catch refresh failures and fall back to the stored sanitized derivative, or serve every non-HTML field from the row and log the failure server-side.",
+      "tags": [
+        "audit",
+        "reading",
+        "ingestion"
+      ],
+      "updated_at": "2026-09-20T16:09:25Z",
+      "files": [
+        "packages/reading/src/service.ts"
+      ]
+    },
+    {
+      "id": "T089",
+      "title": "Record the sent event only when the acceptance status transition commits",
+      "priority": 2,
+      "status": "todo",
+      "details": "commitAcceptance records the sent event and inserts the local sent message even when its status-guard update matched no row (packages/send/src/service.ts:1270). When the SMTP submission outlives its lease and the row moved to outcome_unknown, the acceptance transaction commits while the outbound row stays unresolved and the draft stays locked, and the row can never auto-resolve because the Sent-copy path requires status 'sent'. Fix: mirror concludeSentCopy. When the guarded update matches no row, roll back without recording the event and without keeping the inserted message.",
+      "tags": [
+        "audit",
+        "send"
+      ],
+      "updated_at": "2026-09-20T16:09:25Z",
+      "files": [
+        "packages/send/src/service.ts"
+      ]
+    },
+    {
+      "id": "T090",
+      "title": "Remove or implement the hardcoded /health route",
+      "priority": 3,
+      "status": "todo",
+      "details": "GET /health returns a constant 'ok' response and checks nothing, while /healthz does the real database round trip and answers 503 on failure (apps/api/src/app.ts:32). Nothing consumes /health: the SPEC, the Dockerfile healthcheck, and deploy/README.md all use /healthz only. An operator or monitor that probes the conventional /health path sees 'ok' during a full outage. Fix: delete the route, or implement it over HealthService.readHealth so it cannot answer ok while the database is down.",
+      "tags": [
+        "audit",
+        "api",
+        "hygiene"
+      ],
+      "updated_at": "2026-09-20T16:09:25Z",
+      "files": [
+        "apps/api/src/app.ts"
+      ]
+    },
+    {
+      "id": "T091",
+      "title": "Keep the drafts sidebar content visible during a refresh",
+      "priority": 3,
+      "status": "todo",
+      "details": "Every reloadDrafts call drives use-resource through its nonce dependency, which resets data to null, so the drafts sidebar unmounts its list and shows a spinner until the refetch answers (apps/web/src/components/mail/compose-screen.tsx:236). This contradicts the keep-content-visible refresh rule the useResource doc comment states (SPEC F12). Fix: keep the last ready data visible while a reload is in flight, and use the spinner as an overlay rather than a replacement.",
+      "tags": [
+        "audit",
+        "ui",
+        "drafts"
+      ],
+      "updated_at": "2026-09-20T16:09:25Z",
+      "files": [
+        "apps/web/src/components/mail/compose-screen.tsx",
+        "apps/web/src/mail/use-resource.ts"
+      ]
+    },
+    {
+      "id": "T092",
+      "title": "Surface controller errors in review and failed-action rows",
+      "priority": 3,
+      "status": "todo",
+      "details": "Review and failed-action rows call resolve, retry, discard, compare, and keepServerCopy with no rejection handling (apps/web/src/components/mail/sync-status.tsx:305). resolveReview deliberately throws ReviewChoiceError when the queued action no longer exists (for example a second tab resolved it first), so the promise rejects unhandled and the row sits with no explanation. Fix: catch rejections in run, compare, and keepServerCopy, show the error text in the row, and keep the busy state consistent.",
+      "tags": [
+        "audit",
+        "ui",
+        "offline"
+      ],
+      "updated_at": "2026-09-20T16:09:25Z",
+      "files": [
+        "apps/web/src/components/mail/sync-status.tsx",
+        "apps/web/src/offline/sync-context.tsx"
+      ]
+    },
+    {
+      "id": "T093",
+      "title": "Keep the acknowledged upload id when the attach step fails",
+      "priority": 3,
+      "status": "done",
+      "details": "When the server acknowledges an upload but the attach step then fails with a non-network refusal, addFileToDraft returns 'rejected' and discards the acknowledged upload id (apps/web/src/mail/compose-data.ts:230). Nothing on the device records it, so the link can never be retried, the owner must upload the same bytes again, and the first upload becomes an unreferenced object. Fix: on a non-network attach failure, persist the acknowledged upload into the offline store with serverId set and attachedAt null, as queueUpload does, so the next pass retries the link.\n\nFixed 2026-09-20. addFileToDraft separates the byte upload from the attach; when the upload is acknowledged but the attach is refused with a non-network error, rememberAcknowledgedUpload persists the upload into the offline queue with serverId set, attachedAt null, and empty bytes, so the next pass retries only the link. Network attach failures keep the existing re-queue-with-bytes behavior.",
+      "tags": [
+        "audit",
+        "drafts",
+        "offline"
+      ],
+      "updated_at": "2026-09-20T18:05:03Z",
+      "files": [
+        "apps/web/src/mail/compose-data.ts"
+      ]
+    },
+    {
+      "id": "T094",
+      "title": "Degrade the folder index per account instead of failing every account",
+      "priority": 3,
+      "status": "todo",
+      "details": "useFolderIndex fetches every account's folders with Promise.all, so one transient failure on one account rejects the whole read and the nav pane and unified inbox error everywhere (apps/web/src/mail/data.ts:300). The merge guard 'if (response !== undefined)' is dead code, which shows partial tolerance was intended but never implemented. Fix: use Promise.allSettled, build the index from the fulfilled responses, and surface the rejected accounts separately.",
+      "tags": [
+        "audit",
+        "ui",
+        "accounts"
+      ],
+      "updated_at": "2026-09-20T16:09:25Z",
+      "files": [
+        "apps/web/src/mail/data.ts"
+      ]
+    },
+    {
+      "id": "T095",
+      "title": "Record unexpected per-account sync failures with detail",
+      "priority": 3,
+      "status": "done",
+      "details": "runAccountCycle logs every unexpected failure as the literal 'unexpected failure' with no name, message, or stack, then returns normally, so the queue job completes as success and no events row is written (apps/worker/src/main.ts:490). A connection error or programming bug leaves only a degraded log line and growing sync lag. Fix: log the cause name and message (and the stack for non-SyncError causes), and record one events row such as 'sync.failed' so the failure is visible in the durable audit trail.\n\nFixed 2026-09-20. runAccountCycle logs the cause name and message (plus the stack for non-SyncError causes) and records one sync.failed events row with actor system and payload {accountId, kind}, modeled on classification's class.error; the insert is .catch-guarded so an audit-write failure cannot fail the queue job.",
+      "tags": [
+        "audit",
+        "worker",
+        "observability"
+      ],
+      "updated_at": "2026-09-20T18:05:03Z",
+      "files": [
+        "apps/worker/src/main.ts"
+      ]
+    },
+    {
+      "id": "T096",
+      "title": "Return the assigned role in importFolders created entries",
+      "priority": 3,
+      "status": "done",
+      "details": "importFolders builds the created list from the INSERT ... returning() snapshot, captured before the role-assignment loop runs, so a folder the same import just role-assigned still reports role null in created while assignedRoles and folders report the role (packages/accounts/src/service.ts:401). Fix: build created from the final read inside the transaction, or document and serialize created as names only.\n\nFixed 2026-09-20. created now filters the final folder read inside the transaction by the ids the INSERT returned, so a folder the same import role-assigned reports its role in created, matching assignedRoles and folders.",
+      "tags": [
+        "audit",
+        "accounts",
+        "api"
+      ],
+      "updated_at": "2026-09-20T18:05:03Z",
+      "files": [
+        "packages/accounts/src/service.ts"
+      ]
+    },
+    {
+      "id": "T097",
+      "title": "Reject control characters in identity display names",
+      "priority": 3,
+      "status": "done",
+      "details": "normalizeIdentityName trims and length-checks the display name but never applies CONTROL_PATTERN, unlike normalizeUsername and normalizeFolderName in the same file (packages/accounts/src/validation.ts:162). A stored name with a C0 control character is sealed into the outbound From header as a Q-encoded =00 or =1B inside an encoded-word, which strict receiving MTAs reject or mangle at delivery time. Fix: apply CONTROL_PATTERN to the trimmed name and throw invalid_request, and add the same pattern to the identity schema in the route so the browser gets a 400.\n\nFixed 2026-09-20. normalizeIdentityName applies CONTROL_PATTERN and throws invalid_request like the sibling normalizers, and the identity schema in account-routes gained an anchored no-control pattern so the route rejects with 400 before the service runs.",
+      "tags": [
+        "audit",
+        "accounts",
+        "email"
+      ],
+      "updated_at": "2026-09-20T18:05:03Z",
+      "files": [
+        "packages/accounts/src/validation.ts",
+        "apps/api/src/account-routes.ts"
+      ]
+    },
+    {
+      "id": "T098",
+      "title": "Reject local parts with leading, trailing, or consecutive dots",
+      "priority": 3,
+      "status": "done",
+      "details": "EMAIL_PATTERN puts the dot in the general local-part class with no structural rule, so '..@example.com', 'a..b@example.com', and '.foo@example.com' all pass and are stored (packages/accounts/src/validation.ts:34). RFC 5321 dot-atom syntax forbids leading, trailing, and consecutive dots, and SMTP servers enforce it, so the failure surfaces only at submission time as an opaque outbound error. Fix: require dot-atom structure for the local part.\n\nFixed 2026-09-20. EMAIL_PATTERN requires RFC 5321 dot-atom structure for the local part (atoms of the existing class separated by single dots, 64-character ceiling via lookahead), so leading, trailing, and consecutive dots reject while the previously accepted atom characters still pass.",
+      "tags": [
+        "audit",
+        "accounts",
+        "email"
+      ],
+      "updated_at": "2026-09-20T18:05:03Z",
+      "files": [
+        "packages/accounts/src/validation.ts"
+      ]
+    },
+    {
+      "id": "T099",
+      "title": "Re-validate the WebAuthn counter under the ceremony transaction lock",
+      "priority": 3,
+      "status": "todo",
+      "details": "Assertion counters are validated against a pre-transaction snapshot and never re-checked under the FOR UPDATE lock inside the ceremony transaction (packages/auth/src/service.ts:270). Concurrent ceremonies from a cloned passkey can both pass clone detection, and the unconditional write can regress the stored counter. Fix: inside the transaction, select the credential row for update, reject when the new counter is not greater than the stored one (except for counterless authenticators), and persist the counter only through that guarded update.",
+      "tags": [
+        "audit",
+        "auth",
+        "security"
+      ],
+      "updated_at": "2026-09-20T16:09:25Z",
+      "files": [
+        "packages/auth/src/service.ts"
+      ]
+    },
+    {
+      "id": "T100",
+      "title": "Cap the derived reply quote inside the Markdown ceiling",
+      "priority": 3,
+      "status": "done",
+      "details": "capDerivedQuote can return up to MARKDOWN_MAX + 6 characters, which violates the ceiling its doc comment promises (packages/compose/src/service.ts:842). The reply draft stores because the column is unlimited, but every later PATCH that sends the Markdown back is rejected with 400 by the route schema and normalizeMarkdown. The trigger needs a parent whose extracted quote exceeds 1,000,000 characters. Fix: slice the kept portion to MARKDOWN_MAX minus the marker length before the last-newline search, so the result always fits.\n\nFixed 2026-09-20. capDerivedQuote reserves the marker length below the ceiling (QUOTE_MARKER constant) before the last-newline search, so the joined result is at most MARKDOWN_MAX and a later PATCH returning the stored Markdown verbatim passes the length check.",
+      "tags": [
+        "audit",
+        "compose",
+        "drafts"
+      ],
+      "updated_at": "2026-09-20T18:05:03Z",
+      "files": [
+        "packages/compose/src/service.ts"
+      ]
+    },
+    {
+      "id": "T101",
+      "title": "Serve attachment metadata from the row the regenerated bytes verified against",
+      "priority": 3,
+      "status": "todo",
+      "details": "openAttachment builds the served view from one row snapshot but, on a cache miss, serves bytes that regenerateAttachment verified against a later read of the same row (packages/reading/src/service.ts:233). A concurrent re-ingestion commit between the two reads can pair the old filename and media type with the new bytes, because upsertAttachments reuses the attachment id for the same partPath. Fix: have the regenerator return the row it verified against and serve that row's view, or re-read the one attachment row after regeneration.",
+      "tags": [
+        "audit",
+        "reading",
+        "ingestion"
+      ],
+      "updated_at": "2026-09-20T16:09:25Z",
+      "files": [
+        "packages/reading/src/service.ts",
+        "packages/ingestion/src/service.ts"
+      ]
+    },
+    {
+      "id": "T102",
+      "title": "Gate saved-search writes before input validation",
+      "priority": 3,
+      "status": "todo",
+      "details": "createSavedSearch parses name, query, and scope before the recovery gate, so a stale-generation client that submits an unparseable query gets 400 invalid_query instead of 409 recovery_required, which delays the resync path (packages/search/src/service.ts:411). Every other mutation service gates first. Fix: move gateMutation to the first statement of createSavedSearch and deleteSavedSearch.",
+      "tags": [
+        "audit",
+        "search",
+        "recovery"
+      ],
+      "updated_at": "2026-09-20T16:09:25Z",
+      "files": [
+        "packages/search/src/service.ts"
+      ]
+    },
+    {
+      "id": "T103",
+      "title": "Stop the Sent-copy sweep from starving on unmapped unknown rows",
+      "priority": 3,
+      "status": "todo",
+      "details": "appendDueSentCopies selects unknown-status rows in accounts that map no Sent folder, but executeSentCopyAppend returns early with attempted false for them, so sentCopyAttempts never increments and the row never reaches the cap or leaves the limit-bounded window (packages/send/src/service.ts:709). With enough such rows, younger due rows are never reached. The method doc states the opposite invariant. Fix: exclude every non-pending row whose account maps no Sent folder, or count the early pass toward the cap so the row records the halt event.",
+      "tags": [
+        "audit",
+        "send"
+      ],
+      "updated_at": "2026-09-20T16:09:25Z",
+      "files": [
+        "packages/send/src/service.ts"
+      ]
     }
   ],
-  "updated_at": "2026-09-20T09:15:00Z"
+  "updated_at": "2026-09-20T18:05:03Z"
 }
