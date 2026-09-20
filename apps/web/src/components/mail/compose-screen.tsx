@@ -307,7 +307,15 @@ export function ComposeScreen({
                       <span className="truncate text-xs text-muted-foreground">
                         To {draft.recipients.to.map((entry) => entry.address).join(", ") || "nobody"}
                         {" · "}
-                        <time dateTime={draft.updatedAt}>{formatListTime(draft.updatedAt)}</time>
+                        {/* One fixed box keeps the row width stable as the clock
+                            ticks, so the masked visual baseline cannot flake on
+                            digit-count changes. */}
+                        <time
+                          dateTime={draft.updatedAt}
+                          className="inline-block w-14 text-right tabular-nums"
+                        >
+                          {formatListTime(draft.updatedAt)}
+                        </time>
                       </span>
                     </button>
                   </li>
