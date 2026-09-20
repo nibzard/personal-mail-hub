@@ -6,6 +6,7 @@ import type {
   MessageDetailResponse,
 } from "@mail-hub/contracts";
 import { AuthError } from "@mail-hub/auth";
+import { IngestionError } from "@mail-hub/ingestion";
 import { ReadingError, type MessageDetail, type MessageAttachment, type ReadingService } from "@mail-hub/reading";
 import { SESSION_COOKIE } from "./auth-routes.ts";
 import { sendUnclassifiedError } from "./http-errors.ts";
@@ -52,6 +53,14 @@ export async function registerMessageRoutes(
           .send({ error: { code: error.code, message: error.message } });
       }
       if (error instanceof AuthError) {
+        return reply
+          .code(error.httpStatus)
+          .send({ error: { code: error.code, message: error.message } });
+      }
+      // Regeneration of a disposable attachment copy and the sanitized-body
+      // refresh run inside the reader, so their rejections reach these routes
+      // too; each code keeps the status the ingestion table documents.
+      if (error instanceof IngestionError) {
         return reply
           .code(error.httpStatus)
           .send({ error: { code: error.code, message: error.message } });

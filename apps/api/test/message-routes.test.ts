@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import type { CleanViewResponse, MessageDetailResponse, ReadingErrorBody } from "@mail-hub/contracts";
 import { AuthError } from "@mail-hub/auth";
+import { IngestionError } from "@mail-hub/ingestion";
 import {
   ReadingError,
   type CleanViewDetail,
@@ -322,5 +323,53 @@ describe("message routes", () => {
       url: `/messages/${MESSAGE_ID}/attachments/${ATTACHMENT_ID}`,
     });
     expect(anonymous.statusCode).toBe(401);
+  });
+
+  it("maps ingestion rejections from regeneration and body refresh", async () => {
+    // Attachment regeneration and the sanitized-body refresh run inside the
+    // reader over the ingestion service, so their rejections reach these
+    // routes as IngestionError. Each keeps the code and status the ingestion
+    // table documents instead of the generic internal failure.
+    const service = fakeService({
+      async readMessage() {
+        throw new IngestionError(
+          "original_mismatch",
+          "The stored original no longer matches its recorded hash.",
+        );
+      },
+      async openAttachment() {
+        throw new IngestionError(
+          "unsupported_locator",
+          "Attachment locator version 1 is not supported; this version resolves 2.",
+        );
+      },
+    });
+    const app = await makeApp(service);
+
+    // A locator this version cannot resolve is a client-visible refusal, not
+    // a server fault.
+    const download = await app.inject({
+      method: "GET",
+      url: `/messages/${MESSAGE_ID}/attachments/${ATTACHMENT_ID}`,
+      headers: sessionHeaders,
+    });
+    expect(download.statusCode).toBe(422);
+    expect(download.json<{ error: { code: string; message: string } }>().error).toEqual({
+      code: "unsupported_locator",
+      message: "Attachment locator version 1 is not supported; this version resolves 2.",
+    });
+
+    // A refresh whose original no longer verifies stays a 500, but reports
+    // the real refusal instead of hiding behind internal_error.
+    const read = await app.inject({
+      method: "GET",
+      url: `/messages/${MESSAGE_ID}`,
+      headers: sessionHeaders,
+    });
+    expect(read.statusCode).toBe(500);
+    expect(read.json<{ error: { code: string; message: string } }>().error).toEqual({
+      code: "original_mismatch",
+      message: "The stored original no longer matches its recorded hash.",
+    });
   });
 });
