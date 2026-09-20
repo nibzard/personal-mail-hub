@@ -1718,14 +1718,226 @@
         "actions",
         "safety"
       ],
-      "updated_at": "2026-09-20T00:37:17Z",
+      "updated_at": "2026-09-20T00:37:47Z",
       "files": [
         "packages/actions/src/executor.ts",
         "packages/actions/src/service.ts",
         "packages/actions/src/two-way-executor.ts",
         "packages/actions/test/fake-action-mailbox.ts",
         "packages/actions/test/service.test.ts",
-        "packages/actions/test/two-way-executor.test.ts"
+        "packages/actions/test/two-way-executor.test.ts",
+        "to-do.json"
+      ]
+    },
+    {
+      "id": "T055",
+      "title": "Fix the restore path's queue-schema mismatch",
+      "priority": 1,
+      "status": "done",
+      "details": "Done. The restore failed as shipped: the dump is whole-database and carries the pgboss schema, but the staged reset dropped only public and drizzle, so the replayed CREATE SCHEMA pgboss collided with the schema the worker had left in the target and ON_ERROR_STOP aborted the single transaction. restore.sh now drops the queue schema with the application schemas (DROP SCHEMA IF EXISTS pgboss CASCADE before the replay). The replay rebuilds the queue with the jobs the backup holds, recovery keeps them disabled through the job gate, and pg-boss re-applies its own migrations on the next start; a bundle from before any worker ran holds no queue schema, which IF EXISTS covers. backup.sh validates BACKUP_KEEP as a positive integer before anything runs, so a bad value can no longer empty the bundle directory at the retention prune. README, env.example, and the compose file document the compose DATABASE_URL rule: POSTGRES_PASSWORD is spliced into the URL verbatim, so it must hold only URI-safe characters (openssl rand -hex 24; base64 output can contain a slash). Proven end to end on PostgreSQL 16: a backup of a migrated database with a live pgboss schema and one queued job was restored over post-backup drift (a new settings row and an extra pgboss table); the restore exits 0 and returns exactly the backup (queued job, settings row, drizzle journal, drift gone), a second restore is idempotent, a fresh-install bundle restores over a queue-bearing database, and pg-boss then starts and recreates its schema (version 42). BACKUP_KEEP 0, abc, -1, 1.5, and a blank each exit 1 with no bundle and no pause marker left; retention 2 prunes. The restore-acceptance suite still passes (4 tests).",
+      "depends_on": [
+        "T028",
+        "T053"
+      ],
+      "tags": [
+        "deployment",
+        "recovery"
+      ],
+      "updated_at": "2026-09-20T01:03:47Z",
+      "files": [
+        "deploy/backup.sh",
+        "deploy/README.md",
+        "deploy/docker-compose.yml",
+        "deploy/env.example",
+        "deploy/restore.sh"
+      ]
+    },
+    {
+      "id": "T056",
+      "title": "Keep empty streams from destroying durable originals",
+      "priority": 1,
+      "status": "todo",
+      "details": "writeObject renames the temp file over the final path before any caller inspects the result (packages/database/src/storage/fs-object-store.ts:155). The streaming path of stageOriginal then tests sizeBytes === 0, removes the key, and throws (packages/ingestion/src/service.ts:149-164). The rename has already replaced the durable original under that key. A truncated server stream therefore destroys the stored bytes while the database still references them. The docstring falsely claims stored bytes stay untouched. Enforce the size policy before the rename, or complete the object before it becomes visible. Also sweep stray .tmp-* files after a crash, because the durable tree keeps them and the backup copies them.",
+      "depends_on": [
+        "T002",
+        "T007"
+      ],
+      "tags": [
+        "storage",
+        "ingestion"
+      ],
+      "updated_at": "2026-09-20T00:56:03Z",
+      "files": [
+        "packages/database/src/storage/fs-object-store.ts",
+        "packages/database/test/storage.test.ts",
+        "packages/ingestion/src/service.ts",
+        "packages/ingestion/test/service.test.ts"
+      ]
+    },
+    {
+      "id": "T057",
+      "title": "Correct send outcome and snapshot edge cases",
+      "priority": 2,
+      "status": "todo",
+      "details": "reconcileUnknownOutcome commits the acceptance with the pre-send recipientResults, which hold accepted: false for every recipient (packages/send/src/service.ts:937-946). The send shows as sent while the panel reports no acceptance. Derive honest results from the verified Sent copy, or mark them unknown. A sent_folder_unmapped answer overwrites the recorded unknown outcome instead of preserving it for review. Recipient lists are deduped per list only, so one address in To and Cc receives two copies; dedupe across lists. The send idempotency request hash omits the frozen attachment set, so changed attachments can reuse a key. Per-attachment size caps exist, but no aggregate bound limits the composed MIME size. An empty Markdown body produces no text/plain part at all. Add the deliberate-resend path for a draft locked by an outcome_unknown send: the owner acknowledges the duplicate warning, then a new key or draft is issued. No automatic resend.",
+      "depends_on": [
+        "T021",
+        "T039"
+      ],
+      "tags": [
+        "send",
+        "compose"
+      ],
+      "updated_at": "2026-09-20T00:56:03Z",
+      "files": [
+        "packages/compose/src/service.ts",
+        "packages/compose/src/validation.ts",
+        "packages/send/src/mime.ts",
+        "packages/send/src/service.ts",
+        "apps/web/src/mail/send-state.ts"
+      ]
+    },
+    {
+      "id": "T058",
+      "title": "Fix offline draft replay and list overlay defects",
+      "priority": 2,
+      "status": "todo",
+      "details": "Queued draft-saves freeze the base revision at enqueue time, and the autosaver advances its revision only on a saved outcome (apps/web/src/mail/compose-data.ts:596). The second offline edit replays against the revision the first edit moved. The server rejects draft_stale (packages/compose/src/service.ts:309), so every save after the first lands in manual review although no competing change exists. Chain the base revision through queued saves of one draft during replay (settleSynced, packages/offline/src/sync.ts:523-551). The flagPatches and movedAside overlays are only added, never cleared on a fresh server read (apps/web/src/components/mail/app-shell.tsx:120-198). An archived message stays hidden from All Mail and search for the whole session, against the SPEC rule that nothing is hidden. A single-page reload blanks the list to a skeleton instead of keeping stale rows (apps/web/src/mail/data.ts:519-527). The send action lacks a double-submit guard. The API client sets no request timeout, so a stalled connection never falls back to the offline cache (apps/web/src/lib/api.ts).",
+      "depends_on": [
+        "T023",
+        "T036",
+        "T043"
+      ],
+      "tags": [
+        "offline",
+        "ui"
+      ],
+      "updated_at": "2026-09-20T00:56:03Z",
+      "files": [
+        "apps/web/src/components/mail/app-shell.tsx",
+        "apps/web/src/components/mail/compose-screen.tsx",
+        "apps/web/src/lib/api.ts",
+        "apps/web/src/mail/compose-data.ts",
+        "apps/web/src/mail/data.ts",
+        "packages/offline/src/sync.ts"
+      ]
+    },
+    {
+      "id": "T059",
+      "title": "Fix sync scale and retry defects",
+      "priority": 2,
+      "status": "todo",
+      "details": "The due-ness reads max(at) per folder and event type over an index that does not cover at (packages/sync/src/store.ts:98-114). Measured on 1M events: 52.6 ms per check; with a covering index (type, entity_id, at desc): 0.094 ms. Every cycle pays this for every folder, and the events table is never pruned. Add the covering index or store last_polled_at on folders. A body job whose stream aborts on the size policy, or whose original fails to parse, retries forever with no backoff and no event. The row stays fetched_body = false and each cycle re-downloads up to 50 MiB; the parse case re-downloads bytes already staged (packages/sync/src/bodies.ts:199-229). Route a size abort to skipOversized and record a bounded error state for parse failures. markExpunges and the nightly inventory pass the whole absent set to one inArray (packages/sync/src/steady.ts:329-341, reconcile.ts:277-289). More than 65535 absent rows exceeds the bind limit, the poll throws every cycle, and the folder stops syncing. Mark expunges in bounded slices. Also: enable condstoreWrites for the action executor session so the CONDSTORE write path is not dead code (packages/sync/src/imap-session.ts:37-70); batch the per-record markThreadJobsDirty calls inside the import transaction (store.ts:193-195); batch the flag-refresh UPDATE and guard it with expunged_at is null (steady.ts:427-438); page the occurrence reads in markExpunges and the inventory; prune detached thread rows nothing references; and give the runner a logger so contained folder and body failures leave a diagnostic.",
+      "depends_on": [
+        "T008",
+        "T009",
+        "T042"
+      ],
+      "tags": [
+        "sync",
+        "database"
+      ],
+      "updated_at": "2026-09-20T00:56:03Z",
+      "files": [
+        "apps/worker/src/main.ts",
+        "packages/database/drizzle",
+        "packages/sync/src/bodies.ts",
+        "packages/sync/src/imap-session.ts",
+        "packages/sync/src/reconcile.ts",
+        "packages/sync/src/runner.ts",
+        "packages/sync/src/steady.ts",
+        "packages/sync/src/store.ts",
+        "packages/sync/src/threads.ts"
+      ]
+    },
+    {
+      "id": "T060",
+      "title": "Fix the Jev adapter timeout and harness fidelity",
+      "priority": 2,
+      "status": "todo",
+      "details": "The adapter clears its response timer in the finally block of the fetch, before response.json() runs (packages/classification/src/adapter.ts:134-179). A stalled response body hangs ask() forever, the circuit breaker never opens, and the classify queue stalls. Move the timeout so it covers the body read. The harness IMAP server accepts commands a real server gates before authentication, so a client that sends work early passes the suite; gate pre-auth commands the way the protocol requires. The AUTH LOGIN path checks the password but not the decoded username. Fault-script delay timers are not all cleared when the connection closes. classifyMessage can index past the end of the minimized body slice and throw RangeError.",
+      "depends_on": [
+        "T025",
+        "T029"
+      ],
+      "tags": [
+        "classification",
+        "harness"
+      ],
+      "updated_at": "2026-09-20T00:56:03Z",
+      "files": [
+        "packages/classification/src/adapter.ts",
+        "packages/classification/src/service.ts",
+        "packages/classification/test/adapter.test.ts",
+        "packages/harness/src/imap-server.ts"
+      ]
+    },
+    {
+      "id": "T061",
+      "title": "Close search, content, and route gaps",
+      "priority": 3,
+      "status": "todo",
+      "details": "The from: operator matches the display name as well as the address, so a spoofed display name matches a from: sender filter (packages/search/src). A query with a dangling quote is accepted and silently matched as literals; reject it. The total on an out-of-range page reports the full count instead of clamping. One Defuddle diagnostic path console.logs extracted message content, against SPEC section 9, which forbids message bodies in logs; remove the leak first. The account routes validate ids with a loose pattern, so a malformed UUID reaches the database layer and surfaces a 500. The action refresh reads the folder generation after the work item is frozen; guard the write when uidvalidity changed in between. The bootstrap command can issue two enrollment grants under a race; make the grant issue idempotent.",
+      "depends_on": [
+        "T013",
+        "T017",
+        "T045"
+      ],
+      "tags": [
+        "search",
+        "content",
+        "api"
+      ],
+      "updated_at": "2026-09-20T00:56:03Z",
+      "files": [
+        "apps/api/src/account-routes.ts",
+        "packages/actions/src/service.ts",
+        "packages/auth/src/console.ts",
+        "packages/content/src/extract.ts",
+        "packages/search/src/query.ts",
+        "packages/search/src/service.ts"
+      ]
+    },
+    {
+      "id": "T062",
+      "title": "Finish deployment and worker polish",
+      "priority": 3,
+      "status": "todo",
+      "details": "The nginx gateway sends no gzip for text assets (deploy/nginx-web.conf.template); add compression with safe defaults. The worker SIGTERM path aborts the cycle controller and stops the queue without awaiting the in-flight cycle transaction. Verify the shutdown waits for the current commit, and surface a rejected queue stop instead of exiting silently. The admin CLI ignores extra arguments after the command, so a typo still runs the intended command; reject unknown arguments. Extend .dockerignore to the e2e fixture outputs so the image context stays small.",
+      "depends_on": [
+        "T028",
+        "T050"
+      ],
+      "tags": [
+        "deployment",
+        "worker"
+      ],
+      "updated_at": "2026-09-20T00:56:03Z",
+      "files": [
+        ".dockerignore",
+        "apps/admin/src/main.ts",
+        "apps/worker/src/main.ts",
+        "deploy/nginx-web.conf.template"
+      ]
+    },
+    {
+      "id": "T063",
+      "title": "Record the F12 device and browser matrix",
+      "priority": 3,
+      "status": "todo",
+      "details": "SPEC F12 requires validation on Safari and macOS and on a real iPhone with an installed PWA, with the tested browser and operating system versions recorded. The browser suites run only the cached Linux Chromium, and no document states which part of the matrix stays untested. Record the covered matrix in the repository, list the untested platforms honestly, and keep the entry point ready for a run on real hardware.",
+      "depends_on": [
+        "T033",
+        "T051"
+      ],
+      "tags": [
+        "testing",
+        "ui"
+      ],
+      "updated_at": "2026-09-20T00:56:03Z",
+      "files": [
+        "AGENTS.md",
+        "apps/web/e2e"
       ]
     }
   ]

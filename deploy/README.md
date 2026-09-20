@@ -28,7 +28,9 @@ same-origin, and the API rejects requests whose `Origin` differs from
 ## Deploy with docker compose
 
 1. Install Docker Engine with the compose plugin, clone this repository, and
-   create a scratch database password with `openssl rand -base64 24`.
+   create a database password with `openssl rand -hex 24`. The compose file
+   splices `POSTGRES_PASSWORD` into `DATABASE_URL` verbatim, so the password
+   must hold only URI-safe characters; see the `DATABASE_URL` row below.
 2. Copy `deploy/env.example` to `deploy/.env`. Fill in
    `POSTGRES_PASSWORD`, `RECOVERY_GENERATION`, `CREDENTIALS_KEY`, and
    `BASE_URL`. For a local trial without TLS, set
@@ -73,7 +75,7 @@ To manage the pieces as separate Coolify resources instead:
 
 | Variable | Required | Meaning |
 | --- | --- | --- |
-| `DATABASE_URL` | yes | PostgreSQL connection string. The entrypoint applies migrations against it before the server starts. |
+| `DATABASE_URL` | yes | PostgreSQL connection string. The entrypoint applies migrations against it before the server starts. The compose file builds it as `postgres://mail_hub:${POSTGRES_PASSWORD}@db:5432/mail_hub`, splicing the password in verbatim, so a compose-set password must hold only URI-safe characters: `openssl rand -hex 24` is safe, while `base64` output can contain `/`. Characters with URI meaning (`@`, `:`, `/`, `%`, `#`, `?`, space) break the connection string; percent-encode them only when you set `DATABASE_URL` yourself, because the server keeps the raw password. |
 | `RECOVERY_GENERATION` | yes | A UUID from deployment configuration. Generate with `uuidgen` at installation, keep it across restarts and releases, and set a new value for every restore. Never recover it from the database or a backup. |
 | `CREDENTIALS_KEY` | yes | 32 bytes as base64 or hex. Generate with `openssl rand -base64 32`. Seals stored mailbox passwords. Back it up separately from the database. |
 | `BASE_URL` | yes | The deployed HTTPS origin, for example `https://mail.example.com`. Passkey ceremonies and origin checks use it. |
@@ -82,7 +84,7 @@ To manage the pieces as separate Coolify resources instead:
 | `APP_ROLE` | no | `all` (default), `api`, or `worker`. Only the `api` and `all` roles run migrations. |
 | `TYPE_SAFE_API_KEY` | no | Jev classification key. Core mail never waits on it. |
 | `SYNC_CYCLE_CRON`, `SEND_CYCLE_CRON`, `SENT_COPY_CYCLE_CRON`, `CLASSIFY_CYCLE_CRON` | no | Worker schedule overrides. Set them only to a valid cron expression; an empty or missing value keeps the image default. |
-| `BACKUP_DIR`, `BACKUP_KEEP` | no | Backup destination (default `/backups`) and retention count (default 14). |
+| `BACKUP_DIR`, `BACKUP_KEEP` | no | Backup destination (default `/backups`) and retention count (default 14). `BACKUP_KEEP` must be a positive integer; the backup refuses to start on any other value. |
 | `BACKUP_GC_STALE_SECONDS` | no | Age at which a leftover collection-pause marker is taken over (default 43200). |
 | `PREFLIGHT_ALLOW_HTTP` | no | Set to `1` only for local trials, to accept an `http` `BASE_URL`. |
 
@@ -223,14 +225,19 @@ durable objects back. The recovery commands after it are what make the
 restored deployment safe; a database restore alone never enables normal
 operation.
 
-The database restore is atomic and total: it drops the `public` and
-`drizzle` schemas and replays the snapshot inside one transaction. The
+The database restore is atomic and total: it drops the `public`, `drizzle`,
+and `pgboss` schemas and replays the snapshot inside one transaction. The
 schema drop also removes objects that a migration added after the backup was
 taken, which per-object `--clean` statements cannot know about; without it,
 restoring an older bundle onto a newer schema rewinds the migration journal
 and the entrypoint crash-loops re-applying migrations that collide with the
-leftovers. Any error rolls the whole restore back, leaving the database
-exactly as it was.
+leftovers. The queue schema must drop too, because the snapshot is
+whole-database: a `pgboss` schema left in the target collides with the
+replayed `CREATE SCHEMA` and the restore aborts. The replay rebuilds the
+queue with the jobs the backup holds, recovery holds them disabled through
+the job gate, and pg-boss re-applies its own migrations on the next start.
+Any error rolls the whole restore back, leaving the database exactly as it
+was.
 
 1. Stop the API and the worker. Make sure the old process cannot continue a
    remote operation. Preserve any receipts newer than the backup.

@@ -37,6 +37,9 @@ services:
     restart: unless-stopped
     environment:
       APP_ROLE: api
+      # POSTGRES_PASSWORD is spliced into this URL verbatim, so the password
+      # must hold only URI-safe characters (@, :, /, %, #, ?, and space all
+      # break the string). Generate it with: openssl rand -hex 24.
       DATABASE_URL: postgres://mail_hub:${POSTGRES_PASSWORD}@db:5432/mail_hub
       RECOVERY_GENERATION: ${RECOVERY_GENERATION:?set RECOVERY_GENERATION in deploy/.env}
       CREDENTIALS_KEY: ${CREDENTIALS_KEY:?set CREDENTIALS_KEY in deploy/.env}

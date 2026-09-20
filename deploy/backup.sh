@@ -45,6 +45,20 @@ stale_seconds="${BACKUP_GC_STALE_SECONDS:-43200}"
 
 : "${DATABASE_URL:?DATABASE_URL must be set for the database snapshot.}"
 
+# Fail fast on a bad retention value, before the snapshot: the prune runs
+# last, and an unvalidated value there would delete bundles by accident
+# (retain=0 empties the directory; a non-number makes [ -gt ] misbehave).
+case $retain in
+  '' | *[!0-9]*)
+    echo "backup: BACKUP_KEEP must be a positive integer, not '$retain'." >&2
+    exit 1
+    ;;
+esac
+if [ "$retain" -lt 1 ]; then
+  echo "backup: BACKUP_KEEP must be a positive integer, not '$retain'." >&2
+  exit 1
+fi
+
 for tool in pg_dump pg_restore node; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "backup: $tool is required but was not found in PATH." >&2
