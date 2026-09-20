@@ -467,7 +467,10 @@ export class ComposeService {
   /**
    * Attach one upload to a draft at the next position. The upload must
    * belong to the draft's account; account boundaries apply to drafts and
-   * uploads alike (SPEC section 8).
+   * uploads alike (SPEC section 8). Attaching an upload the draft already
+   * references returns the recorded row unchanged, so a retry after a lost
+   * response converges on the same attachment instead of failing the
+   * primary key.
    */
   async attachUpload(context: MutationContext, draftId: string, uploadId: string): Promise<DraftAttachmentRecord> {
     await this.gate.gateMutation(context.requestGeneration);
@@ -481,6 +484,12 @@ export class ComposeService {
           "invalid_request",
           "The upload belongs to a different account than the draft.",
         );
+      }
+      const attached = await findDraftUpload(tx, draftId, uploadId);
+      if (attached !== null) {
+        // The recorded row is the answer; its bytes already sit inside the
+        // budget, so the aggregate check would count them a second time.
+        return { ...toUploadRecord(upload), ordinal: attached };
       }
       await this.requireAttachmentBudget(tx, draftId, upload);
       const next = await nextOrdinal(tx, draftId);
@@ -828,6 +837,9 @@ async function replyParentBody(
     : { htmlSanitized: row.htmlSanitized, textPlain: row.textPlain };
 }
 
+/** The line that marks a derived quote as trimmed; its length is part of the cap. */
+const QUOTE_MARKER = "\n> […]";
+
 /**
  * A derived quote respects the Markdown ceiling an explicit draft obeys. A
  * pathological parent would otherwise refuse the reply outright; a trimmed
@@ -837,9 +849,12 @@ function capDerivedQuote(markdown: string): string {
   if (markdown.length <= MARKDOWN_MAX) {
     return markdown;
   }
-  const kept = markdown.slice(0, MARKDOWN_MAX);
+  // The marker's length is reserved below the ceiling, so the joined result
+  // never exceeds it; a later PATCH that returns the stored Markdown
+  // verbatim passes the same length check an explicit draft obeys.
+  const kept = markdown.slice(0, MARKDOWN_MAX - QUOTE_MARKER.length);
   const lastLine = kept.lastIndexOf("\n");
-  return `${lastLine === -1 ? kept : kept.slice(0, lastLine)}\n> […]`;
+  return `${lastLine === -1 ? kept : kept.slice(0, lastLine)}${QUOTE_MARKER}`;
 }
 
 /** Whether the same original bytes also exist under another account. */
@@ -886,6 +901,24 @@ async function requireUpload(tx: MailHubTransaction, uploadId: string): Promise<
     throw new ComposeError("not_found", "No upload exists with this identifier.");
   }
   return row;
+}
+
+/**
+ * The recorded position of one upload inside one draft, or `null` when the
+ * draft does not reference it. The (draft, upload) pair is the primary key,
+ * so a repeated attach answers from this row rather than inserting again.
+ */
+async function findDraftUpload(
+  tx: MailHubTransaction,
+  draftId: string,
+  uploadId: string,
+): Promise<number | null> {
+  const rows = await tx
+    .select({ ordinal: draftUploads.ordinal })
+    .from(draftUploads)
+    .where(and(eq(draftUploads.draftId, draftId), eq(draftUploads.uploadId, uploadId)))
+    .limit(1);
+  return rows[0]?.ordinal ?? null;
 }
 
 /** The next attachment position of one draft: one past the current highest. */

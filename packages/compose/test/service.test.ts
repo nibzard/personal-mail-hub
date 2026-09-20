@@ -344,6 +344,40 @@ suite("draft editing and durable uploads", () => {
     ).toBe("not_found");
   });
 
+  it("returns the recorded attachment when the same upload is attached twice", async () => {
+    const draft = await service.createDraft(readyContext, { accountId });
+    const upload = await service.createUpload(readyContext, {
+      accountId,
+      filename: "retry.pdf",
+      contentType: "application/pdf",
+      bytes: new TextEncoder().encode("retry"),
+    });
+
+    const first = await service.attachUpload(readyContext, draft.id, upload.id);
+    // A retry after a lost response converges on the recorded row instead
+    // of violating the (draft, upload) primary key with an unclassified 500.
+    const retried = await service.attachUpload(readyContext, draft.id, upload.id);
+    expect(retried.id).toBe(first.id);
+    expect(retried.ordinal).toBe(first.ordinal);
+    expect((await service.listDraftAttachments(draft.id)).map((row) => row.id)).toEqual([upload.id]);
+
+    // The retry records no second attach event.
+    const attachedEvents = await db
+      .select({ id: events.id })
+      .from(events)
+      .where(and(eq(events.type, "draft.upload_attached"), eq(events.entityId, draft.id)));
+    expect(attachedEvents).toHaveLength(1);
+
+    // A different upload still takes the next position after the repeated one.
+    const later = await service.createUpload(readyContext, {
+      accountId,
+      filename: "after.pdf",
+      contentType: "application/pdf",
+      bytes: new TextEncoder().encode("after"),
+    });
+    expect((await service.attachUpload(readyContext, draft.id, later.id)).ordinal).toBe(1);
+  });
+
   it("bounds the total attachment bytes one draft may reference", async () => {
     const draft = await service.createDraft(readyContext, { accountId });
     const half = 17 * 1024 * 1024;

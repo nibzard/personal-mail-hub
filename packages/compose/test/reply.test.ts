@@ -30,6 +30,7 @@ import {
   deriveReplyRecipients,
   extractValidMessageIds,
   freezeReplyReferences,
+  MARKDOWN_MAX,
   preselectReplyIdentity,
   replySubject,
 } from "../src/index.ts";
@@ -263,6 +264,7 @@ suite("reply drafts against PostgreSQL", () => {
   let pool: Pool;
   let storage: Storage;
   let service: ComposeService;
+  let controls: RecoveryControls;
   let accountId: string;
   let secondAccountId: string;
   let threadId: string;
@@ -279,7 +281,7 @@ suite("reply drafts against PostgreSQL", () => {
     await runMigrations(pool);
     db = createDatabase(pool);
 
-    const controls = new RecoveryControls(db, { deploymentGeneration: GENERATION });
+    controls = new RecoveryControls(db, { deploymentGeneration: GENERATION });
     const outcome = await controls.initialize();
     if (outcome.result !== "initialized") {
       throw new Error(`The test database could not be initialized: ${outcome.result}.`);
@@ -417,6 +419,49 @@ suite("reply drafts against PostgreSQL", () => {
 
     const draft = await service.createReplyDraft(readyContext, { messageId: parent.id, mode: "reply" });
     expect(draft.markdown).toBe("> Only a plain part exists.");
+  });
+
+  it("caps an oversized derived quote so a later edit still accepts it", async () => {
+    const parent = await insertMessage({
+      accountId,
+      messageId: "<oversized@example.com>",
+      sender: ALICE,
+      replyTo: null,
+      recipients: { to: [USER] },
+      subject: "Endless parent",
+      threadId,
+    });
+
+    // The extractor seam carries one pathological quote at a time, so the
+    // cap alone is under test.
+    let quoted = "";
+    const bloated = new ComposeService(db, storage, controls, {
+      async extractReplyQuote() {
+        return { markdown: quoted, source: "extracted" };
+      },
+    });
+
+    // A single line far past the ceiling: no earlier line boundary exists,
+    // so the marker itself must fit inside the ceiling.
+    quoted = `> ${"endless ".repeat(Math.ceil((MARKDOWN_MAX + 60) / 8))}`;
+    const unbroken = await bloated.createReplyDraft(readyContext, { messageId: parent.id, mode: "reply" });
+    expect(unbroken.markdown.length).toBeLessThanOrEqual(MARKDOWN_MAX);
+    expect(unbroken.markdown.endsWith("\n> […]")).toBe(true);
+
+    // The stored Markdown passes its own ceiling check on the way back in,
+    // so a PATCH that returns it verbatim is not refused.
+    const edited = await service.updateDraft(readyContext, unbroken.id, {
+      baseRevision: unbroken.revision,
+      markdown: unbroken.markdown,
+    });
+    expect(edited.revision).toBe(unbroken.revision + 1);
+
+    // Many lines: the trim keeps whole lines and the marker closes the quote.
+    const pad = "> padding line";
+    quoted = `${pad}\n`.repeat(Math.ceil((MARKDOWN_MAX + 60) / (pad.length + 1)));
+    const lined = await bloated.createReplyDraft(readyContext, { messageId: parent.id, mode: "reply" });
+    expect(lined.markdown.length).toBeLessThanOrEqual(MARKDOWN_MAX);
+    expect(lined.markdown.endsWith(`${pad}\n> […]`)).toBe(true);
   });
 
   it("addresses a reply from Reply-To and records an audit event", async () => {
