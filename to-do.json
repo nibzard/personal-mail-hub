@@ -13,7 +13,9 @@
     "research/research-1.md",
     "research/research-2.md",
     "research/research-3.md",
-    "research/research.md"
+    "research/research.md",
+    "docs/sync-repair-plan.md",
+    "docs/development-deployment-plan.md"
   ],
   "tasks": [
     {
@@ -2670,7 +2672,401 @@
       "files": [
         "packages/send/src/service.ts"
       ]
+    },
+    {
+      "id": "T104",
+      "title": "Remove private data from sync diagnostics",
+      "priority": 1,
+      "status": "todo",
+      "details": "Plan: docs/sync-repair-plan.md (section T104).\n\nThe sync runner logs arbitrary error messages and folder names. Database errors can include private mail parameters. Replace raw errors with approved codes and internal identifiers. Test nested causes and arbitrary thrown values with sentinel secrets. Preserve containment and durable error counters.",
+      "steps": [
+        "Follow the T104 procedure and acceptance checks in docs/sync-repair-plan.md.",
+        "Add the required regression coverage and record validation results."
+      ],
+      "tags": [
+        "sync",
+        "privacy",
+        "logging"
+      ],
+      "files": [
+        "docs/sync-repair-plan.md",
+        "packages/sync/src/runner.ts",
+        "packages/sync/src/errors.ts",
+        "apps/worker/src/main.ts"
+      ],
+      "depends_on": [],
+      "created_at": "2026-09-20T21:45:35Z",
+      "updated_at": "2026-09-20T21:45:35Z"
+    },
+    {
+      "id": "T105",
+      "title": "Handle NUL characters in imported mail data",
+      "priority": 1,
+      "status": "todo",
+      "details": "Plan: docs/sync-repair-plan.md (section T105).\n\nTrash and Deleted Messages repeatedly fail message inserts with PostgreSQL UTF8 error 0x00. The exact field remains unknown. Reproduce with synthetic data and make derived text and nested metadata database-safe. Preserve invalid identifier and address semantics, original bytes, hashes, and atomic checkpoints. Test real PostgreSQL imports, retries, and body ingestion without duplicates or skipped mail.",
+      "steps": [
+        "Follow the T105 procedure and acceptance checks in docs/sync-repair-plan.md.",
+        "Add the required regression coverage and record validation results."
+      ],
+      "tags": [
+        "sync",
+        "ingestion",
+        "database"
+      ],
+      "files": [
+        "docs/sync-repair-plan.md",
+        "packages/sync/src/headers.ts",
+        "packages/sync/src/store.ts",
+        "packages/ingestion/src/parse.ts",
+        "packages/ingestion/src/text.ts",
+        "packages/ingestion/src/service.ts"
+      ],
+      "depends_on": [
+        "T104"
+      ],
+      "created_at": "2026-09-20T21:45:35Z",
+      "updated_at": "2026-09-20T21:45:35Z"
+    },
+    {
+      "id": "T106",
+      "title": "Report partial sync failures in health and settings",
+      "priority": 2,
+      "status": "todo",
+      "details": "Plan: docs/sync-repair-plan.md (section T106).\n\nThe health report shows ok while two folders repeatedly fail. Expose durable per-cycle error counters and safe failure state through health, sync status, and account settings. Distinguish normal backfill from partial failure and stale cycles. A clean cycle clears degradation. Preserve query bounds, privacy, and HTTP liveness behavior.",
+      "steps": [
+        "Follow the T106 procedure and acceptance checks in docs/sync-repair-plan.md.",
+        "Add the required regression coverage and record validation results."
+      ],
+      "tags": [
+        "sync",
+        "observability",
+        "web"
+      ],
+      "files": [
+        "docs/sync-repair-plan.md",
+        "packages/observability/src/health.ts",
+        "packages/contracts/src/index.ts",
+        "apps/api/src/settings-routes.ts",
+        "apps/web/src/components/settings/account-settings.tsx"
+      ],
+      "depends_on": [
+        "T104"
+      ],
+      "created_at": "2026-09-20T21:45:35Z",
+      "updated_at": "2026-09-20T21:45:35Z"
+    },
+    {
+      "id": "T107",
+      "title": "Deploy sync fixes and verify complete backfill",
+      "priority": 2,
+      "status": "todo",
+      "details": "Plan: docs/sync-repair-plan.md (section T107).\n\nRun the strict release gate with PostgreSQL tests enabled. Push to main and verify the single webhook deployment. Confirm both affected folders resume existing checkpoints and complete backfill without NUL errors or duplicate occurrences. Verify at least three clean cycles and drain the expected body backlog. Preserve account, passkey, original mail, and recovery state. Record sanitized deployment evidence.",
+      "steps": [
+        "Follow the deployment and verification procedure in docs/sync-repair-plan.md.",
+        "Record sanitized evidence and remaining limits before marking this task done."
+      ],
+      "tags": [
+        "sync",
+        "deployment",
+        "verification"
+      ],
+      "files": [
+        "docs/sync-repair-plan.md",
+        "deploy/README.md"
+      ],
+      "depends_on": [
+        "T104",
+        "T105",
+        "T106"
+      ],
+      "created_at": "2026-09-20T21:45:35Z",
+      "updated_at": "2026-09-20T21:45:35Z"
+    },
+    {
+      "id": "T108",
+      "title": "Verify external API contracts with synthetic requests",
+      "priority": 2,
+      "status": "todo",
+      "details": "Plan: docs/development-deployment-plan.md#t108-verify-external-api-contracts-with-synthetic-requests\n\nThe original tests accepted an incorrect TypeSafe endpoint and response shape. The adapter is fixed; this task prevents recurrence.\n\nAcceptance: A deliberately incorrect endpoint or response fixture fails offline checks. An authorized synthetic live check verifies the configured service without real mail, secret output, or database mutations.",
+      "steps": [
+        "Keep offline contract fixtures traceable to official documentation and a reviewed model version. Cover endpoint, authentication, request shape, typed answers, and error responses.",
+        "Add an explicit synthetic smoke command that calls the adapter with invented text. Resolve the API key from the runtime environment and print only approved result fields.",
+        "Set request timeouts and a small call budget. Keep live requests out of default tests and untrusted pull requests. Missing credentials produce an explicit unverified result.",
+        "Run the smoke check when the adapter, question set, model, or endpoint changes. Verify the installed adapter after deployment."
+      ],
+      "tags": [
+        "classification",
+        "integration",
+        "testing"
+      ],
+      "files": [
+        "docs/development-deployment-plan.md",
+        "packages/classification/src/adapter.ts",
+        "packages/classification/test/adapter.test.ts"
+      ],
+      "depends_on": [],
+      "created_at": "2026-09-20T21:51:56Z",
+      "updated_at": "2026-09-20T21:51:56Z"
+    },
+    {
+      "id": "T109",
+      "title": "Expand synthetic malformed-mail regression coverage",
+      "priority": 2,
+      "status": "todo",
+      "details": "Plan: docs/development-deployment-plan.md#t109-expand-synthetic-malformed-mail-regression-coverage\n\nThe NUL-byte incident showed that clean fixtures omit important incoming-mail cases. T105 owns the incident fix and its essential regression tests.\n\nAcceptance: The corpus detects the known NUL regression and unsafe normalization of addresses or identifiers. Tests prove that adjacent valid mail progresses without silent message loss.",
+      "steps": [
+        "Extend the shared synthetic corpus with raw and decoded NUL characters, missing or malformed headers, folded references, nested address metadata, and attachment metadata.",
+        "Exercise header import, complete-message ingestion, search derivatives, and thread reconciliation through their real boundaries. Use PostgreSQL for database representation cases.",
+        "Check valid Unicode, original and attachment hashes, retry idempotency, and checkpoint atomicity. Assert that each malformed case either imports safely or reports a contained failure.",
+        "Document how to reduce a future incident into a synthetic fixture. Never commit raw provider mail or extract private log parameters as fixtures."
+      ],
+      "tags": [
+        "sync",
+        "ingestion",
+        "testing"
+      ],
+      "files": [
+        "docs/development-deployment-plan.md",
+        "packages/harness",
+        "packages/sync/test",
+        "packages/ingestion/test"
+      ],
+      "depends_on": [
+        "T105"
+      ],
+      "created_at": "2026-09-20T21:51:56Z",
+      "updated_at": "2026-09-20T21:51:56Z"
+    },
+    {
+      "id": "T110",
+      "title": "Document and preflight deployment access",
+      "priority": 2,
+      "status": "todo",
+      "details": "Plan: docs/development-deployment-plan.md#t110-document-and-preflight-deployment-access\n\nSSH access required host verification and a dedicated authorized key during diagnosis. A local identity path must remain configurable.\n\nAcceptance: A fresh authorized workstation can follow the runbook and confirm required access with one command. Failure output identifies the missing capability without exposing credentials.",
+      "steps": [
+        "Document the application URL, Coolify resource identifier, repository, main branch, compose path, SSH user, and tailnet host in the operator runbook.",
+        "Document the dedicated SSH identity override, host-key verification, public-key enrollment, rotation, and revocation. Store no private key or token in the repository.",
+        "Add a read-only operator access check, separate from the container environment preflight. Distinguish unavailable tailnet routing, host-key mismatch, denied SSH, and unavailable Docker or Coolify access.",
+        "Allow a configured Coolify API token when available. Report missing capabilities clearly; never dump environment variables or generate new credentials silently."
+      ],
+      "tags": [
+        "deployment",
+        "operations"
+      ],
+      "files": [
+        "docs/development-deployment-plan.md",
+        "deploy/README.md",
+        "deploy/preflight.mjs"
+      ],
+      "depends_on": [],
+      "created_at": "2026-09-20T21:51:56Z",
+      "updated_at": "2026-09-20T21:51:56Z"
+    },
+    {
+      "id": "T111",
+      "title": "Add one command for deployment verification",
+      "priority": 2,
+      "status": "todo",
+      "details": "Plan: docs/development-deployment-plan.md#t111-add-one-command-for-deployment-verification\n\nManual health queries, container inspection, and database checks made verification slow. Container health alone missed the stalled folders.\n\nAcceptance: One command can reject a healthy-container deployment with broken sync. It records bounded evidence, states uncertainty, and never reports a fully verified result when required checks were unavailable.",
+      "steps": [
+        "Add a read-only command that resolves the current application containers and deployed revision from the configured resource. Avoid hard-coded container suffixes.",
+        "Report deployment state, revision, restarts, recovery readiness, safe sync failures, per-folder checkpoints, body backlog, classification progress, and existing send outcomes.",
+        "Support bounded before-and-after sampling. Evaluate progress only when work is pending; an idle mailbox is not a failure. Separate normal backlog from a stalled or failing operation.",
+        "Use safe API fields or narrow aggregate database queries. Never print raw logs, addresses, folder names, message content, or secrets. Handle partial access as unverified.",
+        "Produce both a machine-readable result and a short report with verified workflows, progressing work, known failures, and untested behavior. Include timestamps and revision.",
+        "Test wrong revisions, partial folder failures, clean idle accounts, unavailable containers, missing privileges, and observation timeouts. Do not send or mutate mail to verify a deployment."
+      ],
+      "tags": [
+        "deployment",
+        "observability"
+      ],
+      "files": [
+        "docs/development-deployment-plan.md",
+        "scripts",
+        "deploy/README.md",
+        "packages/observability/src/health.ts"
+      ],
+      "depends_on": [
+        "T104",
+        "T106",
+        "T110"
+      ],
+      "created_at": "2026-09-20T21:51:56Z",
+      "updated_at": "2026-09-20T21:51:56Z"
+    },
+    {
+      "id": "T112",
+      "title": "Isolate browser fixtures for every test run",
+      "priority": 2,
+      "status": "todo",
+      "details": "Plan: docs/development-deployment-plan.md#t112-isolate-browser-fixtures-for-every-test-run\n\nLocal browser tests could reuse a stale server on port 4180. A manually chosen free port worked, but needs automation.\n\nAcceptance: Both concurrent runs test their intended build without shared-server contamination. The unrelated server survives, and failed startup cannot produce a passing result.",
+      "steps": [
+        "Give each browser run its own fixture server, port, and ownership token. Verify a build fingerprint and run identity before tests start.",
+        "Handle port allocation races with bounded retries. Preserve E2E_PORT as an explicit override and report collisions clearly.",
+        "Prevent concurrent runs from overwriting shared build output. Use an isolated output directory or an explicit build lock.",
+        "Terminate only the server owned by the run on success, failure, and interruption. Keep traces for failures.",
+        "Verify behavior with a stale unrelated server on 4180 and with two concurrent runs. Keep release checks from silently reusing any existing server."
+      ],
+      "tags": [
+        "web",
+        "testing",
+        "tooling"
+      ],
+      "files": [
+        "docs/development-deployment-plan.md",
+        "apps/web/playwright.config.ts",
+        "apps/web/e2e/fixture-server.mjs",
+        "scripts/release-gate.mjs"
+      ],
+      "depends_on": [],
+      "created_at": "2026-09-20T21:51:56Z",
+      "updated_at": "2026-09-20T21:51:56Z"
+    },
+    {
+      "id": "T113",
+      "title": "Diagnose and document Docker build networking",
+      "priority": 3,
+      "status": "todo",
+      "details": "Plan: docs/development-deployment-plan.md#t113-diagnose-and-document-docker-build-networking\n\nA local build failed DNS resolution on the default Docker network. Host networking succeeded locally; the cause and portability remain unverified.\n\nAcceptance: The root cause is documented with evidence, or explicitly remains unresolved with a verified workaround. Supported builds resolve dependencies without manual trial and error.",
+      "steps": [
+        "Compare host and build-container DNS, registry access, proxy configuration, and BuildKit networking using commands that expose no credentials.",
+        "Record whether the failure affects only the developer host or also the Coolify builder. Test each supported environment independently.",
+        "Correct the verified configuration fault at the narrowest scope. Document the host-network workaround and its limits; do not make it an unconditional build default.",
+        "Build both app and web targets with the chosen configuration. Retain exact reproduction commands and safe failure categories."
+      ],
+      "tags": [
+        "deployment",
+        "docker",
+        "tooling"
+      ],
+      "files": [
+        "docs/development-deployment-plan.md",
+        "Dockerfile",
+        "deploy/README.md",
+        "deploy/docker-compose.coolify.yml"
+      ],
+      "depends_on": [
+        "T110"
+      ],
+      "created_at": "2026-09-20T21:51:56Z",
+      "updated_at": "2026-09-20T21:51:56Z"
+    },
+    {
+      "id": "T114",
+      "title": "Validate task files automatically",
+      "priority": 3,
+      "status": "todo",
+      "details": "Plan: docs/development-deployment-plan.md#t114-validate-task-files-automatically\n\nThe task file contained metadata that its schema rejected. Optional updated_at and notes definitions were added during planning; automated validation is still missing.\n\nAcceptance: A clean checkout validates the current task list. Each malformed fixture fails with a precise task identifier or field path, while historical notes and planned future files remain supported.",
+      "steps": [
+        "Add a repeatable task-validation command using the repository schema and date-time formats. Declare validator dependencies directly if needed.",
+        "Reject duplicate task identifiers, missing dependencies, self-dependencies, dependency cycles, and missing source documents.",
+        "Validate plan links and section anchors for planned work. Distinguish intended future implementation files from existing source documents, so planned files are not rejected.",
+        "Run the command when task files, schema, or referenced plans change. Add focused fixtures for invalid records, broken plan links, and cycles."
+      ],
+      "tags": [
+        "tasks",
+        "schema",
+        "tooling"
+      ],
+      "files": [
+        "docs/development-deployment-plan.md",
+        "to-do.json",
+        "to-do.schema.json",
+        "package.json",
+        "scripts"
+      ],
+      "depends_on": [],
+      "created_at": "2026-09-20T21:51:56Z",
+      "updated_at": "2026-09-20T21:51:56Z"
+    },
+    {
+      "id": "T115",
+      "title": "Stream release-gate progress and retain logs",
+      "priority": 3,
+      "status": "todo",
+      "details": "Plan: docs/development-deployment-plan.md#t115-stream-release-gate-progress-and-retain-logs\n\nThe gate captures output through spawnSync and prints it only after a step finishes. Long steps appear inactive and complicate diagnosis.\n\nAcceptance: A long-running check shows progress at least every 30 seconds. Failed or skipped checks cannot pass because of output text, and interrupted children do not remain running.",
+      "steps": [
+        "Run each gate step with asynchronous process handling. Stream progress and persist complete stdout and stderr without buffering unbounded output in memory.",
+        "Keep the exit code authoritative. Preserve the current test-inventory, skipped-suite, migration, and strict-mode checks.",
+        "Show elapsed time and a periodic heartbeat for quiet steps. Implement configurable timeouts and interrupt cleanup for the owned process tree.",
+        "Retain failed logs and a concise final summary. Never print environment variables or add commands that echo credentials.",
+        "Test slow output, silent steps, nonzero exit after a passing-looking summary, timeout, signal interruption, and large output."
+      ],
+      "tags": [
+        "testing",
+        "release",
+        "tooling"
+      ],
+      "files": [
+        "docs/development-deployment-plan.md",
+        "scripts/release-gate.mjs"
+      ],
+      "depends_on": [],
+      "created_at": "2026-09-20T21:51:56Z",
+      "updated_at": "2026-09-20T21:51:56Z"
+    },
+    {
+      "id": "T116",
+      "title": "Gate main before automatic deployment",
+      "priority": 2,
+      "status": "todo",
+      "details": "Plan: docs/development-deployment-plan.md#t116-gate-main-before-automatic-deployment\n\nPushes to main now deploy immediately. Checks that start only after that push cannot prevent an unverified deployment.\n\nAcceptance: A failing or outdated pull-request check prevents ordinary integration into main. A verified merge deploys once. Fast local checks remain convenient, while release validation remains complete.",
+      "steps": [
+        "Document a fast local loop: focused regression tests and affected workspace type checks first, then the full required checks before integration. Use a conservative full-run fallback when impact is unclear.",
+        "Add a continuous integration workflow for pull requests with a scratch PostgreSQL service, browser dependencies, task validation, and the strict release gate. Cache dependencies using the lockfile.",
+        "Require the successful check before merging into main through repository rules supported by this repository. Record any plan or permission restriction as a blocker.",
+        "Keep the main-push webhook as the deployment trigger after the verified merge. Do not treat a local hook as the only protection or expose deployment secrets to untrusted code.",
+        "Check merge-result coverage and current-branch requirements so an outdated successful check cannot authorize a different final tree. Document explicit emergency bypass handling.",
+        "Measure focused-check and full-gate durations before and after the changes. Optimize repeated setup without removing required suites."
+      ],
+      "tags": [
+        "ci",
+        "release",
+        "workflow"
+      ],
+      "files": [
+        "docs/development-deployment-plan.md",
+        "package.json",
+        "scripts/release-gate.mjs",
+        "deploy/README.md"
+      ],
+      "depends_on": [
+        "T112",
+        "T114",
+        "T115"
+      ],
+      "created_at": "2026-09-20T21:51:56Z",
+      "updated_at": "2026-09-20T21:51:56Z"
+    },
+    {
+      "id": "T117",
+      "title": "Verify and document the webhook deployment path",
+      "priority": 2,
+      "status": "todo",
+      "details": "Plan: docs/development-deployment-plan.md#t117-verify-and-document-the-webhook-deployment-path\n\nThe signed GitHub push webhook is already configured and tested. This task makes its verification and maintenance repeatable rather than recreating it.\n\nAcceptance: The audit distinguishes an enabled switch from a working webhook. An explicit signed test can prove the path through a finished deployment and matching revision, with no duplicate manual rollout.",
+      "steps": [
+        "Document the current main-branch deployment path, secret ownership, rotation procedure, and location of GitHub delivery and Coolify deployment records.",
+        "Add a read-only configuration audit for webhook activity, push subscription, destination, signature-secret presence, main branch selection, and auto-deploy setting. Never display the secret.",
+        "Provide an explicit end-to-end test mode that replays a selected GitHub delivery or uses the supported test endpoint. Identify the commit and warn that this mode starts a deployment.",
+        "Correlate delivery outcome, Coolify deployment, installed revision, and verification results. Do not queue a manual deployment while the webhook deployment is running.",
+        "Test invalid signatures, other branches, delivery failure, missing webhook configuration, and duplicate delivery behavior in an isolated setup. Use the live test only during an authorized deployment window."
+      ],
+      "tags": [
+        "deployment",
+        "github",
+        "operations"
+      ],
+      "files": [
+        "docs/development-deployment-plan.md",
+        "deploy/README.md",
+        "scripts"
+      ],
+      "depends_on": [
+        "T110",
+        "T111"
+      ],
+      "created_at": "2026-09-20T21:51:56Z",
+      "updated_at": "2026-09-20T21:51:56Z"
     }
-  ],
-  "updated_at": "2026-09-20T18:45:24Z"
+  ]
 }
