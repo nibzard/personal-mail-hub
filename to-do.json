@@ -2368,14 +2368,14 @@
       "id": "T085",
       "title": "Make sender override identity case-insensitive and the read deterministic",
       "priority": 2,
-      "status": "todo",
-      "details": "CorrectionService writes sender overrides with the raw wire-case address and keys the upsert on exact text, so two case variants of one address create two rows. loadSenderOverride reads with lower(sender) = lower(address), limit(1), and no order by, so PostgreSQL returns an unspecified row and an older override can shadow the owner's newest correction for new mail (packages/classification/src/service.ts:450). Fix: normalize the stored sender to lowercase (or replace the primary key with a unique index on (account_id, lower(sender))), and order the read so the newest override wins.",
+      "status": "done",
+      "details": "CorrectionService writes sender overrides with the raw wire-case address and keys the upsert on exact text, so two case variants of one address create two rows. loadSenderOverride reads with lower(sender) = lower(address), limit(1), and no order by, so PostgreSQL returns an unspecified row and an older override can shadow the owner's newest correction for new mail (packages/classification/src/service.ts:450). Fix: normalize the stored sender to lowercase (or replace the primary key with a unique index on (account_id, lower(sender))), and order the read so the newest override wins.\n\nFixed 2026-09-20. CorrectionService stores the sender override keyed lowercase, so two case variants of one address upsert one row; loadSenderOverride orders the lookup with the lowercase-canonical row first and a stable sender tiebreak, so the read is deterministic. The row carries no timestamp, so newest-wins is derived structurally: the canonical row is the only one the fixed upsert maintains. CorrectionResult.sender and the class.corrected payload keep the raw wire-case address.",
       "tags": [
         "audit",
         "classification",
         "database"
       ],
-      "updated_at": "2026-09-20T16:09:25Z",
+      "updated_at": "2026-09-20T18:45:24Z",
       "files": [
         "packages/classification/src/service.ts",
         "packages/classification/src/corrections.ts"
@@ -2385,14 +2385,14 @@
       "id": "T086",
       "title": "Re-mark thread jobs whose stored reference text differs from the extracted identifier",
       "priority": 2,
-      "status": "todo",
-      "details": "markThreadJobsDirty re-marks children with exact equality on in_reply_to, but resolveParentReference extracts identifiers from the raw stored text and tolerates folded comments such as '<(note) <a@example.com>>' (packages/ingestion/src/thread-jobs.ts:71). A child stored with a folded In-Reply-To and empty reference_ids is never re-marked when its parent's holder set changes, so its pending or ambiguous link is permanent because reconcileAccount resolves only dirty rows. Fix: mark rows whose raw in_reply_to or reference_ids contain one of the identifiers, as extraction does, or normalize the stored reference columns to their extracted identifiers at import and parse time.",
+      "status": "done",
+      "details": "markThreadJobsDirty re-marks children with exact equality on in_reply_to, but resolveParentReference extracts identifiers from the raw stored text and tolerates folded comments such as '<(note) <a@example.com>>' (packages/ingestion/src/thread-jobs.ts:71). A child stored with a folded In-Reply-To and empty reference_ids is never re-marked when its parent's holder set changes, so its pending or ambiguous link is permanent because reconcileAccount resolves only dirty rows. Fix: mark rows whose raw in_reply_to or reference_ids contain one of the identifiers, as extraction does, or normalize the stored reference columns to their extracted identifiers at import and parse time.\n\nFixed 2026-09-20. markThreadJobsDirty keeps its two index-backed exact arms and adds two containment arms in the same UPDATE: in_reply_to LIKE ANY over the escaped identifiers, and a correlated EXISTS over jsonb_array_elements_text(reference_ids) with the same match \u2014 the shape extraction itself uses for folded comments. LIKE wildcards inside an identifier are escaped, and a database-backed suite proves the folded child flips dirty both through direct marking and the real ingestOriginal path.",
       "tags": [
         "audit",
         "ingestion",
         "threading"
       ],
-      "updated_at": "2026-09-20T16:09:25Z",
+      "updated_at": "2026-09-20T18:45:24Z",
       "files": [
         "packages/ingestion/src/thread-jobs.ts"
       ]
@@ -2401,14 +2401,14 @@
       "id": "T087",
       "title": "Clear the draft dirty flag when a queued send finishes its replay",
       "priority": 2,
-      "status": "todo",
-      "details": "moreEditsPending counts any pending action for the draft, including a queued send, so the local draft keeps its dirty flag after an offline replay finishes (packages/offline/src/sync.ts:604). snapshot.dirtyDrafts stays at 1 forever, which contradicts the records contract ('true while the local edits have no server acknowledgement'), the Dexie record is never pruned, and a later server restore leaves reviewRequired permanently true with no reviewable item. Fix: count only queued draft-saves as unsynchronized edits, and clear the dirty flag in settleSynced when a send of that draft syncs.",
+      "status": "done",
+      "details": "moreEditsPending counts any pending action for the draft, including a queued send, so the local draft keeps its dirty flag after an offline replay finishes (packages/offline/src/sync.ts:604). snapshot.dirtyDrafts stays at 1 forever, which contradicts the records contract ('true while the local edits have no server acknowledgement'), the Dexie record is never pruned, and a later server restore leaves reviewRequired permanently true with no reviewable item. Fix: count only queued draft-saves as unsynchronized edits, and clear the dirty flag in settleSynced when a send of that draft syncs.\n\nFixed 2026-09-20. settleSynced counts only queued draft-saves as unsynchronized edits (hasQueuedDraftSave), and a new send branch clears the local draft's dirty flag \u2014 and restamps its recovery generation \u2014 when a send of that draft syncs and its base revision covers the local base, because the send's revision gate proves the server holds those edits. dirtyDrafts reaches 0, the Dexie record prunes after retention, and a restored generation no longer leaves reviewRequired permanently true.",
       "tags": [
         "audit",
         "offline",
         "drafts"
       ],
-      "updated_at": "2026-09-20T16:09:25Z",
+      "updated_at": "2026-09-20T18:45:24Z",
       "files": [
         "packages/offline/src/sync.ts"
       ]
@@ -2417,14 +2417,14 @@
       "id": "T088",
       "title": "Fall back to the stored sanitized body when a refresh fails",
       "priority": 2,
-      "status": "todo",
-      "details": "currentSanitizedHtml awaits refreshSanitizedBody with no failure handling; the null fallback covers only a null return (packages/reading/src/service.ts:205). When the refresh throws (original missing, hash mismatch, or parse failure after a sanitizer version bump or a partial restore), GET /messages/:id and /clean-view answer a generic 500, so the user loses subject, recipients, and attachments too, even though only htmlSanitized depends on the refresh. Fix: catch refresh failures and fall back to the stored sanitized derivative, or serve every non-HTML field from the row and log the failure server-side.",
+      "status": "done",
+      "details": "currentSanitizedHtml awaits refreshSanitizedBody with no failure handling; the null fallback covers only a null return (packages/reading/src/service.ts:205). When the refresh throws (original missing, hash mismatch, or parse failure after a sanitizer version bump or a partial restore), GET /messages/:id and /clean-view answer a generic 500, so the user loses subject, recipients, and attachments too, even though only htmlSanitized depends on the refresh. Fix: catch refresh failures and fall back to the stored sanitized derivative, or serve every non-HTML field from the row and log the failure server-side.\n\nFixed 2026-09-20. currentSanitizedHtml catches refresh failures, logs one console.warn with the message id and cause, and returns the stored sanitized derivative \u2014 prior sanitizer output, never the original \u2014 so GET /messages/:id and /clean-view serve every field instead of a 500.",
       "tags": [
         "audit",
         "reading",
         "ingestion"
       ],
-      "updated_at": "2026-09-20T16:09:25Z",
+      "updated_at": "2026-09-20T18:45:24Z",
       "files": [
         "packages/reading/src/service.ts"
       ]
@@ -2433,13 +2433,13 @@
       "id": "T089",
       "title": "Record the sent event only when the acceptance status transition commits",
       "priority": 2,
-      "status": "todo",
-      "details": "commitAcceptance records the sent event and inserts the local sent message even when its status-guard update matched no row (packages/send/src/service.ts:1270). When the SMTP submission outlives its lease and the row moved to outcome_unknown, the acceptance transaction commits while the outbound row stays unresolved and the draft stays locked, and the row can never auto-resolve because the Sent-copy path requires status 'sent'. Fix: mirror concludeSentCopy. When the guarded update matches no row, roll back without recording the event and without keeping the inserted message.",
+      "status": "done",
+      "details": "commitAcceptance records the sent event and inserts the local sent message even when its status-guard update matched no row (packages/send/src/service.ts:1270). When the SMTP submission outlives its lease and the row moved to outcome_unknown, the acceptance transaction commits while the outbound row stays unresolved and the draft stays locked, and the row can never auto-resolve because the Sent-copy path requires status 'sent'. Fix: mirror concludeSentCopy. When the guarded update matches no row, roll back without recording the event and without keeping the inserted message.\n\nFixed 2026-09-20. commitAcceptance commits the sent event, the local message, and the draft unlock only when its status-guard update matches a row; otherwise a private AcceptanceSupersededError rolls the transaction back and the caller receives the re-read row, keeping the outcome_unknown evidence path open.",
       "tags": [
         "audit",
         "send"
       ],
-      "updated_at": "2026-09-20T16:09:25Z",
+      "updated_at": "2026-09-20T18:45:24Z",
       "files": [
         "packages/send/src/service.ts"
       ]
@@ -2448,14 +2448,14 @@
       "id": "T090",
       "title": "Remove or implement the hardcoded /health route",
       "priority": 3,
-      "status": "todo",
-      "details": "GET /health returns a constant 'ok' response and checks nothing, while /healthz does the real database round trip and answers 503 on failure (apps/api/src/app.ts:32). Nothing consumes /health: the SPEC, the Dockerfile healthcheck, and deploy/README.md all use /healthz only. An operator or monitor that probes the conventional /health path sees 'ok' during a full outage. Fix: delete the route, or implement it over HealthService.readHealth so it cannot answer ok while the database is down.",
+      "status": "done",
+      "details": "GET /health returns a constant 'ok' response and checks nothing, while /healthz does the real database round trip and answers 503 on failure (apps/api/src/app.ts:32). Nothing consumes /health: the SPEC, the Dockerfile healthcheck, and deploy/README.md all use /healthz only. An operator or monitor that probes the conventional /health path sees 'ok' during a full outage. Fix: delete the route, or implement it over HealthService.readHealth so it cannot answer ok while the database is down.\n\nFixed 2026-09-20. Deleted the constant GET /health route and the unused contracts import in app.ts; the test now pins the 404. /healthz remains the real check. Follow-up: the HealthResponse interface in packages/contracts/src/index.ts is now orphaned but was left in place because contracts sat inside another session's active edits.",
       "tags": [
         "audit",
         "api",
         "hygiene"
       ],
-      "updated_at": "2026-09-20T16:09:25Z",
+      "updated_at": "2026-09-20T18:45:24Z",
       "files": [
         "apps/api/src/app.ts"
       ]
@@ -2464,14 +2464,14 @@
       "id": "T091",
       "title": "Keep the drafts sidebar content visible during a refresh",
       "priority": 3,
-      "status": "todo",
-      "details": "Every reloadDrafts call drives use-resource through its nonce dependency, which resets data to null, so the drafts sidebar unmounts its list and shows a spinner until the refetch answers (apps/web/src/components/mail/compose-screen.tsx:236). This contradicts the keep-content-visible refresh rule the useResource doc comment states (SPEC F12). Fix: keep the last ready data visible while a reload is in flight, and use the spinner as an overlay rather than a replacement.",
+      "status": "done",
+      "details": "Every reloadDrafts call drives use-resource through its nonce dependency, which resets data to null, so the drafts sidebar unmounts its list and shows a spinner until the refetch answers (apps/web/src/components/mail/compose-screen.tsx:236). This contradicts the keep-content-visible refresh rule the useResource doc comment states (SPEC F12). Fix: keep the last ready data visible while a reload is in flight, and use the spinner as an overlay rather than a replacement.\n\nFixed 2026-09-20. useResource tracks the inputs of the last run: a rerun over the same inputs (a reload) keeps the last ready answer in data while loading, while changed inputs still reset to a blank slate so one message's answer never shows under another's load. The drafts sidebar keeps its list mounted with the spinner overlaying it.",
       "tags": [
         "audit",
         "ui",
         "drafts"
       ],
-      "updated_at": "2026-09-20T16:09:25Z",
+      "updated_at": "2026-09-20T18:45:24Z",
       "files": [
         "apps/web/src/components/mail/compose-screen.tsx",
         "apps/web/src/mail/use-resource.ts"
@@ -2481,14 +2481,14 @@
       "id": "T092",
       "title": "Surface controller errors in review and failed-action rows",
       "priority": 3,
-      "status": "todo",
-      "details": "Review and failed-action rows call resolve, retry, discard, compare, and keepServerCopy with no rejection handling (apps/web/src/components/mail/sync-status.tsx:305). resolveReview deliberately throws ReviewChoiceError when the queued action no longer exists (for example a second tab resolved it first), so the promise rejects unhandled and the row sits with no explanation. Fix: catch rejections in run, compare, and keepServerCopy, show the error text in the row, and keep the busy state consistent.",
+      "status": "done",
+      "details": "Review and failed-action rows call resolve, retry, discard, compare, and keepServerCopy with no rejection handling (apps/web/src/components/mail/sync-status.tsx:305). resolveReview deliberately throws ReviewChoiceError when the queued action no longer exists (for example a second tab resolved it first), so the promise rejects unhandled and the row sits with no explanation. Fix: catch rejections in run, compare, and keepServerCopy, show the error text in the row, and keep the busy state consistent.\n\nFixed 2026-09-20. FailedItemRow and ReviewItemRow run every step through one guarded run(): resolve, retry, discard, compare, and keepServerCopy each catch and show the error's own words in the row (a helper keeps ApiError and ReviewChoiceError messages), and the busy flag settles in finally; a failed adoption no longer discards the item.",
       "tags": [
         "audit",
         "ui",
         "offline"
       ],
-      "updated_at": "2026-09-20T16:09:25Z",
+      "updated_at": "2026-09-20T18:45:24Z",
       "files": [
         "apps/web/src/components/mail/sync-status.tsx",
         "apps/web/src/offline/sync-context.tsx"
@@ -2514,14 +2514,14 @@
       "id": "T094",
       "title": "Degrade the folder index per account instead of failing every account",
       "priority": 3,
-      "status": "todo",
-      "details": "useFolderIndex fetches every account's folders with Promise.all, so one transient failure on one account rejects the whole read and the nav pane and unified inbox error everywhere (apps/web/src/mail/data.ts:300). The merge guard 'if (response !== undefined)' is dead code, which shows partial tolerance was intended but never implemented. Fix: use Promise.allSettled, build the index from the fulfilled responses, and surface the rejected accounts separately.",
+      "status": "done",
+      "details": "useFolderIndex fetches every account's folders with Promise.all, so one transient failure on one account rejects the whole read and the nav pane and unified inbox error everywhere (apps/web/src/mail/data.ts:300). The merge guard 'if (response !== undefined)' is dead code, which shows partial tolerance was intended but never implemented. Fix: use Promise.allSettled, build the index from the fulfilled responses, and surface the rejected accounts separately.\n\nFixed 2026-09-20. useFolderIndex settles every account's read with Promise.allSettled, builds the index from the fulfilled responses, and collects rejected account ids in a new failedAccounts field on FolderIndex; only a total failure rethrows so the existing whole-index error path renders unchanged. No UI renders failedAccounts yet \u2014 a rejected account shows as skeleton rows until a successful reload.",
       "tags": [
         "audit",
         "ui",
         "accounts"
       ],
-      "updated_at": "2026-09-20T16:09:25Z",
+      "updated_at": "2026-09-20T18:45:24Z",
       "files": [
         "apps/web/src/mail/data.ts"
       ]
@@ -2595,14 +2595,14 @@
       "id": "T099",
       "title": "Re-validate the WebAuthn counter under the ceremony transaction lock",
       "priority": 3,
-      "status": "todo",
-      "details": "Assertion counters are validated against a pre-transaction snapshot and never re-checked under the FOR UPDATE lock inside the ceremony transaction (packages/auth/src/service.ts:270). Concurrent ceremonies from a cloned passkey can both pass clone detection, and the unconditional write can regress the stored counter. Fix: inside the transaction, select the credential row for update, reject when the new counter is not greater than the stored one (except for counterless authenticators), and persist the counter only through that guarded update.",
+      "status": "done",
+      "details": "Assertion counters are validated against a pre-transaction snapshot and never re-checked under the FOR UPDATE lock inside the ceremony transaction (packages/auth/src/service.ts:270). Concurrent ceremonies from a cloned passkey can both pass clone detection, and the unconditional write can regress the stored counter. Fix: inside the transaction, select the credential row for update, reject when the new counter is not greater than the stored one (except for counterless authenticators), and persist the counter only through that guarded update.\n\nFixed 2026-09-20. requireLiveCredential selects the counter in its FOR UPDATE read and rejects with webauthn_invalid when (newCounter > 0 || row.counter > 0) && newCounter <= row.counter \u2014 the library's own rule re-applied under the lock \u2014 with both zero passing for counterless authenticators. The counter persists only through the guarded update in the same transaction, so concurrent ceremonies from a cloned passkey serialize and the loser is rejected.",
       "tags": [
         "audit",
         "auth",
         "security"
       ],
-      "updated_at": "2026-09-20T16:09:25Z",
+      "updated_at": "2026-09-20T18:45:24Z",
       "files": [
         "packages/auth/src/service.ts"
       ]
@@ -2627,14 +2627,14 @@
       "id": "T101",
       "title": "Serve attachment metadata from the row the regenerated bytes verified against",
       "priority": 3,
-      "status": "todo",
-      "details": "openAttachment builds the served view from one row snapshot but, on a cache miss, serves bytes that regenerateAttachment verified against a later read of the same row (packages/reading/src/service.ts:233). A concurrent re-ingestion commit between the two reads can pair the old filename and media type with the new bytes, because upsertAttachments reuses the attachment id for the same partPath. Fix: have the regenerator return the row it verified against and serve that row's view, or re-read the one attachment row after regeneration.",
+      "status": "done",
+      "details": "openAttachment builds the served view from one row snapshot but, on a cache miss, serves bytes that regenerateAttachment verified against a later read of the same row (packages/reading/src/service.ts:233). A concurrent re-ingestion commit between the two reads can pair the old filename and media type with the new bytes, because upsertAttachments reuses the attachment id for the same partPath. Fix: have the regenerator return the row it verified against and serve that row's view, or re-read the one attachment row after regeneration.\n\nFixed 2026-09-20. AttachmentRegenerator returns the row the regenerated bytes verified against, and openAttachment serves that row's filename and content type overlaid on the snapshot view, so a concurrent re-ingestion can no longer pair old metadata with new bytes. No ingestion or API change was needed: regenerateAttachment already returned the updated row and the wiring satisfies the widened type structurally.",
       "tags": [
         "audit",
         "reading",
         "ingestion"
       ],
-      "updated_at": "2026-09-20T16:09:25Z",
+      "updated_at": "2026-09-20T18:45:24Z",
       "files": [
         "packages/reading/src/service.ts",
         "packages/ingestion/src/service.ts"
@@ -2644,14 +2644,14 @@
       "id": "T102",
       "title": "Gate saved-search writes before input validation",
       "priority": 3,
-      "status": "todo",
-      "details": "createSavedSearch parses name, query, and scope before the recovery gate, so a stale-generation client that submits an unparseable query gets 400 invalid_query instead of 409 recovery_required, which delays the resync path (packages/search/src/service.ts:411). Every other mutation service gates first. Fix: move gateMutation to the first statement of createSavedSearch and deleteSavedSearch.",
+      "status": "done",
+      "details": "createSavedSearch parses name, query, and scope before the recovery gate, so a stale-generation client that submits an unparseable query gets 400 invalid_query instead of 409 recovery_required, which delays the resync path (packages/search/src/service.ts:411). Every other mutation service gates first. Fix: move gateMutation to the first statement of createSavedSearch and deleteSavedSearch.\n\nFixed 2026-09-20. gateMutation is the first statement of createSavedSearch and deleteSavedSearch, matching every other mutation service; a stale generation now answers 409 recovery_required before malformed input is parsed, with the doc comments stating the order.",
       "tags": [
         "audit",
         "search",
         "recovery"
       ],
-      "updated_at": "2026-09-20T16:09:25Z",
+      "updated_at": "2026-09-20T18:45:24Z",
       "files": [
         "packages/search/src/service.ts"
       ]
@@ -2660,17 +2660,17 @@
       "id": "T103",
       "title": "Stop the Sent-copy sweep from starving on unmapped unknown rows",
       "priority": 3,
-      "status": "todo",
-      "details": "appendDueSentCopies selects unknown-status rows in accounts that map no Sent folder, but executeSentCopyAppend returns early with attempted false for them, so sentCopyAttempts never increments and the row never reaches the cap or leaves the limit-bounded window (packages/send/src/service.ts:709). With enough such rows, younger due rows are never reached. The method doc states the opposite invariant. Fix: exclude every non-pending row whose account maps no Sent folder, or count the early pass toward the cap so the row records the halt event.",
+      "status": "done",
+      "details": "appendDueSentCopies selects unknown-status rows in accounts that map no Sent folder, but executeSentCopyAppend returns early with attempted false for them, so sentCopyAttempts never increments and the row never reaches the cap or leaves the limit-bounded window (packages/send/src/service.ts:709). With enough such rows, younger due rows are never reached. The method doc states the opposite invariant. Fix: exclude every non-pending row whose account maps no Sent folder, or count the early pass toward the cap so the row records the halt event.\n\nFixed 2026-09-20. appendDueSentCopies excludes every non-pending row whose account maps no Sent folder \u2014 composed like the reconcile sweep's not(missingSentFolder()) \u2014 while pending rows stay due for their single pass that records the unmapped failure. A backdated-rows test proves a one-row window goes to the younger row and a fresh Sent mapping re-dues the stuck row.",
       "tags": [
         "audit",
         "send"
       ],
-      "updated_at": "2026-09-20T16:09:25Z",
+      "updated_at": "2026-09-20T18:45:24Z",
       "files": [
         "packages/send/src/service.ts"
       ]
     }
   ],
-  "updated_at": "2026-09-20T18:05:03Z"
+  "updated_at": "2026-09-20T18:45:24Z"
 }
