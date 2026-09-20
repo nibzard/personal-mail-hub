@@ -1974,13 +1974,13 @@
       "id": "T064",
       "title": "Close the revocation race in authentication ceremonies",
       "priority": 1,
-      "status": "todo",
+      "status": "done",
       "details": "consumeChallenge and consumeGrant check only consumedAt is null, never revokedAt (packages/auth/src/state.ts:162 and 204). completeLogin and completeEnrollment read the credential and challenge before their transactions and never re-read revokedAt inside them (packages/auth/src/service.ts:249-276 and 655-687). A ceremony in flight while auth recover or recovery begin commits can still consume the now-revoked challenge and insert a live session or credential afterward, so an owner looping logins with a stolen passkey keeps a working session after the emergency revocation; revokeAllAuthState sets revokedAt on challenges and grants (state.ts:227-259) but nothing reads it on the consumption path. Make consumption require revokedAt is null as well, re-read the credential under the transaction lock before the session or credential insert, and cover the interleaving with a test that revokes all auth state between the ceremony read and its commit.",
       "tags": [
         "security",
         "auth"
       ],
-      "updated_at": "2026-09-20T02:52:12Z",
+      "updated_at": "2026-09-20T13:05:43Z",
       "files": [
         "packages/auth/src/service.ts",
         "packages/auth/src/state.ts",
@@ -1991,14 +1991,14 @@
       "id": "T065",
       "title": "Fix upload body parsing and the draft clear contract",
       "priority": 1,
-      "status": "todo",
+      "status": "done",
       "details": "Two compose-route defects. The upload scope registers only a wildcard buffer parser (apps/api/src/compose-routes.ts:337), but the Fastify built-in text/plain and application/json parsers win over the wildcard, so those two media types arrive as a string and new Uint8Array(string) at line 367 yields zero bytes: the durable store records a zero-byte upload, its hash verifies, and the sent message ships an empty attachment. The web client sends the file's own media type, so .txt and .json attachments trigger it on the normal path. Register buffer parsers for both types in the upload scope, or reject a body that is not a Buffer. Also PATCH /drafts/:id collapses markdown: null into field-absent (compose-routes.ts:268) although the service defines null as clear and subject: null clears, so clearing the draft body silently no-ops.",
       "tags": [
         "api",
         "compose",
         "storage"
       ],
-      "updated_at": "2026-09-20T02:52:12Z",
+      "updated_at": "2026-09-20T13:05:43Z",
       "files": [
         "apps/api/src/compose-routes.ts",
         "apps/api/test/compose-routes.test.ts",
