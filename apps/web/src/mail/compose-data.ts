@@ -219,16 +219,15 @@ export async function addFileToDraft(
   if (offline() || session.recoveryGeneration === null) {
     return queueUpload(draft, file);
   }
+  const query = new URLSearchParams({ accountId: draft.accountId, filename: file.name });
+  let uploaded: UploadResponse;
   try {
-    const query = new URLSearchParams({ accountId: draft.accountId, filename: file.name });
-    const uploaded = await apiPostBytes<UploadResponse>(
+    uploaded = await apiPostBytes<UploadResponse>(
       `/uploads?${query.toString()}`,
       file,
       file.type.length > 0 ? file.type : "application/octet-stream",
       generationHeaders(session),
     );
-    const attachment = await attachUpload(session, draft.id, uploaded.upload.id);
-    return { state: "attached", attachment };
   } catch (error) {
     const failure = toApiError(error);
     if (failure.network) {
@@ -237,6 +236,18 @@ export async function addFileToDraft(
       return queueUpload(draft, file);
     }
     return { state: "rejected", message: failure.message };
+  }
+  try {
+    const attachment = await attachUpload(session, draft.id, uploaded.upload.id);
+    return { state: "attached", attachment };
+  } catch (error) {
+    const failure = toApiError(error);
+    if (failure.network) {
+      // Whether the lost attach request landed is unknown; the file
+      // re-queues whole, bytes included, as an offline add would.
+      return queueUpload(draft, file);
+    }
+    return rememberAcknowledgedUpload(draft, file, uploaded.upload.id, failure.message);
   }
 }
 
@@ -298,6 +309,53 @@ async function queueUpload(
   }
 }
 
+/**
+ * Records one upload the server acknowledged but refused to link (SPEC F6):
+ * the id stays on this device with its attach unconfirmed, as a queued
+ * upload holds its unacknowledged bytes, so the next pass retries the link
+ * instead of discarding acknowledged work. The refusal names the file when
+ * this browser keeps no offline storage to hold the id in.
+ */
+async function rememberAcknowledgedUpload(
+  draft: Pick<DraftView, "id" | "accountId">,
+  file: File,
+  serverId: string,
+  refusal: string,
+): Promise<FileAddOutcome> {
+  const controller = offlineSync();
+  const store = offlineStore();
+  if (controller === null || store === null) {
+    return { state: "rejected", message: refusal };
+  }
+  try {
+    const generation = await store.serverGeneration();
+    if (generation === null) {
+      throw new GenerationUnknownError();
+    }
+    await controller.enqueueUpload({
+      draftId: draft.id,
+      accountId: draft.accountId,
+      filename: file.name,
+      contentType: file.type.length > 0 ? file.type : "application/octet-stream",
+      sizeBytes: file.size,
+      // The server owns the bytes now; only the link still waits.
+      bytes: new Blob([]),
+      serverId,
+      attachedAt: null,
+      recoveryGeneration: generation,
+    });
+    return { state: "queued-offline", filename: file.name };
+  } catch (error) {
+    if (error instanceof GenerationUnknownError) {
+      return {
+        state: "rejected",
+        message: "The server has not issued a recovery generation yet. Reload and try again.",
+      };
+    }
+    return { state: "rejected", message: refusal };
+  }
+}
+
 /** One upload this device still holds bytes for, as the editor shows it. */
 export interface WaitingUpload {
   localId: string;
@@ -331,7 +389,10 @@ export async function localUploadsOf(draftId: string): Promise<WaitingUpload[]> 
 /**
  * Attaches uploads the server acknowledged but the draft does not reference
  * yet, which happens when a queued upload replayed while the editor was
- * closed. Reports whether the attachment list changed and how many attaches
+ * closed. An upload the given list already contains is marked attached
+ * locally as well: its link landed with an answer this device never saw,
+ * and a record left unattached would block its draft's send forever (SPEC
+ * F6). Reports whether the attachment list changed and how many attaches
  * the server refused: a file that stays unlinked keeps its draft's send
  * queued behind it, so the editor must say so instead of staying quiet.
  */
@@ -349,7 +410,14 @@ export async function attachAcknowledgedUploads(
   let failed = 0;
   try {
     for (const upload of await store.uploadsForDraft(draftId)) {
-      if (upload.serverId === null || known.has(upload.serverId)) {
+      if (upload.serverId === null) {
+        continue;
+      }
+      if (known.has(upload.serverId)) {
+        // The server draft already references this upload, so the local
+        // record converges instead of waiting for an attach that already
+        // happened (SPEC F6).
+        await store.markUploadAttached(upload.localId);
         continue;
       }
       try {

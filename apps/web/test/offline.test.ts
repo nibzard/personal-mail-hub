@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { DraftAttachmentView } from "@mail-hub/contracts";
 import { ApiError } from "../src/lib/api.ts";
 import {
   describeSyncStatus,
@@ -8,7 +9,13 @@ import {
 } from "../src/components/mail/sync-status.tsx";
 import { classifyReplayFailure, webOfflinePort } from "../src/offline/port.ts";
 import { uploadFits, UPLOAD_MAX_BYTES } from "../src/offline/store.ts";
-import type { FailedItem, FrozenTarget, OfflineStore, SyncSnapshot } from "@mail-hub/offline";
+import type {
+  FailedItem,
+  FrozenTarget,
+  LocalUpload,
+  OfflineStore,
+  SyncSnapshot,
+} from "@mail-hub/offline";
 
 /*
  * The offline wiring's decisions (SPEC F9): how one failed replay attempt
@@ -321,5 +328,190 @@ describe("queued mail action replay", () => {
     });
 
     expect(outcome).toEqual({ state: "review", reason: "server_restored" });
+  });
+});
+
+describe("queued send replay", () => {
+  const GENERATION = "11111111-1111-4111-8111-111111111111";
+
+  /** One upload the queue holds: acknowledged by the server, unlinked. */
+  function upload(overrides: Partial<LocalUpload> = {}): LocalUpload {
+    return {
+      localId: "l1",
+      draftId: "d1",
+      accountId: "a1",
+      filename: "photo.png",
+      contentType: "image/png",
+      sizeBytes: 6,
+      bytes: new Blob(["bytes"]),
+      serverId: "u-1",
+      attachedAt: null,
+      recoveryGeneration: GENERATION,
+      createdAt: 1,
+      ...overrides,
+    };
+  }
+
+  /** One attachment row of the list the server's draft carries. */
+  function attachment(id: string): DraftAttachmentView {
+    return {
+      id,
+      accountId: "a1",
+      filename: "photo.png",
+      contentType: "image/png",
+      sizeBytes: 6,
+      sha256: "0".repeat(64),
+      createdAt: "2026-09-20T10:00:00.000Z",
+      ordinal: 0,
+    };
+  }
+
+  /** The port over a store whose one upload still waits for its link. */
+  function port(uploadRecord: LocalUpload, marks: string[]) {
+    const store = {
+      serverGeneration: async () => GENERATION,
+      uploadsForDraft: async () => [uploadRecord],
+      markUploadAttached: async (localId: string) => {
+        marks.push(localId);
+      },
+    } as Partial<OfflineStore>;
+    return webOfflinePort(store as OfflineStore);
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("counts an upload the server draft already references as attached", async () => {
+    // The first attach landed but its answer was lost, so the draft_uploads
+    // row exists and a repeated attach POST would answer 500 forever.
+    const requests: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL, init?: RequestInit) => {
+        const call = `${init?.method ?? "GET"} ${String(url)}`;
+        requests.push(call);
+        if (call === "GET /api/drafts/d1/uploads") {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({ attachments: [attachment("u-1")] }),
+          } as unknown as Response;
+        }
+        if (call === "POST /api/drafts/d1/send") {
+          return { ok: true, status: 202, text: async () => "{}" } as unknown as Response;
+        }
+        return { ok: false, status: 500, text: async () => "{}" } as unknown as Response;
+      }),
+    );
+    const marks: string[] = [];
+
+    const outcome = await port(upload(), marks).queueSend!({
+      kind: "send",
+      draftId: "d1",
+      idempotencyKey: "send-1",
+      baseRevision: 4,
+    });
+
+    expect(outcome).toEqual({ state: "synced" });
+    expect(marks).toEqual(["l1"]);
+    expect(requests).toEqual(["GET /api/drafts/d1/uploads", "POST /api/drafts/d1/send"]);
+  });
+
+  it("attaches an upload the server draft does not reference before sending", async () => {
+    const requests: string[] = [];
+    const bodies: Record<string, unknown>[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL, init?: RequestInit) => {
+        const call = `${init?.method ?? "GET"} ${String(url)}`;
+        requests.push(call);
+        if (init?.body !== undefined) {
+          bodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+        }
+        if (call === "GET /api/drafts/d1/uploads") {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({ attachments: [] }),
+          } as unknown as Response;
+        }
+        if (call === "POST /api/drafts/d1/uploads") {
+          return {
+            ok: true,
+            status: 201,
+            text: async () => JSON.stringify(attachment("u-1")),
+          } as unknown as Response;
+        }
+        return { ok: true, status: 202, text: async () => "{}" } as unknown as Response;
+      }),
+    );
+    const marks: string[] = [];
+
+    const outcome = await port(upload(), marks).queueSend!({
+      kind: "send",
+      draftId: "d1",
+      idempotencyKey: "send-2",
+      baseRevision: 4,
+    });
+
+    expect(outcome).toEqual({ state: "synced" });
+    expect(marks).toEqual(["l1"]);
+    expect(requests).toEqual([
+      "GET /api/drafts/d1/uploads",
+      "POST /api/drafts/d1/uploads",
+      "POST /api/drafts/d1/send",
+    ]);
+    expect(bodies).toEqual([{ uploadId: "u-1" }, { idempotencyKey: "send-2", baseRevision: 4 }]);
+  });
+
+  it("retries when the server's attachment list itself cannot be read", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          ({
+            ok: false,
+            status: 503,
+            text: async () =>
+              JSON.stringify({ error: { code: "http_503", message: "Recovering." } }),
+          }) as unknown as Response,
+      ),
+    );
+    const marks: string[] = [];
+
+    const outcome = await port(upload(), marks).queueSend!({
+      kind: "send",
+      draftId: "d1",
+      idempotencyKey: "send-3",
+      baseRevision: 4,
+    });
+
+    expect(outcome).toEqual({ state: "retry", reason: "Recovering." });
+    expect(marks).toEqual([]);
+  });
+
+  it("sends without reading the server's list when every link is confirmed", async () => {
+    const requests: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL, init?: RequestInit) => {
+        const call = `${init?.method ?? "GET"} ${String(url)}`;
+        requests.push(call);
+        return { ok: true, status: 202, text: async () => "{}" } as unknown as Response;
+      }),
+    );
+    const marks: string[] = [];
+
+    const outcome = await port(upload({ attachedAt: 1 }), marks).queueSend!({
+      kind: "send",
+      draftId: "d1",
+      idempotencyKey: "send-4",
+      baseRevision: 4,
+    });
+
+    expect(outcome).toEqual({ state: "synced" });
+    expect(marks).toEqual([]);
+    expect(requests).toEqual(["POST /api/drafts/d1/send"]);
   });
 });

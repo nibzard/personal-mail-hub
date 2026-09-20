@@ -1,4 +1,5 @@
 import type {
+  DraftAttachmentsResponse,
   DraftResponse,
   DraftView,
   MailActionKindWire,
@@ -148,6 +149,7 @@ export function webOfflinePort(store: OfflineStore): OfflinePort {
       // yet — the editor was closed when the replay earned the ids — and
       // stop before the send when an attach fails, so the mail never leaves
       // without its attachment (SPEC F6).
+      let serverAttachmentIds: Set<string> | null = null;
       for (const upload of await store.uploadsForDraft(payload.draftId)) {
         if (upload.serverId === null) {
           return { state: "retry", reason: "An upload this draft needs has not reached the server yet." };
@@ -156,6 +158,22 @@ export function webOfflinePort(store: OfflineStore): OfflinePort {
           continue;
         }
         try {
+          if (serverAttachmentIds === null) {
+            // An attach whose answer never came back may already have
+            // landed. A repeat POST would trip the committed row and
+            // answer 500, which replays as retryable forever, so the
+            // list the server holds settles which links exist already.
+            const response = await apiGet<DraftAttachmentsResponse>(
+              `/drafts/${payload.draftId}/uploads`,
+            );
+            serverAttachmentIds = new Set(
+              response.attachments.map((attachment) => attachment.id),
+            );
+          }
+          if (serverAttachmentIds.has(upload.serverId)) {
+            await store.markUploadAttached(upload.localId);
+            continue;
+          }
           await apiPost(
             `/drafts/${payload.draftId}/uploads`,
             { uploadId: upload.serverId },
