@@ -38,6 +38,19 @@ export default defineConfig({
     // Pin the locale the interface formats dates and counts with.
     locale: "en-US",
     timezoneId: "UTC",
+    // Every context boots as a device whose confirmed settings read said
+    // Inbox, so the checks that predate Home (SPEC F13) keep opening the
+    // mail list. A fresh device with no stored choice opens Home; the Home
+    // checks reach it through `openHome` or the navigation.
+    storageState: {
+      cookies: [],
+      origins: [
+        {
+          origin: baseURL,
+          localStorage: [{ name: "mail-hub.home-startup", value: "false" }],
+        },
+      ],
+    },
     ...(browserChannel === undefined
       ? {}
       : { channel: browserChannel as PlaywrightWorkerOptions["channel"] }),

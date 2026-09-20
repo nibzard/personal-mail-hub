@@ -404,6 +404,11 @@ export function AppShell({
   // The command registry drives every management action (SPEC F11). Archive
   // resolves the account's mapped destination before it queues, because the
   // request must freeze one (SPEC F4).
+  const archiveDestination = useCallback(
+    (accountId: string): string | null =>
+      (folders.data?.get(accountId) ?? []).find((folder) => folder.role === "archive")?.id ?? null,
+    [folders.data],
+  );
   const mailAction = useCallback(
     (kind: MailActionKindWire) => {
       const row = selectedRef.current;
@@ -411,18 +416,16 @@ export function AppShell({
         return;
       }
       if (kind === "archive") {
-        const destination = (folders.data?.get(row.accountId) ?? []).find(
-          (folder) => folder.role === "archive",
-        );
-        if (destination === undefined) {
+        const destination = archiveDestination(row.accountId);
+        if (destination === null) {
           return;
         }
-        submitMailAction("archive", row, destination.id);
+        submitMailAction("archive", row, destination);
         return;
       }
       submitMailAction(kind, row);
     },
-    [folders.data, submitMailAction],
+    [archiveDestination, submitMailAction],
   );
 
   const moveSelectionTo = useCallback(
@@ -640,6 +643,7 @@ export function AppShell({
               accounts={accounts}
               recoveryGeneration={recoveryGeneration}
               active={threePane || pane === "home"}
+              archiveDestination={archiveDestination}
               onOpenMessage={handleSelect}
               onOpenInbox={openInbox}
               onOpenSettings={openSettings}

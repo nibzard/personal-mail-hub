@@ -1,11 +1,12 @@
-import { expect, test, type Page } from "@playwright/test";
-import { openInbox, selectedRowId, selectionAnnouncement } from "./helpers";
+import { expect, test, type Locator, type Page } from "@playwright/test";
+import { openHome, openInbox, selectedRowId, selectionAnnouncement } from "./helpers";
 
 /*
  * Browser workflows (SPEC section 12, "Interface acceptance"): keyboard
  * triage, the command palette chord with its focus contract, single-key
- * guards, offline fallback to downloaded mail, and palette latency against
- * a bounded list. Runs against the production build over the fixture API.
+ * guards, offline fallback to downloaded mail, the Home overview (SPEC
+ * F13), and palette latency against a bounded list. Runs against the
+ * production build over the fixture API.
  */
 
 /** Every `/api` request issued inside one measured window. */
@@ -535,6 +536,7 @@ test.describe("settings", () => {
     // The sections the SPEC F10 settings cover are all present.
     for (const name of [
       "Appearance",
+      "Startup",
       "Keyboard and reading",
       "Classification",
       "Accounts",
@@ -566,9 +568,14 @@ test.describe("settings", () => {
     await expect(dialog.locator("footer[role='status']")).toHaveText("Saved.");
 
     // The server is the record: with local storage emptied, a reload adopts
-    // the stored choice (SPEC F10).
+    // the stored choice (SPEC F10). The cleared startup cache boots on Home,
+    // the fresh-device default (SPEC F13); the stored density applies there
+    // too, and the Inbox leaf returns to the list.
     await page.evaluate(() => window.localStorage.clear());
     await page.reload();
+    await expect(page.getByRole("region", { name: "Home" })).toBeVisible();
+    await expect(page.locator("html")).toHaveAttribute("data-density", "comfortable");
+    await page.getByRole("button", { name: "Inbox", exact: true }).click();
     await expect(page.locator("#message-list [data-message-row]").first()).toBeVisible();
     await expect(page.locator("html")).toHaveAttribute("data-density", "comfortable");
 
@@ -1244,3 +1251,289 @@ test.describe("compose and send", () => {
     await expect(status).toBeVisible({ timeout: 15_000 });
   });
 });
+
+test.describe("home", () => {
+  test("the sections show reasons, saved work, coverage, and the frozen visit boundary", async ({
+    page,
+  }) => {
+    await openHome(page);
+
+    // The overview names itself, states its coverage honestly, and marks
+    // the navigation leaf as the current place (SPEC F13).
+    const home = page.getByRole("region", { name: "Home" });
+    await expect(home.getByRole("heading", { name: "Home", exact: true })).toBeVisible();
+    await expect(home.getByText(/Suggestions cover 2 of 8 inbox messages/u)).toBeVisible();
+    await expect(page.getByRole("button", { name: "Home", exact: true })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+
+    // Due now: the overdue reminder, its reason, and its work line.
+    const due = page.getByRole("region", { name: "Due now" });
+    await expect(due.locator("[data-home-entry='thread-m-007']")).toBeVisible();
+    await expect(due.getByText("Reminder due")).toBeVisible();
+    await expect(due.getByText(/^Reminder: /u)).toBeVisible();
+
+    // Needs attention: the stored answers behind two suggestions.
+    const attention = page.getByRole("region", { name: "Needs attention" });
+    const important = attention.locator("[data-home-entry='thread-m-001']");
+    await expect(important.getByText("May need your reply")).toBeVisible();
+    await expect(important.getByText("Time sensitive")).toBeVisible();
+    await expect(attention.locator("[data-home-entry='thread-m-003']").getByText("May need your action")).toBeVisible();
+
+    // Reply later holds nothing yet, so its section stays absent.
+    await expect(page.getByRole("region", { name: "Reply later" })).toBeHidden();
+
+    // Since your last visit: the one arrival older suggestions did not take.
+    const arrivals = page.getByRole("region", { name: "Since your last visit" });
+    const arrival = arrivals.locator("[data-home-entry='thread-m-002']");
+    await expect(arrival).toBeVisible();
+    await expect(arrival.getByText("New arrival", { exact: true })).toBeVisible();
+
+    // Saved stays collapsed to one control until it is opened.
+    const saved = page.getByRole("region", { name: "Saved" });
+    await expect(saved.getByRole("button", { name: "Show 1 starred" })).toBeVisible();
+    await saved.getByRole("button", { name: "Show 1 starred" }).click();
+    await expect(saved.locator("[data-home-entry='thread-m-004']")).toBeVisible();
+    await expect(saved.getByText("You starred this")).toBeVisible();
+
+    // The next open is a new visit: the boundary advanced, so no arrivals
+    // remain; every other section keeps its rows (SPEC F13).
+    await page.reload();
+    await expect(home.getByRole("heading", { name: "Home", exact: true })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Since your last visit" })).toBeHidden();
+    await expect(due.locator("[data-home-entry='thread-m-007']")).toBeVisible();
+    await expect(attention.locator("[data-home-entry='thread-m-001']")).toBeVisible();
+    await expect(saved.getByRole("button", { name: "Show 1 starred" })).toBeVisible();
+  });
+
+  test("loading Home only reads: no mailbox mutation, no queued action", async ({ page }) => {
+    await openHome(page);
+
+    const calls: string[] = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.pathname.startsWith("/api/")) {
+        calls.push(`${request.method()} ${url.pathname}`);
+      }
+    });
+    await page.reload();
+    await expect(page.locator("[data-home-entry='thread-m-007']")).toBeVisible();
+
+    // The Home load reaches the server with reads alone: no model call, no
+    // mailbox mutation, no saved work (SPEC F13).
+    expect(calls.length).toBeGreaterThan(0);
+    const writes = calls.filter((call) => !call.startsWith("GET "));
+    expect(writes).toEqual([]);
+    expect(calls.some((call) => call.includes("/api/actions"))).toBe(false);
+    expect(calls.some((call) => call.includes("/api/home/work"))).toBe(false);
+  });
+
+  test("reply later and a reminder save with the guards, then complete and move", async ({
+    page,
+  }) => {
+    await openHome(page);
+
+    // Reply later saves work anchored to the row (SPEC F13).
+    const row = page.locator("[data-home-entry='thread-m-001']");
+    const saved = page.waitForRequest(
+      (request) => request.url().includes("/api/home/work") && request.method() === "POST",
+    );
+    await row.getByRole("button", { name: "Reply later" }).click();
+    const request = await saved;
+    // The deployed API refuses a Home write without the origin and the
+    // generation the session probe issued (SPEC sections 7 and 9).
+    const headers = await request.allHeaders();
+    expect(headers.origin).toBe(pageOrigin(page));
+    expect(headers["x-recovery-generation"]).toBe(await readGeneration(page));
+    await expect(homeNote(page, "Saved to reply later.")).toBeVisible();
+    await expect(row.getByText("Reply planned")).toBeVisible();
+    await expect(row.getByRole("button", { name: "Reply later" })).toBeHidden();
+
+    // Done settles the work; Undo reopens it.
+    await row.getByRole("button", { name: "Done", exact: true }).click();
+    await expect(homeNote(page, "Completed.")).toBeVisible();
+    await page.getByRole("button", { name: "Undo" }).click();
+    await expect(homeNote(page, "Reopened.")).toBeVisible();
+    await expect(row.getByText("Reply planned")).toBeVisible();
+
+    // A reminder saves through the Tomorrow preset, which resolves and
+    // previews its instant before anything saves.
+    const other = page.locator("[data-home-entry='thread-m-003']");
+    await other.getByRole("button", { name: "Remind me" }).click();
+    const panel = page.getByRole("group", { name: "Choose a reminder time" });
+    await expect(panel).toBeVisible();
+    const tomorrow = panel
+      .getByText("Tomorrow", { exact: true })
+      .locator("xpath=ancestor::div[1]");
+    await expect(tomorrow.getByText(/^Saves .+\(GMT/u)).toBeVisible();
+    await tomorrow.getByRole("button", { name: "Set reminder" }).click();
+    await expect(homeNote(page, /^Reminder set for .+\(GMT/u)).toBeVisible();
+    await expect(other.getByText(/^Reminder: /u)).toBeVisible();
+
+    // Move reopens the chooser and reschedules under the current revision.
+    await other.getByRole("button", { name: "Move", exact: true }).click();
+    await expect(panel).toBeVisible();
+    await tomorrow.getByRole("button", { name: "Set reminder" }).click();
+    await expect(homeNote(page, /^Reminder moved to .+\(GMT/u)).toBeVisible();
+  });
+
+  test("a dismissed suggestion leaves with its row and Undo restores it", async ({ page }) => {
+    await openHome(page);
+
+    const attention = page.getByRole("region", { name: "Needs attention" });
+    const row = page.locator("[data-home-entry='thread-m-001']");
+    await expect(attention.locator("[data-home-entry]")).toHaveCount(2);
+
+    await row.getByRole("button", { name: "Dismiss" }).click();
+    await expect(homeNote(page, "Suggestion removed.")).toBeVisible();
+    await expect(row).toBeHidden();
+    await expect(attention.locator("[data-home-entry]")).toHaveCount(1);
+
+    await page.getByRole("button", { name: "Undo" }).click();
+    await expect(homeNote(page, "Suggestion restored.")).toBeVisible();
+    await expect(row).toBeVisible();
+    await expect(attention.locator("[data-home-entry]")).toHaveCount(2);
+  });
+
+  test("starring keeps one row per conversation and archiving leaves the overview", async ({
+    page,
+  }) => {
+    await openHome(page);
+
+    // Starring a suggestion keeps it in its section: one conversation
+    // appears once, in the highest applicable section (SPEC F13).
+    const row = page.locator("[data-home-entry='thread-m-001']");
+    await row.getByRole("button", { name: "Star", exact: true }).click();
+    await expect(homeNote(page, "Starred.")).toBeVisible();
+    const attention = page.getByRole("region", { name: "Needs attention" });
+    await expect(attention.locator("[data-home-entry='thread-m-001']")).toBeVisible();
+    await expect(row.getByRole("button", { name: "Unstar" })).toBeVisible();
+
+    // Saved still holds only the starred row no earlier section took.
+    const saved = page.getByRole("region", { name: "Saved" });
+    await expect(saved.getByRole("button", { name: "Show 1 starred" })).toBeVisible();
+
+    // The Work account maps no archive folder, so its row states that
+    // instead of queueing a move with no destination (SPEC F1).
+    const work = page.locator("[data-home-entry='thread-m-003']");
+    await work.getByRole("button", { name: "Archive" }).click();
+    await expect(
+      homeNote(page, "This account maps no archive folder. Choose one in Settings, then archive again."),
+    ).toBeVisible();
+    await expect(work).toBeVisible();
+
+    // Archiving a Personal suggestion runs the mailbox action and drops the
+    // row from the overview.
+    await row.getByRole("button", { name: "Archive" }).click();
+    await expect(homeNote(page, "Archived.")).toBeVisible();
+    await expect(row).toBeHidden();
+  });
+
+  test("a cold offline start serves the cached visit with changes disabled", async ({
+    page,
+    context,
+  }) => {
+    await openHome(page);
+    await expect(page.locator("[data-home-entry='thread-m-007']")).toBeVisible();
+
+    await context.setOffline(true);
+    await page.reload();
+
+    const home = page.getByRole("region", { name: "Home" });
+    await expect(home).toBeVisible();
+    await expect(home.getByText(/^Offline\. Showing Home data cached at /u)).toBeVisible();
+    await expect(
+      home.getByText("Home changes need a connection, so their controls are disabled here."),
+    ).toBeVisible();
+
+    // The cached sections still read; Home changes disable, the mailbox
+    // actions keep their offline queue (SPEC F13).
+    await expect(page.locator("[data-home-entry='thread-m-007']")).toBeVisible();
+    const row = page.locator("[data-home-entry='thread-m-001']");
+    await expect(row.getByRole("button", { name: "Reply later" })).toBeDisabled();
+    await expect(row.getByRole("button", { name: "Remind me" })).toBeDisabled();
+    await expect(row.getByRole("button", { name: "Archive" })).toBeEnabled();
+
+    await context.setOffline(false);
+  });
+
+  test("single-key commands stay silent on Home while the palette keeps working", async ({
+    page,
+  }) => {
+    await openHome(page);
+
+    const writes: string[] = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.pathname.startsWith("/api/") && request.method() !== "GET") {
+        writes.push(`${request.method()} ${url.pathname}`);
+      }
+    });
+
+    // The mail single keys would act on the covered list; Home keeps them
+    // off, so no keyboard press reaches a mailbox (SPEC F13).
+    for (const key of ["j", "k", "o", "s", "a", "e"]) {
+      await page.keyboard.press(key);
+    }
+    expect(writes).toEqual([]);
+    expect(await selectedRowId(page)).toBeNull();
+
+    // The palette chord keeps working everywhere.
+    await page.keyboard.press("Control+k");
+    const palette = page.getByRole("dialog");
+    await expect(palette).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(palette).toBeHidden();
+  });
+
+  test("a Home row opens the reader and Back to Home returns the focus", async ({ page }) => {
+    await openHome(page);
+
+    const opener = page.locator("[data-home-entry='thread-m-001'] > button");
+    await opener.click();
+    const reader = page.getByRole("region", { name: "Message reader" });
+    await expect(reader.getByRole("heading", { level: 2 })).toHaveText("Dinner on Saturday");
+
+    // At phone width the reader covers Home, and its back control returns
+    // to the overview with the focus back on the row (SPEC F13).
+    await page.setViewportSize({ width: 375, height: 667 });
+    await expect(page.getByRole("button", { name: "Back to Home" })).toBeVisible();
+    await page.getByRole("button", { name: "Back to Home" }).click();
+    await expect(page.getByRole("region", { name: "Home" })).toBeVisible();
+    await expect(opener).toBeFocused();
+  });
+
+  test("the stored startup choice restores Inbox and the nav returns to Home", async ({ page }) => {
+    await openHome(page);
+
+    // Turn Home off through the screen; the choice applies to the next open.
+    const dialog = await openSettings(page);
+    await dialog.getByRole("switch", { name: "Show Home when the app opens" }).click();
+    await expect(dialog.locator("footer[role='status']")).toHaveText("Saved.");
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+
+    await page.reload();
+    await expect(page.locator("#message-list [data-message-row]").first()).toBeVisible();
+    await expect(page.getByRole("region", { name: "Home" })).toBeHidden();
+
+    // The navigation leaf returns to Home within the session, and the leaf
+    // takes the current-place state (SPEC F13).
+    const leaf = page.getByRole("button", { name: "Home", exact: true });
+    await expect(leaf).not.toHaveAttribute("aria-current", "page");
+    await leaf.click();
+    await expect(page.getByRole("region", { name: "Home" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Due now" })).toBeVisible();
+    await expect(leaf).toHaveAttribute("aria-current", "page");
+    await expect(page.getByRole("button", { name: "Inbox", exact: true })).not.toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+  });
+});
+
+/** The Home note line: the polite result a change reports. */
+function homeNote(page: Page, text: string | RegExp): Locator {
+  return page.locator("p[role='status']").filter({ hasText: text });
+}

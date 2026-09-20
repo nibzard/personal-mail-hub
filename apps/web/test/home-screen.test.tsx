@@ -159,6 +159,7 @@ async function mountScreen(): Promise<void> {
         accounts={[ACCOUNT_SUMMARY]}
         recoveryGeneration={GENERATION}
         active
+        archiveDestination={() => "f-archive"}
         onOpenMessage={(row) => opened.push(row)}
         onOpenInbox={() => {
           propCalls.inbox += 1;

@@ -130,7 +130,7 @@ function row({
   };
 }
 
-const namedRows = [
+export const namedRows = [
   row({
     id: "m-001",
     accountId: "acc-personal",
@@ -320,6 +320,13 @@ export const messageDetails = new Map(
       fetchedBody: true,
       htmlSanitized: null,
       textPlain: "The legal team sent the updated clauses in the attachment.",
+      classification: {
+        classHint: "notification",
+        source: "jev",
+        asksAction: true,
+        asksReply: false,
+        timeSensitive: false,
+      },
       attachments: [
         {
           id: "att-contract",
@@ -548,6 +555,7 @@ export const settings = {
   singleKeyShortcuts: true,
   cleanViewDefault: false,
   classificationEnabled: false,
+  homeEnabled: false,
   classificationMonthlyCostCapUsd: null,
   backfillClassification: false,
 };
@@ -559,6 +567,7 @@ export const settingsSchema = {
   singleKeyShortcuts: "boolean",
   cleanViewDefault: "boolean",
   classificationEnabled: "boolean",
+  homeEnabled: "boolean",
   classificationMonthlyCostCapUsd: "number-or-null",
   backfillClassification: "boolean",
 };
@@ -643,4 +652,65 @@ export const cleanViews = new Map([
       source: "original_fallback",
     },
   ],
+]);
+
+/*
+ * Home fixture state (SPEC F13). The sections build from the named rows and
+ * the per-session Home records below, so the shipped client meets the same
+ * shapes the API serves: fixed reason codes, work summaries inside their
+ * rows, honest coverage, and one visit boundary per device.
+ */
+
+/** The Home coverage line: two of the eight named rows carry stored answers. */
+export const homeCoverage = {
+  state: "active",
+  description: "Classification is running.",
+  considered: 8,
+  answered: 2,
+  newestAnswerAt: sentAt(12),
+};
+
+/**
+ * The visit boundary a fresh device opens with: rows newer than 80 minutes
+ * ago count as arrivals, so `since_visit` starts with `m-001`, `m-002`, and
+ * `m-003`, while the starred `m-004` stays older and lands in Saved.
+ */
+export const homeInitialBoundary = sentAt(80);
+
+/** The boundary a successful full Home read records for the device. */
+export const homeNextBoundary = sentAt(12);
+
+/**
+ * Saved work every session starts with: one overdue reminder on `m-007`, so
+ * the Due now section has a row whose due time already passed.
+ */
+export const homeSeedWork = [
+  {
+    id: "hw-due-1",
+    kind: "reminder",
+    status: "open",
+    dueAt: "2026-09-17T08:00:00.000Z",
+    timeZone: "UTC",
+    revision: 1,
+    anchorUnavailable: false,
+    accountId: "acc-work",
+    anchorMessageId: "m-007",
+    anchor: null,
+    createdAt: "2026-09-16T09:00:00.000Z",
+    updatedAt: "2026-09-16T09:00:00.000Z",
+    completedAt: null,
+  },
+];
+
+/**
+ * The suggestion reasons a stored classification answer justifies, keyed by
+ * message id. Rows without an entry carry no suggestion, the way mail
+ * without a stored answer stays out of the suggestion groups.
+ */
+export const homeSuggestionReasons = new Map([
+  ["m-001", [
+    { code: "may_need_reply", origin: "suggestion" },
+    { code: "time_sensitive", origin: "suggestion" },
+  ]],
+  ["m-003", [{ code: "may_need_action", origin: "suggestion" }]],
 ]);

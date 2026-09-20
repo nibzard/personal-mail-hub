@@ -11,12 +11,24 @@ row to make coverage look better.
 | Date | Device | Operating system | Browser | What ran | Result |
 | --- | --- | --- | --- | --- | --- |
 | 2026-09-20 | Development container | Linux 6.8 | Playwright Chromium, build `chromium-1243` (`@playwright/test` 1.63.0) | `flows` and `interface` suites from the release gate, 1280×800, `en-US`, UTC | Pass |
+| 2026-09-20 | Development container | Linux 6.8 | Playwright Chromium, build `chromium-1243` (`@playwright/test` 1.63.0) | The same two suites with the Home overview (SPEC F13): nine Home workflow checks and the Home axe, semantics, touch-target, and snapshot checks, 1280×800 plus 375×667 and 320×568 emulation, `en-US`, UTC | Pass |
 
-What that row covers: keyboard triage, the palette chord and its latency
+What the first row covers: keyboard triage, the palette chord and its latency
 budget, the offline fallback against the fixture server, axe contrast and
 semantics, focus visibility, emulated reduced motion, narrow reflow, 200%
 zoom, touch target sizes, theme switching, and the committed visual
 baselines.
+
+What the Home row adds: sections, reasons, and coverage rendering; saved
+reply-later and reminder work with revision-guarded saves; dismissal with
+undo; star and archive from the overview, including the honest note when an
+account maps no archive folder; the frozen visit boundary and its per-device
+advance; the cached offline copy with Home changes disabled; the reader
+round trip with focus restored to the row (emulated phone width, not real
+hardware); the startup setting and the navigation leaf; the Home snapshot
+baseline (`home.png`) and the regenerated shell baselines, whose only pixel
+changes sit in the navigation list and the settings dialog the Home work
+touched.
 
 ## Not tested anywhere yet
 
@@ -28,7 +40,9 @@ unverified until a row appears above:
 - A real iPhone: iOS Safari and the installed PWA, safe areas, the software
   keyboard over compose and the palette, back navigation restoring list
   position and selection, 44px touch targets under a real finger, and
-  evening reading in the dark appearance.
+  evening reading in the dark appearance. Home's phone-width behavior
+  (one pane at a time, **Back to Home**, focus return to the row) is
+  likewise only emulated, never finger-tested.
 - Firefox, and any browser on Windows.
 - Offline on real hardware: the suites simulate it through the fixture
   server, not airplane mode on a device.

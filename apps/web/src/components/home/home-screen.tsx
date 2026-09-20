@@ -62,6 +62,7 @@ export function HomeScreen({
   accounts,
   recoveryGeneration,
   active,
+  archiveDestination,
   onOpenMessage,
   onOpenInbox,
   onOpenSettings,
@@ -72,6 +73,8 @@ export function HomeScreen({
   recoveryGeneration: string | null;
   /** True while Home is the visible pane, for focus restoration. */
   active: boolean;
+  /** The account's mapped archive folder id, when one exists (SPEC F1). */
+  archiveDestination: (accountId: string) => string | null;
   onOpenMessage: (row: SearchResultItem) => void;
   onOpenInbox: () => void;
   onOpenSettings: () => void;
@@ -141,13 +144,21 @@ export function HomeScreen({
     previousSince.current = sinceCount;
   }, [sinceCount, showNote]);
 
-  // Returning from the reader puts focus back on the row that opened it,
-  // when focus fell nowhere while Home was covered (SPEC F13).
+  // Returning from the reader puts focus back on the row that opened it.
+  // The rescue runs only on the covered-to-visible transition, so the
+  // three-pane desktop never pulls focus off the reader (SPEC F13).
+  const wasVisible = useRef(active);
   useEffect(() => {
-    if (!active || typeof document === "undefined") {
+    const returned = wasVisible.current === false && active;
+    wasVisible.current = active;
+    if (!returned || typeof document === "undefined") {
       return;
     }
-    if (document.activeElement !== document.body) {
+    const holder =
+      document.activeElement instanceof Element
+        ? document.activeElement.closest("section[aria-label='Home']")
+        : null;
+    if (holder !== null) {
       return;
     }
     const key = lastOpened.current ?? selectedKey;
@@ -330,9 +341,17 @@ export function HomeScreen({
         });
       },
       archive: (item) => {
+        const destination = archiveDestination(item.message.accountId);
+        if (destination === null) {
+          showNote({
+            text: "This account maps no archive folder. Choose one in Settings, then archive again.",
+          });
+          return;
+        }
         void runMailAction({
           kind: "archive",
           row: rowOfItem(item),
+          destinationFolderId: destination,
           recoveryGeneration,
         }).then((outcome) => {
           reportMailOutcome(outcome, "Archived.");
@@ -343,7 +362,7 @@ export function HomeScreen({
         });
       },
     }),
-    [data, noteFailure, recoveryGeneration, runChange, showNote],
+    [archiveDestination, data, noteFailure, recoveryGeneration, runChange, showNote],
   );
 
   /** Reports one mailbox action; these queue offline, unlike Home changes. */
@@ -378,7 +397,7 @@ export function HomeScreen({
     state.phase === "ready" && state.sections.every((section) => section.total === 0);
 
   return (
-    <section aria-label="Home" className={cn("flex min-h-0 flex-col", className)}>
+    <section aria-label="Home" className={cn("flex min-h-0 min-w-0 flex-col", className)}>
       <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
         <div className="min-w-0 flex-1">
           <h2 id="home-heading" className="font-semibold">

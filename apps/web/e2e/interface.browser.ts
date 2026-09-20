@@ -1,12 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
-import { axeViolations, describeViolations, openInbox } from "./helpers";
+import { axeViolations, describeViolations, openHome, openInbox } from "./helpers";
 
 /*
  * Interface checks (SPEC F12 and section 12, "Interface acceptance"):
  * axe scans in both palettes, screen-reader semantics, visible keyboard
  * focus, reduced motion, reflow at 320 px and 200% text zoom, touch
- * targets, pane layouts, and theme switching. Runs against the production
- * build over the fixture API.
+ * targets, pane layouts, theme switching, and the Home overview (SPEC
+ * F13). Runs against the production build over the fixture API.
  */
 
 /**
@@ -113,6 +113,21 @@ test.describe("axe", () => {
       .toBe(1);
     await expectNoAxeViolations(page);
   });
+
+  test("the Home overview and its reminder chooser pass", async ({ page }) => {
+    await openHome(page);
+    await expectNoAxeViolations(page);
+
+    // The chooser and the expanded Saved rows hold the densest Home
+    // controls: presets, a datetime field, and per-row work lines.
+    await page.getByRole("button", { name: "Show 1 starred" }).click();
+    await page
+      .locator("[data-home-entry='thread-m-003']")
+      .getByRole("button", { name: "Remind me" })
+      .click();
+    await expect(page.getByRole("group", { name: "Choose a reminder time" })).toBeVisible();
+    await expectNoAxeViolations(page);
+  });
 });
 
 test.describe("screen-reader semantics", () => {
@@ -148,6 +163,37 @@ test.describe("screen-reader semantics", () => {
     // Row state is never carried by color alone: the unread dot has text.
     await expect(page.locator("[data-message-row='m-001']")).toContainText("Unread");
     await expect(page.locator("[data-message-row='m-004']")).toContainText("Starred");
+  });
+
+  test("the Home overview names its landmarks, sections, and reason origins", async ({ page }) => {
+    await openHome(page);
+
+    // Landmarks and headings a screen reader navigates by (SPEC F13).
+    await expect(page.getByRole("region", { name: "Home" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 2, name: "Home", exact: true })).toBeVisible();
+    for (const name of ["Due now", "Needs attention", "Since your last visit", "Saved"]) {
+      await expect(page.getByRole("region", { name })).toBeVisible();
+      await expect(page.getByRole("heading", { level: 3, name, exact: true })).toBeVisible();
+    }
+
+    // A reason chip spells out its origin, so a screen reader hears whether
+    // a row is your choice or only a suggestion (SPEC F13).
+    await expect(
+      page
+        .locator("[data-home-entry='thread-m-001']")
+        .locator("span")
+        .filter({ hasText: "May need your reply" }),
+    ).toHaveText(/^Suggestion: May need your reply$/u);
+    await page.getByRole("button", { name: "Show 1 starred" }).click();
+    await expect(
+      page
+        .locator("[data-home-entry='thread-m-004']")
+        .locator("span")
+        .filter({ hasText: "You starred this" }),
+    ).toHaveText(/^Your choice: You starred this$/u);
+
+    // The coverage line states how far the suggestions reach.
+    await expect(page.getByText(/Stored answers cannot promise/u)).toBeVisible();
   });
 });
 
@@ -370,6 +416,35 @@ test.describe("touch targets", () => {
     }, SUBPIXEL);
     expect(below24, `controls under 24 px: ${below24.join("; ")}`).toEqual([]);
   });
+
+  test("every visible Home control clears the 24 px WCAG minimum", async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 667 });
+    await openHome(page);
+    // Open the densest surface the overview offers: the expanded Saved
+    // rows and the reminder chooser (SPEC F13).
+    await page.getByRole("button", { name: "Show 1 starred" }).click();
+    await page
+      .locator("[data-home-entry='thread-m-003']")
+      .getByRole("button", { name: "Remind me" })
+      .click();
+    await expect(page.getByRole("group", { name: "Choose a reminder time" })).toBeVisible();
+
+    const below24 = await page.evaluate((epsilon: number) => {
+      const failures: string[] = [];
+      for (const element of Array.from(document.querySelectorAll("button, a, input"))) {
+        const box = element.getBoundingClientRect();
+        if (box.width === 0 || box.height === 0) {
+          continue;
+        }
+        const name = element.getAttribute("aria-label") ?? element.textContent?.trim() ?? element.tagName;
+        if (box.height < 24 - epsilon || box.width < 24 - epsilon) {
+          failures.push(`${name}: ${Math.round(box.width)}x${Math.round(box.height)}`);
+        }
+      }
+      return failures;
+    }, SUBPIXEL);
+    expect(below24, `controls under 24 px: ${below24.join("; ")}`).toEqual([]);
+  });
 });
 
 test.describe("theme", () => {
@@ -486,5 +561,16 @@ test.describe("visual regression", () => {
     await page.reload();
     await expect(page.getByRole("button", { name: "Sign in with a passkey" })).toBeVisible();
     await expect(page).toHaveScreenshot("sign-in.png", SHOT);
+  });
+
+  test("the Home overview", async ({ page }) => {
+    await openHome(page);
+    // The updated line names the wall-clock generation time; mask the age,
+    // not the layout (SPEC F13).
+    await page.waitForTimeout(200);
+    await expect(page).toHaveScreenshot("home.png", {
+      ...SHOT,
+      mask: [page.getByText(/ · All accounts$/u).first()],
+    });
   });
 });

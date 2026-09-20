@@ -33,6 +33,35 @@ export async function openInbox(page: Page): Promise<void> {
   await expect(page.getByRole("heading", { name: "Mail" })).toBeVisible();
 }
 
+/** The storage key the shell's confirmed startup choice lives under. */
+const HOME_STARTUP_KEY = "mail-hub.home-startup";
+
+/**
+ * Boots this context onto the Home view (SPEC F13). The fixture session's
+ * stored setting turns Home on, and dropping the cached startup choice makes
+ * the next open adopt it, so the reload paints Home with no Inbox flash. The
+ * settings write carries the origin and the recovery generation the fixture
+ * guard demands of every mutation.
+ */
+export async function openHome(page: Page): Promise<void> {
+  await openInbox(page);
+  const probe = await page.request.get("/api/accounts");
+  const generation =
+    ((await probe.json()) as { recoveryGeneration?: string }).recoveryGeneration ?? "";
+  const stored = await page.request.put("/api/settings", {
+    headers: {
+      origin: new URL(page.url()).origin,
+      "x-recovery-generation": generation,
+    },
+    data: { homeEnabled: true },
+  });
+  expect(stored.ok()).toBe(true);
+  await page.evaluate((key: string) => window.localStorage.removeItem(key), HOME_STARTUP_KEY);
+  await page.reload();
+  await expect(page.getByRole("region", { name: "Home" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Due now" })).toBeVisible();
+}
+
 /** The message id the keyboard selection marks, or `null` when none. */
 export async function selectedRowId(page: Page): Promise<string | null> {
   return page.evaluate(() => {

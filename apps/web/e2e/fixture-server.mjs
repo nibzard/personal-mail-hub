@@ -21,6 +21,13 @@
  * - `GET /api/sync/status`    per-account sync and queue status,
  * - `POST /api/actions`       mail management actions with receipts (SPEC F4),
  * - `GET /api/actions/:id`    one action's receipts,
+ * - `GET /api/home`           the Home overview, one visit per read (SPEC F13),
+ * - `GET /api/home/sections/:id`, `GET /api/home/work`, and
+ *   `GET /api/home/priorities` the Home detail reads,
+ * - `POST /api/home/work` and `POST /api/home/work/:id/{reschedule,complete,
+ *   reopen,cancel}` the saved-work writes,
+ * - `PUT /api/home/priorities` and `POST/DELETE /api/home/dismissals`
+ *                             the choice writes,
  * - `POST /api/drafts`        a new draft, and `POST /api/drafts/reply` a
  *                             derived reply (SPEC F6),
  * - `GET/PATCH/DELETE /api/drafts/:id` and `GET /api/drafts`,
@@ -63,10 +70,16 @@ import {
   cleanViews,
   FLAG_KINDS,
   foldersByAccount,
+  homeCoverage,
+  homeInitialBoundary,
+  homeNextBoundary,
+  homeSeedWork,
+  homeSuggestionReasons,
   LOGIN_CHALLENGE,
   LOGIN_CREDENTIAL_ID,
   messageDetails,
   messageRows,
+  namedRows,
   RECOVERY_GENERATION,
   settings,
   settingsSchema,
@@ -114,6 +127,15 @@ function freshSession() {
     uploads: new Map(),
     outbounds: new Map(),
     sendsByKey: new Map(),
+    // Home state (SPEC F13): saved work, priority choices, suggestion
+    // dismissals, and one visit boundary per device.
+    home: {
+      work: structuredClone(homeSeedWork),
+      priorities: [],
+      dismissals: [],
+      boundaries: new Map(),
+      sequence: 0,
+    },
     sequence: 0,
   };
 }
@@ -372,6 +394,258 @@ function rowsFor(session, { accountIds, folderId, query }) {
 function toWireRow(item) {
   const { folderId, ...wire } = item;
   return wire;
+}
+
+//
+// Home (SPEC F13): the sections build from the named rows plus the
+// per-session work, priority choices, dismissals, and one visit boundary
+// per device, so the shipped client meets the same shapes the API serves.
+//
+
+/** The inbox folder ids across every account. */
+const INBOX_FOLDER_IDS = new Set(
+  Object.values(foldersByAccount).flatMap((entry) =>
+    entry.folders.filter((folder) => folder.role === "inbox").map((folder) => folder.id),
+  ),
+);
+
+/** The named rows with the session's action patches applied, newest first. */
+function homeBaseRows(session) {
+  return namedRows
+    .map((base) => {
+      const patch = session.rowPatches.get(base.messageId);
+      return patch === undefined ? base : { ...base, ...patch };
+    })
+    .sort((a, b) => (a.sentAt < b.sentAt ? 1 : a.sentAt > b.sentAt ? -1 : 0));
+}
+
+/** The Home summary of one row: no folder or occurrence internals. */
+function homeSummaryOf(item) {
+  return {
+    messageId: item.messageId,
+    accountId: item.accountId,
+    accountLabel: item.accountLabel,
+    accountColor: item.accountColor,
+    threadId: item.threadId,
+    subject: item.subject,
+    snippet: item.snippet,
+    sender: item.sender,
+    sentAt: item.sentAt,
+    unread: item.unread,
+    flagged: item.flagged,
+    hasAttachments: item.hasAttachments,
+  };
+}
+
+/** The summary shape a Home row carries one work record as. */
+function workSummaryOf(work) {
+  return {
+    id: work.id,
+    kind: work.kind,
+    status: work.status,
+    dueAt: work.dueAt,
+    timeZone: work.timeZone,
+    revision: work.revision,
+    anchorUnavailable: work.anchorUnavailable,
+  };
+}
+
+/** The full work record, with its anchor summary rebuilt from the rows. */
+function homeWorkRecord(session, work) {
+  const anchor = homeBaseRows(session).find((row) => row.messageId === work.anchorMessageId);
+  return {
+    ...workSummaryOf(work),
+    accountId: work.accountId,
+    anchorMessageId: work.anchorMessageId,
+    anchor: anchor === undefined ? null : homeSummaryOf(anchor),
+    createdAt: work.createdAt,
+    updatedAt: work.updatedAt,
+    completedAt: work.completedAt,
+  };
+}
+
+/** One Home entry built from one row. */
+function homeEntryOf(item, reasons, work) {
+  return {
+    entryKey: item.threadId ?? item.messageId,
+    message: homeSummaryOf(item),
+    messageIds: [item.messageId],
+    reasons,
+    work,
+    occurrences: item.occurrences,
+    noServerCopy: false,
+  };
+}
+
+/** The work summaries of one row, due soonest first. */
+function workOfRow(openWorkByMessage, messageId) {
+  return (openWorkByMessage.get(messageId) ?? []).sort((a, b) => {
+    if (a.dueAt === null) {
+      return 1;
+    }
+    if (b.dueAt === null) {
+      return -1;
+    }
+    return a.dueAt < b.dueAt ? -1 : 1;
+  });
+}
+
+/**
+ * Every Home section (SPEC F13): one conversation appears once, in the
+ * highest section that applies. Choices rank ahead of recency inside a
+ * section; reminders order by their due time; reply later orders oldest
+ * first. `boundary` is the visit boundary this read uses; the caller
+ * decides whether the read also records a new one.
+ */
+function buildHomeSections(session, boundary) {
+  const rows = homeBaseRows(session);
+  const taken = new Set();
+  const openWork = session.home.work.filter((work) => work.status === "open");
+  const openWorkByMessage = new Map();
+  for (const work of openWork) {
+    const list = openWorkByMessage.get(work.anchorMessageId) ?? [];
+    list.push(work);
+    openWorkByMessage.set(work.anchorMessageId, list);
+  }
+  const dismissed = new Set(
+    session.home.dismissals.map((entry) => `${entry.accountId}:${entry.messageId}`),
+  );
+
+  /** The choice reasons a recorded priority justifies for one row. */
+  const priorityReasonsOf = (row) => {
+    const reasons = [];
+    const sender = row.sender?.address.toLowerCase() ?? null;
+    for (const choice of session.home.priorities) {
+      if (choice.accountId !== row.accountId) {
+        continue;
+      }
+      if (choice.target.kind === "sender" && sender !== null && choice.target.sender === sender) {
+        reasons.push({ code: "you_prioritized_sender", origin: "choice" });
+      }
+      if (choice.target.kind === "thread" && choice.target.threadId === row.threadId) {
+        reasons.push({ code: "you_prioritized_thread", origin: "choice" });
+      }
+    }
+    return reasons;
+  };
+
+  // Due now: open reminders whose due time passed, earliest first.
+  const now = new Date().toISOString();
+  const dueItems = [];
+  for (const work of openWork
+    .filter((entry) => entry.kind === "reminder" && entry.dueAt !== null && entry.dueAt <= now)
+    .sort((a, b) => (a.dueAt < b.dueAt ? -1 : 1))) {
+    const anchor = rows.find((row) => row.messageId === work.anchorMessageId);
+    if (anchor === undefined) {
+      continue;
+    }
+    taken.add(anchor.messageId);
+    dueItems.push(
+      homeEntryOf(anchor, [{ code: "reminder_due", origin: "choice" }], workOfRow(openWorkByMessage, anchor.messageId)),
+    );
+  }
+
+  // Needs attention: inbox rows a choice or a stored answer justifies,
+  // your choices first, then recency. A dismissed suggestion drops its row
+  // unless a choice keeps it.
+  const attention = [];
+  for (const row of rows) {
+    if (taken.has(row.messageId) || !INBOX_FOLDER_IDS.has(row.folderId)) {
+      continue;
+    }
+    const choiceReasons = priorityReasonsOf(row);
+    const suggestionReasons =
+      dismissed.has(`${row.accountId}:${row.messageId}`) || choiceReasons.length > 0
+        ? []
+        : (homeSuggestionReasons.get(row.messageId) ?? []);
+    if (choiceReasons.length === 0 && suggestionReasons.length === 0) {
+      continue;
+    }
+    attention.push({
+      row,
+      reasons: [...choiceReasons, ...suggestionReasons],
+      chosen: choiceReasons.length > 0,
+    });
+  }
+  const attentionItems = attention
+    .sort((a, b) => Number(b.chosen) - Number(a.chosen))
+    .map((entry) => {
+      taken.add(entry.row.messageId);
+      return homeEntryOf(entry.row, entry.reasons, workOfRow(openWorkByMessage, entry.row.messageId));
+    });
+
+  // Reply later: open reply intentions, oldest first.
+  const replyItems = [];
+  for (const work of openWork
+    .filter((entry) => entry.kind === "reply_later")
+    .sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1))) {
+    const anchor = rows.find((row) => row.messageId === work.anchorMessageId);
+    if (anchor === undefined || taken.has(anchor.messageId)) {
+      continue;
+    }
+    taken.add(anchor.messageId);
+    replyItems.push(
+      homeEntryOf(anchor, [{ code: "reply_planned", origin: "choice" }], workOfRow(openWorkByMessage, anchor.messageId)),
+    );
+  }
+
+  // Since your last visit: inbox rows newer than the boundary this read
+  // used; a first visit has no boundary and shows no arrivals.
+  const arrivalItems =
+    boundary === null
+      ? []
+      : rows
+          .filter(
+            (row) =>
+              !taken.has(row.messageId) &&
+              INBOX_FOLDER_IDS.has(row.folderId) &&
+              row.sentAt > boundary,
+          )
+          .map((row) => {
+            taken.add(row.messageId);
+            return homeEntryOf(row, [{ code: "new_arrival", origin: "notice" }], []);
+          });
+
+  // Saved: starred rows no earlier section took.
+  const savedItems = rows
+    .filter((row) => !taken.has(row.messageId) && row.flagged)
+    .map((row) => homeEntryOf(row, [{ code: "you_starred", origin: "choice" }], []));
+
+  const sectionOf = (id, items) => ({ id, total: items.length, items, nextCursor: null });
+  return [
+    sectionOf("due_now", dueItems),
+    sectionOf("needs_attention", attentionItems),
+    sectionOf("reply_later", replyItems),
+    sectionOf("since_visit", arrivalItems),
+    sectionOf("saved", savedItems),
+  ];
+}
+
+/** True when a string names a zone the platform calendar accepts. */
+function timeZoneLooksValid(zone) {
+  if (typeof zone !== "string" || zone.length === 0) {
+    return false;
+  }
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: zone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** A parseable instant in its normalized form, or `null`. */
+function parseInstant(value) {
+  if (typeof value !== "string" || value.length === 0) {
+    return null;
+  }
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : new Date(parsed).toISOString();
+}
+
+/** The visit boundary a device's next full Home read reports, then advances. */
+function homeBoundaryFor(session, deviceId) {
+  return session.home.boundaries.get(deviceId) ?? homeInitialBoundary;
 }
 
 /** Sends one JSON body. */
@@ -1075,6 +1349,186 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    //
+    // Home writes (SPEC F13). Every one passed the mutation guards above,
+    // so what remains is shape validation and the revision gates.
+    //
+
+    if (pathname === "/api/home/work" && request.method === "POST") {
+      const body = await readJsonBody(request);
+      const account = session.accounts.find((entry) => entry.id === body?.accountId);
+      const anchor = homeBaseRows(session).find((row) => row.messageId === body?.anchorMessageId);
+      if (account === undefined || anchor === undefined || anchor.accountId !== account.id) {
+        sendError(response, 404, "not_found", "No such account or anchor message in the fixture.");
+        return;
+      }
+      if (body === null || (body.kind !== "reply_later" && body.kind !== "reminder")) {
+        sendError(response, 400, "invalid_request", "The work kind must be reply later or a reminder.");
+        return;
+      }
+      let dueAt = null;
+      if (body.kind === "reminder") {
+        dueAt = parseInstant(body.dueAt);
+        if (dueAt === null) {
+          sendError(response, 400, "due_time_invalid", "The reminder needs a due time it can resolve.");
+          return;
+        }
+        if (!timeZoneLooksValid(body.timeZone)) {
+          sendError(response, 400, "time_zone_invalid", "The reminder needs a known time zone.");
+          return;
+        }
+      }
+      const now = new Date().toISOString();
+      session.home.sequence += 1;
+      const work = {
+        id: `hw-${session.home.sequence}`,
+        kind: body.kind,
+        status: "open",
+        dueAt,
+        timeZone: body.kind === "reminder" ? body.timeZone : null,
+        revision: 1,
+        anchorUnavailable: false,
+        accountId: account.id,
+        anchorMessageId: anchor.messageId,
+        createdAt: now,
+        updatedAt: now,
+        completedAt: null,
+      };
+      session.home.work.push(work);
+      sendJson(response, 201, { work: homeWorkRecord(session, work) });
+      return;
+    }
+
+    match = /^\/api\/home\/work\/([^/]+)\/(reschedule|complete|reopen|cancel)$/.exec(pathname);
+    if (match !== null && request.method === "POST") {
+      const work = session.home.work.find((entry) => entry.id === match[1]);
+      if (work === undefined) {
+        sendError(response, 404, "not_found", "No such saved work in the fixture.");
+        return;
+      }
+      const body = await readJsonBody(request);
+      if (body?.revision !== work.revision) {
+        sendError(response, 409, "work_stale", "This work changed on another device.", {
+          currentRevision: work.revision,
+        });
+        return;
+      }
+      if (match[2] === "reschedule") {
+        const dueAt = parseInstant(body.dueAt);
+        if (dueAt === null) {
+          sendError(response, 400, "due_time_invalid", "The reminder needs a due time it can resolve.");
+          return;
+        }
+        if (!timeZoneLooksValid(body.timeZone)) {
+          sendError(response, 400, "time_zone_invalid", "The reminder needs a known time zone.");
+          return;
+        }
+        work.dueAt = dueAt;
+        work.timeZone = body.timeZone;
+      } else if (match[2] === "complete") {
+        work.status = "done";
+        work.completedAt = new Date().toISOString();
+      } else if (match[2] === "reopen") {
+        work.status = "open";
+        work.completedAt = null;
+      } else {
+        session.home.work = session.home.work.filter((entry) => entry !== work);
+        response.writeHead(204, { "cache-control": "no-store" });
+        response.end();
+        return;
+      }
+      work.revision += 1;
+      work.updatedAt = new Date().toISOString();
+      sendJson(response, 200, { work: homeWorkRecord(session, work) });
+      return;
+    }
+
+    if (pathname === "/api/home/priorities" && request.method === "PUT") {
+      const body = await readJsonBody(request);
+      const account = session.accounts.find((entry) => entry.id === body?.accountId);
+      const target = body?.target;
+      const targetValid =
+        (target?.kind === "sender" && typeof target.sender === "string" && target.sender.length > 0) ||
+        (target?.kind === "thread" && typeof target.threadId === "string" && target.threadId.length > 0);
+      if (account === undefined) {
+        sendError(response, 404, "not_found", "No such account in the fixture.");
+        return;
+      }
+      if (body === null || !targetValid || typeof body.prioritized !== "boolean") {
+        sendError(response, 400, "invalid_request", "The priority body names no account, target, or choice.");
+        return;
+      }
+      const normalized = {
+        kind: target.kind,
+        ...(target.kind === "sender"
+          ? { sender: target.sender.toLowerCase() }
+          : { threadId: target.threadId }),
+      };
+      const existing = session.home.priorities.find(
+        (choice) => choice.accountId === account.id && JSON.stringify(choice.target) === JSON.stringify(normalized),
+      );
+      if (body.prioritized) {
+        const now = new Date().toISOString();
+        if (existing === undefined) {
+          session.home.sequence += 1;
+          session.home.priorities.push({
+            id: `hp-${session.home.sequence}`,
+            accountId: account.id,
+            target: normalized,
+            revision: 1,
+            createdAt: now,
+            updatedAt: now,
+          });
+        }
+      } else {
+        if (existing === undefined) {
+          sendError(response, 404, "not_found", "That priority choice is not recorded.");
+          return;
+        }
+        if (body.revision !== existing.revision) {
+          sendError(response, 409, "work_stale", "This priority changed on another device.", {
+            currentRevision: existing.revision,
+          });
+          return;
+        }
+        session.home.priorities = session.home.priorities.filter((choice) => choice !== existing);
+      }
+      sendJson(response, 200, { priorities: session.home.priorities });
+      return;
+    }
+
+    if (pathname === "/api/home/dismissals" && request.method === "POST") {
+      const body = await readJsonBody(request);
+      const account = session.accounts.find((entry) => entry.id === body?.accountId);
+      const anchor = homeBaseRows(session).find((row) => row.messageId === body?.messageId);
+      if (account === undefined || anchor === undefined || anchor.accountId !== account.id) {
+        sendError(response, 404, "not_found", "No such account or message in the fixture.");
+        return;
+      }
+      if (
+        session.home.dismissals.some(
+          (entry) => entry.accountId === account.id && entry.messageId === anchor.messageId,
+        )
+      ) {
+        sendJson(response, 200, { dismissed: { accountId: account.id, messageId: anchor.messageId } });
+        return;
+      }
+      session.home.dismissals.push({ accountId: account.id, messageId: anchor.messageId });
+      sendJson(response, 201, { dismissed: { accountId: account.id, messageId: anchor.messageId } });
+      return;
+    }
+
+    match = /^\/api\/home\/dismissals\/([^/]+)$/.exec(pathname);
+    if (match !== null && request.method === "DELETE") {
+      const accountId = url.searchParams.get("accountId");
+      session.home.dismissals = session.home.dismissals.filter(
+        (entry) => !(entry.messageId === match[1] && entry.accountId === accountId),
+      );
+      response.writeHead(204, { "cache-control": "no-store" });
+      response.end();
+      return;
+    }
+
     if (request.method !== "GET") {
       sendError(response, 405, "method_not_allowed", "The fixture holds no such write.");
       return;
@@ -1175,6 +1629,59 @@ const server = createServer(async (request, response) => {
         "cache-control": "no-store",
       });
       response.end(bytes);
+      return;
+    }
+
+    //
+    // Home reads (SPEC F13): the full read is one visit, so it reports the
+    // boundary it used and records the next one; the per-section route a
+    // refresh takes never advances the boundary.
+    //
+
+    if (pathname === "/api/home") {
+      const deviceId = url.searchParams.get("deviceId");
+      if (deviceId === null || deviceId.length < 8 || deviceId.length > 100) {
+        sendError(response, 400, "invalid_request", "The Home read names no valid device.");
+        return;
+      }
+      const boundary = homeBoundaryFor(session, deviceId);
+      session.home.boundaries.set(deviceId, homeNextBoundary);
+      sendJson(response, 200, {
+        generatedAt: new Date().toISOString(),
+        sections: buildHomeSections(session, boundary),
+        classification: structuredClone(homeCoverage),
+        visitBoundary: boundary,
+      });
+      return;
+    }
+
+    match = /^\/api\/home\/sections\/([a-z_]+)$/.exec(pathname);
+    if (match !== null) {
+      const deviceId = url.searchParams.get("deviceId");
+      if (deviceId === null || deviceId.length < 8 || deviceId.length > 100) {
+        sendError(response, 400, "invalid_request", "The Home read names no valid device.");
+        return;
+      }
+      const section = buildHomeSections(session, homeBoundaryFor(session, deviceId)).find(
+        (entry) => entry.id === match[1],
+      );
+      if (section === undefined) {
+        sendError(response, 404, "not_found", "The fixture holds no such Home section.");
+        return;
+      }
+      sendJson(response, 200, { section });
+      return;
+    }
+
+    if (pathname === "/api/home/work") {
+      sendJson(response, 200, {
+        work: session.home.work.map((work) => homeWorkRecord(session, work)),
+      });
+      return;
+    }
+
+    if (pathname === "/api/home/priorities") {
+      sendJson(response, 200, { priorities: session.home.priorities });
       return;
     }
 
