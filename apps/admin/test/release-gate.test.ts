@@ -166,6 +166,35 @@ describe("the gate step runner", () => {
     });
   }, 15_000);
 
+  it("strips ANSI codes from summary lines before judging them", async () => {
+    await withLogDir(async (logDir) => {
+      const { events, out } = collector();
+      // The exact shape vitest prints when CI=true colors a piped run; the
+      // codes sit between "Files" and the count, which breaks the plain
+      // patterns (first seen on a GitHub runner, 2026-09-21).
+      const coloredFiles =
+        "\u001b[2m Test Files \u001b[22m \u001b[1m\u001b[32m8 passed\u001b[39m\u001b[22m\u001b[90m (8)\u001b[39m";
+      const coloredTests =
+        "\u001b[2m      Tests \u001b[22m \u001b[1m\u001b[32m41 passed\u001b[39m\u001b[22m\u001b[90m (41)\u001b[39m";
+      const script =
+        `console.log(${JSON.stringify(coloredFiles)}); console.log(${JSON.stringify(coloredTests)});`;
+      const step = await runStep("colored", nodeBin, ["-e", script], {
+        logDir,
+        out,
+        keepStdout: true,
+      });
+      expect(step.ok).toBe(true);
+      expect(step.summaryText).toContain(" Test Files  8 passed (8)");
+      expect(step.stdout).toContain("      Tests  41 passed (41)");
+      const echoed = events.find((event) => event.kind === "line" && event.stream === "stdout");
+      expect((echoed as { text: string }).text).toBe(" Test Files  8 passed (8)");
+      expect(parseVitestSummary(step.summaryText, "suite", 1).ok).toBe(true);
+      // The log file keeps the raw bytes; only the in-memory text is plain.
+      const logged = await readFile(join(logDir, "colored.log"), "utf8");
+      expect(logged).toContain(coloredFiles);
+    });
+  }, 15_000);
+
   it("reports a timeout as the failure, not a clean summary", async () => {
     await withLogDir(async (logDir) => {
       const script =

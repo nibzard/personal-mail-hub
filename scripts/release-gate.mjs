@@ -65,6 +65,12 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** The vitest summary lines the test checks judge; everything else is noise. */
 const SUMMARY_LINE = /^\s*(Test Files|Tests)\s+\d/;
+/**
+ * ANSI escape sequences. CI environments set CI=true, and vitest then colors
+ * its summary lines even through a pipe; every pattern below reads plain
+ * text, so the codes stop where lines enter the gate.
+ */
+const ANSI_ESCAPE = /\x1b\[[0-9;]*[A-Za-z]/g;
 /** A hostile ceiling on summary lines held in memory; the log keeps the rest. */
 const SUMMARY_LINE_CAP = 10_000;
 /** Default per-step timeout: 30 minutes. */
@@ -137,9 +143,12 @@ export async function runStep(name, command, args, options = {}) {
   /**
    * Handle one complete output line: forward it, and keep the pieces later
    * checks judge. Only summary lines (and a capped stdout capture) stay in
-   * memory; the log file already holds everything.
+   * memory; the log file already holds everything. Escape codes come off
+   * here, so the echo, the summaries, and the captures all read plain text
+   * on every host; the log files keep the raw bytes.
    */
-  const handleLine = (line, isStdout) => {
+  const handleLine = (rawLine, isStdout) => {
+    const line = rawLine.replace(ANSI_ESCAPE, "");
     out({ kind: "line", stream: isStdout ? "stdout" : "stderr", name, text: line });
     if (!isStdout) {
       return;
