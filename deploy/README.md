@@ -346,6 +346,24 @@ section 12). Suggestions never route mail before that.
    returns classification to shadow mode. The exit code is 0 only when the
    gate passes.
 
+### Adapter smoke check
+
+After a deployment, and whenever the adapter, the question set, the pinned
+model, or the endpoint changes, run one synthetic call against the
+configured service:
+
+```sh
+npm run verify:classify
+```
+
+The command sends invented text — no mail, no database writes — and prints
+approved fields only: model, question set version, answers, latency, and
+token count. It never prints the API key. A missing `TYPE_SAFE_API_KEY`
+prints an explicit unverified result; the exit code is 0 only when the
+service answers the documented contract. Offline contract fixtures in
+`packages/classification/test/fixtures/typesafe-contract.ts` pin the same
+wire shape, so drift fails the test suite before it reaches a deployment.
+
 ## Backups
 
 `deploy/backup.sh` runs inside the app container (`npm run backup`):
@@ -479,6 +497,9 @@ was.
   [Verify a deployment](#verify-a-deployment)); with accounts enrolled,
   run it with `--sample-interval` so stalled sync cannot hide behind
   healthy containers.
+- With `TYPE_SAFE_API_KEY` configured, `npm run verify:classify` reports
+  `VERIFIED` against the configured service (see
+  [Adapter smoke check](#adapter-smoke-check)).
 - `docker compose -f deploy/docker-compose.yml ps` reports `db`, `api`,
   `worker`, and `web` healthy or running.
 - `curl https://mail.example.com/api/healthz` answers `200` with the recovery
