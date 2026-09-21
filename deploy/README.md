@@ -158,6 +158,62 @@ operator change. Do not rotate working credentials during a routine deploy.
    key. It must fail with `ssh_auth_denied`; that failure proves the
    revocation works.
 
+## Verify a deployment
+
+One read-only command answers whether the deployment works, not just
+whether its containers are healthy:
+
+```sh
+npm run deploy:verify
+```
+
+The command reads three evidence sources, each optional and classified
+when unavailable: Docker (locally, or over SSH when `DEPLOY_SSH_HOST` is
+set) for containers, restarts, and the deployed revision; the public
+health endpoint at `DEPLOY_APP_URL` for recovery state, per-account sync
+states, and send counters; and narrow aggregate queries through psql in
+the database container for folder-backfill and classification progress.
+It never sends or mutates mail. Output holds states, counts, timestamps,
+UUIDs, and image names only — never folder names, addresses, message
+content, raw logs, or secrets.
+
+The verdict is one of:
+
+- `VERIFIED` — every required check ran and passed. Untested areas are
+  listed, for example sync workflows when no account is enrolled.
+- `FAILED` — a check proved a problem: pending work that did not move
+  between two samples, an account reporting sync failures or a stale sync
+  record, a wrong revision, a container that is not running, unhealthy,
+  paused, or restart-looping, or a failed
+  database round trip.
+- `UNVERIFIED` — a required check could not run: no Docker access,
+  missing privileges, no containers found, or an observation timeout. A
+  partial picture is never reported as verified.
+
+Progress needs two samples. Pass an interval in seconds; the command then
+decides per account whether pending work is moving, idle, or stalled:
+
+```sh
+npm run deploy:verify -- --sample-interval 30 --expect-revision <tag-or-sha>
+```
+
+An idle mailbox is never a failure: progress is judged only where work is
+pending. `--expect-revision` fails the run when the deployed image does
+not match; it accepts a tag, a digest (`sha256:...`), or a revision label,
+and without it the revision is reported but not judged. `-- --json` prints
+the machine-readable result (npm needs the `--`; add `--silent` or call
+`node deploy/verify-deployment.mjs --json` when you pipe stdout into
+another tool, because npm writes its banner there too).
+
+Containers are resolved by the compose project and service labels, never
+by hard-coded names, so any suffix scheme works. Set
+`DEPLOY_COMPOSE_PROJECT` when the deployment runs under another project
+name, and `DEPLOY_DB_CONTAINER` when the database is not the `db` service
+of the compose project. A separate PostgreSQL resource also carries its
+own credentials, so set `DEPLOY_DB_USER` and `DEPLOY_DB_NAME` to match it.
+All of these keys can live in `deploy/access.env` alongside the access
+keys.
+
 ## Deploy with docker compose
 
 1. Install Docker Engine with the compose plugin, clone this repository, and
@@ -419,6 +475,10 @@ was.
 
 - `npm run deploy:access` passes from the operator workstation (see
   [Operator access](#operator-access)).
+- `npm run deploy:verify` reports `VERIFIED` (see
+  [Verify a deployment](#verify-a-deployment)); with accounts enrolled,
+  run it with `--sample-interval` so stalled sync cannot hide behind
+  healthy containers.
 - `docker compose -f deploy/docker-compose.yml ps` reports `db`, `api`,
   `worker`, and `web` healthy or running.
 - `curl https://mail.example.com/api/healthz` answers `200` with the recovery

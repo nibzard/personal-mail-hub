@@ -39,6 +39,10 @@ export const ACCESS_ENV_KEYS = [
   "DEPLOY_COOLIFY_URL",
   "COOLIFY_TOKEN",
   "DEPLOY_APP_URL",
+  "DEPLOY_COMPOSE_PROJECT",
+  "DEPLOY_DB_CONTAINER",
+  "DEPLOY_DB_USER",
+  "DEPLOY_DB_NAME",
 ];
 
 /** One ssh connect attempt gets this many seconds before it is killed. */

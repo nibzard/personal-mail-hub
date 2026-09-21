@@ -2877,7 +2877,7 @@
       "id": "T111",
       "title": "Add one command for deployment verification",
       "priority": 2,
-      "status": "todo",
+      "status": "done",
       "details": "Plan: docs/development-deployment-plan.md#t111-add-one-command-for-deployment-verification\n\nManual health queries, container inspection, and database checks made verification slow. Container health alone missed the stalled folders.\n\nAcceptance: One command can reject a healthy-container deployment with broken sync. It records bounded evidence, states uncertainty, and never reports a fully verified result when required checks were unavailable.",
       "steps": [
         "Add a read-only command that resolves the current application containers and deployed revision from the configured resource. Avoid hard-coded container suffixes.",
@@ -2893,9 +2893,9 @@
       ],
       "files": [
         "docs/development-deployment-plan.md",
-        "scripts",
+        "deploy/verify-deployment.mjs",
         "deploy/README.md",
-        "packages/observability/src/health.ts"
+        "apps/admin/test/verify-deployment.test.ts"
       ],
       "depends_on": [
         "T104",
@@ -2903,7 +2903,8 @@
         "T110"
       ],
       "created_at": "2026-09-20T21:51:56Z",
-      "updated_at": "2026-09-20T21:51:56Z"
+      "updated_at": "2026-09-21T03:30:00Z",
+      "notes": "Done 2026-09-21. deploy/verify-deployment.mjs (npm run deploy:verify): one read-only command that judges the deployment, not just container health. Three evidence sources, each optional and classified when unavailable: Docker (local, or over SSH via DEPLOY_SSH_HOST with every remote argument single-quoted for the remote shell) for containers, restarts, and revision; the public health endpoint at DEPLOY_APP_URL/api/healthz for recovery, per-account sync, and send counters; and two constant aggregate psql queries through docker exec in the database container (counts only, no folder names or addresses; DEPLOY_DB_CONTAINER/DEPLOY_DB_USER/DEPLOY_DB_NAME override the defaults). Verdicts verified/failed/unverified; exit 0 only when verified; untested areas listed (no --expect-revision, single sample, no accounts). Containers resolve by compose labels, never hard-coded names. A container fails when it is not running, unhealthy, paused, or restart-looping with a fresh start (RestartCount alone never fails an old stable container); a health check still starting keeps the section unverified. --expect-revision accepts a tag, revision label, or sha256 digest (imageId), and an empty value counts as absent. Accounts fail on degraded or stale sync even without pending work; idle accounts never fail. Sampling (--sample-interval 5..300, NaN rejected) judges per account: any counter change in either direction or folder-checkpoint movement is progressing; pending work without movement is stalled; a missing second sample gates the verdict unverified instead of slipping past; a failed second database read downgrades stalled to unknown. A degraded or stale account also fails the health section on a single-sample run. Privacy: output holds states, counts, timestamps, UUIDs, container and image names, and the transport target only. Read-only: no mail is sent or mutated, no credentials are generated, all docker calls are ps/inspect/exec psql SELECT. Unit tests: apps/admin/test/verify-deployment.test.ts (26 tests) pin the acceptance case (pending work without movement between samples reads stalled and fails the verdict) plus parsers and edge inputs. Verified live against a local compose stack of the current tree: idle healthy stack VERIFIED exit 0 (local and over an SSH loopback alias); wrong revision FAILED exit 1; exact sha256 digest VERIFIED; sampled run with no accounts VERIFIED with untested entries; shell-injection payloads in DEPLOY_COMPOSE_PROJECT and DEPLOY_DB_CONTAINER over SSH create no files and read as literal filters (UNVERIFIED exit 1). Adversarial review (3 reviewers + per-finding refuters, 17 findings, 10 confirmed) drove the fixes: ssh remote-shell quoting (injection plus a broken ssh transport), the ungated second sample, stale sync reading idle, growing backlog reading stalled, the failed second database read, the empty revision expectation, the digest mismatch, never-started/paused containers, the lifetime restart count, first-sample degraded accounts, the Coolify database credentials, and npm banner pollution of piped --json output. Full suite: 101 files, 1132 tests, 0 unhandled errors. Runbook: deploy/README.md 'Verify a deployment'."
     },
     {
       "id": "T112",
