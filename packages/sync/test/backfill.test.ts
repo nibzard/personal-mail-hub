@@ -7,6 +7,7 @@ import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   accounts,
+  attachments,
   bodies as bodiesTable,
   createDatabase,
   createStorage,
@@ -59,6 +60,91 @@ function fixture(uid: number, subject: string, extra: string[] = []): FakeMessag
     headers: messageHeaders(subject, extra),
     body: `Body of ${subject}.`,
     flags: uid % 2 === 0 ? ["\\Seen"] : [],
+    internalDate: new Date(Date.UTC(2026, 8, 7, 10, 0, 0) + uid * 60_000),
+  };
+}
+
+/**
+ * One message whose derived text carries NUL bytes in every field the
+ * incident could touch (docs/sync-repair-plan.md T105): raw NUL in the
+ * subject, Message-ID, and references; Q-encoded NUL (`=00`) in the display
+ * name, body text, and attachment filename. PostgreSQL rejects `\0` in text,
+ * so every one of these reaches the database only as the replacement
+ * character, while the stored original keeps its raw bytes.
+ */
+function nulFixture(uid: number): FakeMessage {
+  return {
+    uid,
+    headers: [
+      "From: =?utf-8?Q?Name=00X?= <nul@example.com>",
+      "To: Bob <bob@example.com>",
+      "Subject: raw\u0000nul and =?utf-8?Q?encoded=00nul?=",
+      "Date: Mon, 07 Sep 2026 10:15:00 +0000",
+      "Message-ID: <msg\u0000id@example.com>",
+      "In-Reply-To: <parent\u0000ref@example.com>",
+      "References: <root@example.com> <parent\u0000ref@example.com>",
+      "MIME-Version: 1.0",
+      "Content-Type: multipart/mixed; boundary=MIX",
+    ].join("\r\n"),
+    body: [
+      "--MIX",
+      "Content-Type: text/plain; charset=utf-8",
+      "Content-Transfer-Encoding: quoted-printable",
+      "",
+      "body=00nul in the plain part",
+      "--MIX",
+      'Content-Type: application/pdf; name="=?utf-8?Q?file=00name.pdf?="',
+      'Content-Disposition: attachment; filename="=?utf-8?Q?file=00name.pdf?="',
+      "Content-Transfer-Encoding: base64",
+      "",
+      "Zm9vYmFy",
+      "--MIX--",
+    ].join("\r\n"),
+    internalDate: new Date(Date.UTC(2026, 8, 7, 10, 0, 0) + uid * 60_000),
+  };
+}
+
+/**
+ * The parent the fixture above replies to: its Message-ID carries the same
+ * raw NUL, so both sides of the link sanitize to the same stored identifier
+ * and thread linking must still match them.
+ */
+function nulParent(uid: number): FakeMessage {
+  return {
+    uid,
+    headers: [
+      "From: Root Writer <root@example.com>",
+      "To: Bob <bob@example.com>",
+      "Subject: Parent with a raw nul",
+      "Date: Mon, 07 Sep 2026 10:14:00 +0000",
+      "Message-ID: <parent\u0000ref@example.com>",
+      "MIME-Version: 1.0",
+      "Content-Type: text/plain; charset=utf-8",
+    ].join("\r\n"),
+    body: "Parent body.",
+    internalDate: new Date(Date.UTC(2026, 8, 7, 10, 0, 0) + uid * 60_000),
+  };
+}
+
+/**
+ * One neighbor whose address tokens carry Q-encoded NUL: the decoded NUL
+ * survives address tokenization, so the validator must keep the address
+ * invalid — dropped, never sanitized into a valid one — while the message
+ * with its clean subject still imports (T105).
+ */
+function nulAddressNeighbor(uid: number): FakeMessage {
+  return {
+    uid,
+    headers: [
+      "From: =?utf-8?Q?a=00b@example.com?=",
+      "To: =?utf-8?Q?c=00d@example.com?=",
+      "Subject: Neighbor with poisoned addresses",
+      "Date: Mon, 07 Sep 2026 10:16:00 +0000",
+      "Message-ID: <neighbor@example.com>",
+      "MIME-Version: 1.0",
+      "Content-Type: text/plain; charset=utf-8",
+    ].join("\r\n"),
+    body: "Neighbor body.",
     internalDate: new Date(Date.UTC(2026, 8, 7, 10, 0, 0) + uid * 60_000),
   };
 }
@@ -521,6 +607,120 @@ suite("BackfillService", () => {
     const second = await runner.runAccountCycle(session, accountId);
     expect(second).toMatchObject({ folders: 0, batches: 0, imported: 0, bodiesFetched: 0 });
     expect(await countMessages(accountId)).toBe(3);
+    expect(await bodies.pendingBodies(accountId, 10)).toEqual([]);
+  });
+
+  it("imports mail whose derived text carries NUL bytes and keeps the original bytes", async () => {
+    const { accountId, folderIds } = await setupAccount(["INBOX"]);
+    const folder = folderIds.get("INBOX")!;
+    const session = new FakeMailboxSession();
+    session.load("INBOX", [nulParent(1), nulFixture(2), nulAddressNeighbor(3)]);
+
+    const { backfill, bodies, db } = services();
+    await drain(backfill, session, accountId, folder);
+
+    // The poisoned window imported beside a clean neighbor: header-derived
+    // text is NUL-free and keeps a replacement character where the NUL stood.
+    expect(await countMessages(accountId)).toBe(3);
+    const rows = await db.select().from(messages).where(eq(messages.accountId, accountId));
+    const poisoned = rows.find((row) => row.subject?.includes("\uFFFD"))!;
+    expect(poisoned.subject).toBe("raw\uFFFDnul and encoded\uFFFDnul");
+    expect(poisoned.sender).toEqual({ address: "nul@example.com", name: "Name\uFFFDX" });
+    expect(poisoned.messageId).toContain("\uFFFD");
+    expect(poisoned.inReplyTo).toContain("\uFFFD");
+    expect(poisoned.referenceIds.join(" ")).toContain("\uFFFD");
+    for (const row of rows) {
+      expect(JSON.stringify(row)).not.toContain("\\u0000");
+    }
+
+    const neighbor = rows.find((row) => row.subject === "Neighbor with poisoned addresses")!;
+    expect(neighbor.sender).toBeNull();
+    expect(neighbor.recipients).toBeNull();
+    expect(neighbor.senderText).toBe("");
+
+    // Body ingestion derives NUL-free text, snippet, index, and filenames.
+    const jobs = await bodies.pendingBodies(accountId, 10);
+    expect(jobs).toHaveLength(3);
+    for (const job of jobs) {
+      expect((await bodies.fetchBody(session, accountId, job)).state).toBe("fetched");
+    }
+    const refetched = (await db.select().from(messages).where(eq(messages.id, poisoned.id)))[0]!;
+    expect(refetched.snippet).toContain("body\uFFFDnul");
+    expect(refetched.bodyIndexText).toContain("body\uFFFDnul");
+    const bodyRow = (await db.select().from(bodiesTable).where(eq(bodiesTable.messageId, poisoned.id)))[0]!;
+    expect(bodyRow.textPlain).toContain("body\uFFFDnul");
+    const partRows = await db.select().from(attachments).where(eq(attachments.messageId, poisoned.id));
+    expect(partRows.map((part) => part.filename)).toEqual(["file\uFFFDname.pdf"]);
+    expect(JSON.stringify({ refetched, bodyRow, partRows })).not.toContain("\\u0000");
+
+    // The stored original keeps its raw NUL bytes and its recorded hash.
+    const original = await storage.durable.get(refetched.originalStorageKey!);
+    expect(new TextDecoder().decode(original)).toContain("\u0000");
+    expect(await storage.durable.verify(refetched.originalStorageKey!, refetched.originalSha256!)).toBe(true);
+
+    // Thread linking still matches the sanitized identifiers on both sides:
+    // the reply's parent carries the same NUL in its Message-ID.
+    await new ThreadService(db).reconcileAccount(accountId);
+    const relinked = (await db.select().from(messages).where(eq(messages.id, poisoned.id)))[0]!;
+    const parent = (await db.select().from(messages).where(eq(messages.messageId, relinked.inReplyTo!)))[0]!;
+    expect(parent).toBeDefined();
+    expect(relinked).toMatchObject({ threadLinkState: "linked", parentMessageId: parent.id });
+    expect(relinked.threadId).toBe(parent.threadId);
+
+    // A replayed window imports nothing and duplicates no row.
+    await drain(backfill, session, accountId, folder);
+    expect(await countMessages(accountId)).toBe(3);
+  });
+
+  it("rolls back a window that fails mid-transaction, then imports on retry", async () => {
+    const { accountId, folderIds } = await setupAccount(["INBOX"]);
+    const folder = folderIds.get("INBOX")!;
+    const session = new FakeMailboxSession();
+    session.load("INBOX", [fixture(1, "After the poisoned one"), nulFixture(2)]);
+
+    const { backfill, bodies } = services();
+    const folderRow = async () =>
+      (await pool.query("select * from folders where id = $1", [folder.id])).rows[0]!;
+    const initialization = await backfill.runBatch(session, accountId, folder.id);
+    expect(initialization).toMatchObject({ state: "initialized" });
+    const before = await folderRow();
+
+    // The window imports newest first, so corrupting the oldest record's
+    // header block makes the failure land inside the transaction, after the
+    // first import ran its statements — the incident's failure class, not a
+    // fetch failure. One shot only; the retry fetches cleanly.
+    const originalFetchHeaders = session.fetchHeaders.bind(session);
+    let corrupt = true;
+    session.fetchHeaders = async (uids: number[]) => {
+      const records = await originalFetchHeaders(uids);
+      if (!corrupt) {
+        return records;
+      }
+      corrupt = false;
+      return [...records.slice(0, -1), { ...records.at(-1)!, rawHeaders: null as unknown as Uint8Array }];
+    };
+    await expect(backfill.runBatch(session, accountId, folder.id)).rejects.toThrow("byteLength");
+
+    // The transaction rolled back both the imported row and the checkpoint
+    // write, so nothing imported and the folder row is untouched.
+    expect(await folderRow()).toEqual(before);
+    expect(await countMessages(accountId)).toBe(0);
+
+    // The retry of the same batch imports everything exactly once, and its
+    // body jobs resolve once without repeated work.
+    await drain(backfill, session, accountId, folder);
+    expect(await countMessages(accountId)).toBe(2);
+    const occurrences = await pool.query(
+      "select count(*)::int as count from message_occurrences where folder_id = $1",
+      [folder.id],
+    );
+    expect(occurrences.rows[0].count).toBe(2);
+    expect((await folderRow()).backfill_complete).toBe(true);
+    const jobs = await bodies.pendingBodies(accountId, 10);
+    expect(jobs).toHaveLength(2);
+    for (const job of jobs) {
+      expect((await bodies.fetchBody(session, accountId, job)).state).toBe("fetched");
+    }
     expect(await bodies.pendingBodies(accountId, 10)).toEqual([]);
   });
 

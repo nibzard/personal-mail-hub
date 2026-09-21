@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { simpleParser, type Attachment, type ParsedMail } from "mailparser";
 import type { EmailAddress, Recipients } from "@mail-hub/database";
 import { IngestionError } from "./errors.ts";
-import { parseDateHeader, toEmailAddress, toEmailAddresses, toRecipients } from "./text.ts";
+import { parseDateHeader, replaceNul, replaceNulOption, toEmailAddress, toEmailAddresses, toRecipients } from "./text.ts";
 
 /**
  * MIME parsing for stored originals (SPEC section 8).
@@ -106,17 +106,21 @@ export async function parseMime(bytes: Uint8Array): Promise<ParsedMessage> {
 
   const replyToHeaderPresent = parsed.headers.has("reply-to");
   const references = parsed.references;
+  // Derived text and identifiers replace NUL (T105): PostgreSQL rejects `\0`
+  // in text and JSON, and header import must derive the same values.
   return {
-    messageId: parsed.messageId ?? null,
-    inReplyTo: parsed.inReplyTo ?? null,
-    referenceIds: Array.isArray(references) ? references : typeof references === "string" ? [references] : [],
+    messageId: replaceNulOption(parsed.messageId),
+    inReplyTo: replaceNulOption(parsed.inReplyTo),
+    referenceIds: (Array.isArray(references) ? references : typeof references === "string" ? [references] : []).map(
+      replaceNul,
+    ),
     sender: toEmailAddress(parsed.from?.value[0] ?? { address: null, name: null }),
     replyTo: replyToHeaderPresent ? toEmailAddresses(parsed.replyTo) : null,
     recipients: toRecipients({ to: parsed.to, cc: parsed.cc, bcc: parsed.bcc }),
-    subject: parsed.subject ?? null,
+    subject: replaceNulOption(parsed.subject),
     sentAt: parseDateHeader(rawDateHeader(parsed)),
-    textPlain: parsed.text ?? null,
-    html: parsed.html === false ? null : parsed.html ?? null,
+    textPlain: replaceNulOption(parsed.text),
+    html: replaceNulOption(parsed.html === false ? null : parsed.html ?? null),
     attachments,
   };
 }
@@ -148,10 +152,10 @@ async function collectAttachments(
       content: attachment.content,
       decodedSha256: sha256Hex(attachment.content),
       sizeBytes: attachment.content.byteLength,
-      filename: attachment.filename ?? null,
-      contentType: attachment.contentType,
-      contentId: attachment.cid ?? null,
-      disposition: attachment.contentDisposition ?? null,
+      filename: replaceNulOption(attachment.filename),
+      contentType: replaceNul(attachment.contentType),
+      contentId: replaceNulOption(attachment.cid),
+      disposition: replaceNulOption(attachment.contentDisposition),
     });
 
     const isEmbeddedMessage =

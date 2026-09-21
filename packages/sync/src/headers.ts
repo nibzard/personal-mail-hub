@@ -5,6 +5,8 @@ import {
   normalizeIndexText,
   parseDateHeader,
   recipientsIndexText,
+  replaceNul,
+  replaceNulOption,
   senderIndexText,
   toEmailAddress,
   toEmailAddresses,
@@ -78,19 +80,25 @@ export async function parseHeaderBlock(rawHeaders: Uint8Array): Promise<Imported
   const references = parsed.references;
   const sender = toEmailAddress(parsed.from?.value[0] ?? { address: null, name: null });
   const recipients = toRecipients({ to: parsed.to, cc: parsed.cc, bcc: parsed.bcc });
+  // Identifiers and display text replace NUL the same way the full parse does
+  // (T105), so a message looks identical before and after its body is fetched
+  // and thread linking still matches either side.
+  const subject = replaceNulOption(parsed.subject);
   return {
-    messageId: parsed.messageId ?? null,
-    inReplyTo: parsed.inReplyTo ?? null,
-    referenceIds: Array.isArray(references) ? references : typeof references === "string" ? [references] : [],
+    messageId: replaceNulOption(parsed.messageId),
+    inReplyTo: replaceNulOption(parsed.inReplyTo),
+    referenceIds: (Array.isArray(references) ? references : typeof references === "string" ? [references] : []).map(
+      replaceNul,
+    ),
     sender,
     replyTo: parsed.headers.has("reply-to") ? toEmailAddresses(parsed.replyTo) : null,
     recipients,
-    subject: parsed.subject ?? null,
+    subject,
     sentAt: parseDateHeader(rawHeaderValue(parsed, "date")),
     senderText: normalizeIndexText(senderIndexText(sender)),
     recipientsText: normalizeIndexText(recipientsIndexText(recipients)),
     addressesText: normalizeIndexText(addressesIndexText(sender, recipients)),
-    subjectText: normalizeIndexText(parsed.subject ?? ""),
+    subjectText: normalizeIndexText(subject ?? ""),
   };
 }
 

@@ -66,6 +66,32 @@ function fixture(uid: number, subject: string, flags: string[] = []): FakeMessag
   };
 }
 
+/** One NUL character, built so this file carries no literal control byte. */
+const NUL = String.fromCharCode(0);
+
+/**
+ * One arrival whose derived text carries raw and Q-encoded NUL
+ * (docs/sync-repair-plan.md T105): PostgreSQL rejects NUL in text, so the
+ * poll must import it with replacement characters in the derived columns.
+ */
+function nulArrival(uid: number): FakeMessage {
+  return {
+    uid,
+    headers: [
+      "From: =?utf-8?Q?Name=00X?= <nul@example.com>",
+      "To: Bob <bob@example.com>",
+      `Subject: raw${NUL}nul arrival`,
+      "Date: Mon, 07 Sep 2026 10:15:00 +0000",
+      `Message-ID: <arrival${NUL}@example.com>`,
+      "MIME-Version: 1.0",
+      "Content-Type: text/plain; charset=utf-8",
+    ].join("\r\n"),
+    body: "plain body",
+    flags: [],
+    internalDate: new Date(Date.UTC(2026, 8, 7, 10, 0, 0) + uid * 60_000),
+  };
+}
+
 suite("SteadyStateService and ReconciliationService", () => {
   const databaseName = `mail_hub_test_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
   let pool: Pool;
@@ -230,6 +256,31 @@ suite("SteadyStateService and ReconciliationService", () => {
     const polled = await eventsOf(FOLDER_POLLED_EVENT, folder.id);
     expect(polled).toHaveLength(2);
     expect(polled.at(-1)).toMatchObject({ bound: 5, imported: 0 });
+  });
+
+  it("imports an arrival whose derived text carries NUL bytes", async () => {
+    const { accountId, folderIds } = await setupAccount([{ name: "INBOX", role: "inbox" }]);
+    const folder = folderIds.get("INBOX")!;
+    const session = new FakeMailboxSession();
+    session.load("INBOX", [fixture(1, "Settled")]);
+
+    const { backfill, steady } = services();
+    await drain(backfill, session, accountId, folder);
+
+    // The NUL-carrying arrival lands above the scanned bound.
+    session.load("INBOX", [fixture(1, "Settled"), nulArrival(2)]);
+    const poll = await steady.pollFolder(session, accountId, folder.id);
+    expect(poll).toMatchObject({ state: "polled", found: 1, imported: 1, expunged: 0 });
+
+    // The row persists with the replacement character where the NUL stood,
+    // and nothing in it holds a NUL byte (T105).
+    const db = createDatabase(pool);
+    const rows = await db.select().from(messages).where(eq(messages.accountId, accountId));
+    expect(rows).toHaveLength(2);
+    const poisoned = rows.find((row) => row.subject?.includes("\uFFFD"))!;
+    expect(poisoned.subject).toBe("raw\uFFFDnul arrival");
+    expect(poisoned.sender).toEqual({ address: "nul@example.com", name: "Name\uFFFDX" });
+    expect(JSON.stringify(rows)).not.toContain("\\u0000");
   });
 
   it("imports a downtime backlog in bounded batches with the same totals", async () => {

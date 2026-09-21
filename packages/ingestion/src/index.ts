@@ -31,6 +31,8 @@ export {
   makeSnippet,
   normalizeIndexText,
   parseDateHeader,
+  replaceNul,
+  replaceNulOption,
   addressesIndexText,
   recipientsIndexText,
   senderIndexText,

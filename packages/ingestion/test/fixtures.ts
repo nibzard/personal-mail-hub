@@ -135,3 +135,50 @@ export const DECODED_FOOBAR = new Uint8Array([102, 111, 111, 98, 97, 114]);
 
 /** Base64 of `spam`. */
 export const DECODED_SPAM = new Uint8Array([115, 112, 97, 109]);
+
+/** One NUL character, built so this file carries no literal control byte. */
+const NUL = String.fromCharCode(0);
+
+/**
+ * Header lines of `nulMessage`, shared with the header-import tests: raw NUL
+ * in the subject, Message-ID, and references; Q-encoded NUL (`=00`) in the
+ * display name (docs/sync-repair-plan.md T105).
+ */
+export function nulMessageHeaderLines(): string[] {
+  return [
+    "From: =?utf-8?Q?Name=00X?= <nul@example.com>",
+    "To: Bob <bob@example.com>",
+    `Subject: raw${NUL}nul and =?utf-8?Q?encoded=00nul?=`,
+    "Date: Mon, 07 Sep 2026 14:00:00 +0000",
+    `Message-ID: <msg${NUL}id@example.com>`,
+    `In-Reply-To: <parent${NUL}ref@example.com>`,
+    `References: <root@example.com> <parent${NUL}ref@example.com>`,
+    "MIME-Version: 1.0",
+    "Content-Type: multipart/mixed; boundary=MIX",
+  ];
+}
+
+/**
+ * One message whose derived text carries NUL bytes in every field the
+ * incident could touch: the headers above plus Q-encoded NUL in the body text
+ * and the attachment filename. PostgreSQL rejects `\0` in text, so every
+ * derived value must reach storage as the replacement character instead.
+ */
+export function nulMessage(): Uint8Array {
+  return mime([
+    ...nulMessageHeaderLines(),
+    "",
+    "--MIX",
+    "Content-Type: text/plain; charset=utf-8",
+    "Content-Transfer-Encoding: quoted-printable",
+    "",
+    "body=00nul in the plain part",
+    "--MIX",
+    'Content-Type: application/pdf; name="=?utf-8?Q?file=00name.pdf?="',
+    'Content-Disposition: attachment; filename="=?utf-8?Q?file=00name.pdf?="',
+    "Content-Transfer-Encoding: base64",
+    "",
+    "Zm9vYmFy",
+    "--MIX--",
+  ]);
+}

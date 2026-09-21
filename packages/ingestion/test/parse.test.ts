@@ -7,6 +7,7 @@ import {
   duplicateContentIdMessage,
   mime,
   nestedMessage,
+  nulMessage,
   singlePartPdf,
   standardMessage,
 } from "./fixtures.ts";
@@ -115,5 +116,65 @@ describe("parseMime", () => {
     );
     expect(parsed.sender).toBeNull();
     expect(parsed.recipients).toEqual({ to: [{ address: "good@example.com", name: null }] });
+  });
+
+  it("replaces NUL in every derived value and keeps the decoded bytes", async () => {
+    const parsed = await parseMime(nulMessage());
+
+    // Every value the database stores carries the replacement character
+    // exactly where the NUL stood, and no NUL anywhere (T105).
+    expect(parsed.subject).toBe("raw\uFFFDnul and encoded\uFFFDnul");
+    expect(parsed.messageId).toBe("<msg\uFFFDid@example.com>");
+    expect(parsed.inReplyTo).toBe("<parent\uFFFDref@example.com>");
+    expect(parsed.referenceIds).toEqual(["<root@example.com>", "<parent\uFFFDref@example.com>"]);
+    expect(parsed.sender).toEqual({ address: "nul@example.com", name: "Name\uFFFDX" });
+    expect(parsed.textPlain).toContain("body\uFFFDnul");
+    expect(parsed.attachments).toHaveLength(1);
+    const part = parsed.attachments[0]!;
+    expect(part.filename).toBe("file\uFFFDname.pdf");
+    expect(part.decodedSha256).toBe(sha256Hex(DECODED_FOOBAR));
+    expect(JSON.stringify(parsed)).not.toContain("\\u0000");
+  });
+
+  it("keeps an address with a decoded NUL invalid instead of sanitizing it valid", async () => {
+    // The encoded word decodes after address tokenization, so the NUL
+    // survives inside the address token itself. Validation must reject it —
+    // never strip a byte and turn an invalid address into a valid one — so
+    // the message imports without a sender (T105).
+    const parsed = await parseMime(
+      mime([
+        "From: =?utf-8?Q?a=00b@example.com?=",
+        "To: Bob <bob@example.com>",
+        "Subject: Poisoned address",
+        "Date: Mon, 07 Sep 2026 15:00:00 +0000",
+        "Message-ID: <poisoned-address@example.com>",
+        "",
+        "body",
+      ]),
+    );
+
+    expect(parsed.sender).toBeNull();
+    expect(parsed.recipients).toEqual({ to: [{ address: "bob@example.com", name: "Bob" }] });
+    expect(parsed.subject).toBe("Poisoned address");
+    expect(JSON.stringify(parsed.sender)).not.toContain("\\u0000");
+  });
+
+  it("keeps valid Unicode unchanged while replacing the NUL beside it", async () => {
+    const nul = String.fromCharCode(0);
+    const replacement = String.fromCharCode(0xfffd);
+    const parsed = await parseMime(
+      mime([
+        "From: Grüße <g@example.com>",
+        "Subject: Gemüse" + nul + "tag",
+        "Date: Mon, 07 Sep 2026 15:05:00 +0000",
+        "Message-ID: <unicode@example.com>",
+        "",
+        "Sehr gut.",
+      ]),
+    );
+
+    expect(parsed.subject).toBe("Gemüse" + replacement + "tag");
+    expect(parsed.sender).toEqual({ address: "g@example.com", name: "Grüße" });
+    expect(parsed.textPlain).toBe("Sehr gut.\n");
   });
 });
