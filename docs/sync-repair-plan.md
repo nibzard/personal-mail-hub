@@ -144,6 +144,35 @@ If rollout fails, use Coolify to restore the last working image. Preserve
 storage, database state, credential keys, and recovery generation. Rolling
 back restores service availability; it does not fix the earlier import bug.
 
+## Reducing an incident into a synthetic fixture
+
+The malformed-mail corpus in `packages/harness/src/malformed.ts` turns this
+incident class into a standing regression net. When a new malformed-mail
+defect appears, reduce it into the corpus as follows:
+
+1. Take the smallest byte shape that reproduced the defect. Strip every fact
+   about the sender, the recipient, the provider, and the mailbox.
+2. Replace the remaining real values with `example.net` or `example.com`
+   domains and invented local parts. Never commit raw provider mail. Never
+   copy private log parameters into a fixture.
+3. Keep the bytes deterministic. Use fixed dates, fixed identifiers, and no
+   random values, so hashes and snapshots stay stable.
+4. Write the fixture as a builder that returns fresh header and body
+   strings, and state in its docblock which behavior it pins. Spell NUL as
+   `String.fromCharCode(0)` so no source file carries a control byte.
+5. Add the fixture to the corpus self-test in
+   `packages/harness/test/malformed.test.ts`, so its claimed defect, its
+   determinism, and its privacy shape stay pinned.
+6. Assert the behavior at the real boundaries: `parseHeaderBlock` in
+   `packages/sync/test/headers.test.ts`, `parseMime` in
+   `packages/ingestion/test/parse.test.ts`, and the full window in
+   `packages/sync/test/backfill.test.ts` with `TEST_DATABASE_URL` set.
+7. Prove the fixture has teeth. Revert the fix it guards and watch a test
+   fail. A fixture no failing mutation catches is vacuous.
+
+The corpus may only hold synthetic mail. It must stay free of addresses,
+subjects, and body text that identify a person or a provider.
+
 ## Completion criteria
 
 All four tasks must pass their acceptance checks. Source mail and stored

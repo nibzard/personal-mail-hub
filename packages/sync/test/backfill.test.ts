@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,6 +19,22 @@ import {
   type Storage,
   dropTestDatabase,
 } from "@mail-hub/database";
+import {
+  ATTACHMENT_EDGE_PARTS,
+  attachmentEdgeMetadata,
+  base64NulBody,
+  foldedReferencesParent,
+  foldedReferencesReply,
+  malformedHeaderLines,
+  missingHeader,
+  nestedAddressMetadata,
+  nulAddressNeighbor as nulAddressMail,
+  nulEverywhere,
+  nulParent as corpusNulParent,
+  plainValidNeighbor,
+  validUnicodeNeighbor,
+  type MalformedMail,
+} from "@mail-hub/harness";
 import { IngestionService } from "@mail-hub/ingestion";
 import {
   BackfillService,
@@ -65,88 +81,34 @@ function fixture(uid: number, subject: string, extra: string[] = []): FakeMessag
 }
 
 /**
- * One message whose derived text carries NUL bytes in every field the
- * incident could touch (docs/sync-repair-plan.md T105): raw NUL in the
- * subject, Message-ID, and references; Q-encoded NUL (`=00`) in the display
- * name, body text, and attachment filename. PostgreSQL rejects `\0` in text,
- * so every one of these reaches the database only as the replacement
- * character, while the stored original keeps its raw bytes.
+ * One corpus message loaded into the fake mailbox at a UID. The corpus
+ * (T109) owns the malformed bytes; this helper only assigns the slot. The
+ * incident fixtures it replaces lived here inline until T109 moved them to
+ * `@mail-hub/harness`, so header import, ingestion, and backfill all pin
+ * the same bytes.
  */
+function corpusMessage(uid: number, mail: MalformedMail): FakeMessage {
+  return {
+    uid,
+    headers: mail.headers,
+    body: mail.body,
+    internalDate: new Date(Date.UTC(2026, 8, 7, 10, 0, 0) + uid * 60_000),
+  };
+}
+
+/** The NUL incident message from the corpus (docs/sync-repair-plan.md T105). */
 function nulFixture(uid: number): FakeMessage {
-  return {
-    uid,
-    headers: [
-      "From: =?utf-8?Q?Name=00X?= <nul@example.com>",
-      "To: Bob <bob@example.com>",
-      "Subject: raw\u0000nul and =?utf-8?Q?encoded=00nul?=",
-      "Date: Mon, 07 Sep 2026 10:15:00 +0000",
-      "Message-ID: <msg\u0000id@example.com>",
-      "In-Reply-To: <parent\u0000ref@example.com>",
-      "References: <root@example.com> <parent\u0000ref@example.com>",
-      "MIME-Version: 1.0",
-      "Content-Type: multipart/mixed; boundary=MIX",
-    ].join("\r\n"),
-    body: [
-      "--MIX",
-      "Content-Type: text/plain; charset=utf-8",
-      "Content-Transfer-Encoding: quoted-printable",
-      "",
-      "body=00nul in the plain part",
-      "--MIX",
-      'Content-Type: application/pdf; name="=?utf-8?Q?file=00name.pdf?="',
-      'Content-Disposition: attachment; filename="=?utf-8?Q?file=00name.pdf?="',
-      "Content-Transfer-Encoding: base64",
-      "",
-      "Zm9vYmFy",
-      "--MIX--",
-    ].join("\r\n"),
-    internalDate: new Date(Date.UTC(2026, 8, 7, 10, 0, 0) + uid * 60_000),
-  };
+  return corpusMessage(uid, nulEverywhere());
 }
 
-/**
- * The parent the fixture above replies to: its Message-ID carries the same
- * raw NUL, so both sides of the link sanitize to the same stored identifier
- * and thread linking must still match them.
- */
+/** The parent with the matching raw-NUL Message-ID. */
 function nulParent(uid: number): FakeMessage {
-  return {
-    uid,
-    headers: [
-      "From: Root Writer <root@example.com>",
-      "To: Bob <bob@example.com>",
-      "Subject: Parent with a raw nul",
-      "Date: Mon, 07 Sep 2026 10:14:00 +0000",
-      "Message-ID: <parent\u0000ref@example.com>",
-      "MIME-Version: 1.0",
-      "Content-Type: text/plain; charset=utf-8",
-    ].join("\r\n"),
-    body: "Parent body.",
-    internalDate: new Date(Date.UTC(2026, 8, 7, 10, 0, 0) + uid * 60_000),
-  };
+  return corpusMessage(uid, corpusNulParent());
 }
 
-/**
- * One neighbor whose address tokens carry Q-encoded NUL: the decoded NUL
- * survives address tokenization, so the validator must keep the address
- * invalid — dropped, never sanitized into a valid one — while the message
- * with its clean subject still imports (T105).
- */
+/** The neighbor whose address tokens carry Q-encoded NUL. */
 function nulAddressNeighbor(uid: number): FakeMessage {
-  return {
-    uid,
-    headers: [
-      "From: =?utf-8?Q?a=00b@example.com?=",
-      "To: =?utf-8?Q?c=00d@example.com?=",
-      "Subject: Neighbor with poisoned addresses",
-      "Date: Mon, 07 Sep 2026 10:16:00 +0000",
-      "Message-ID: <neighbor@example.com>",
-      "MIME-Version: 1.0",
-      "Content-Type: text/plain; charset=utf-8",
-    ].join("\r\n"),
-    body: "Neighbor body.",
-    internalDate: new Date(Date.UTC(2026, 8, 7, 10, 0, 0) + uid * 60_000),
-  };
+  return corpusMessage(uid, nulAddressMail());
 }
 
 suite("BackfillService", () => {
@@ -670,6 +632,117 @@ suite("BackfillService", () => {
     // A replayed window imports nothing and duplicates no row.
     await drain(backfill, session, accountId, folder);
     expect(await countMessages(accountId)).toBe(3);
+  });
+
+  it("imports the malformed corpus beside valid neighbors without silent loss", async () => {
+    const { accountId, folderIds } = await setupAccount(["INBOX"]);
+    const folder = folderIds.get("INBOX")!;
+    const session = new FakeMailboxSession();
+    // One window, malformed fixtures interleaved with valid neighbors: the
+    // acceptance case of T109. Every message must appear — imported with
+    // safe derived values — and no neighbor may stall behind a defect.
+    session.load("INBOX", [
+      corpusMessage(1, plainValidNeighbor()),
+      corpusMessage(2, corpusNulParent()),
+      corpusMessage(3, nulEverywhere()),
+      corpusMessage(4, nulAddressMail()),
+      corpusMessage(5, base64NulBody()),
+      corpusMessage(6, missingHeader("subject")),
+      corpusMessage(7, malformedHeaderLines()),
+      corpusMessage(8, foldedReferencesParent()),
+      corpusMessage(9, foldedReferencesReply()),
+      corpusMessage(10, nestedAddressMetadata()),
+      corpusMessage(11, attachmentEdgeMetadata()),
+      corpusMessage(12, validUnicodeNeighbor()),
+    ]);
+
+    const { backfill, bodies, db } = services();
+    await drain(backfill, session, accountId, folder);
+
+    // No silent message loss: the whole window imported, once each.
+    expect(await countMessages(accountId)).toBe(12);
+    expect(await occurrenceTuples(accountId, folder.id)).toHaveLength(12);
+
+    // Nothing that reaches the database carries a NUL: rows, bodies, parts.
+    const rows = await db.select().from(messages).where(eq(messages.accountId, accountId));
+    expect(JSON.stringify(rows)).not.toContain("\\u0000");
+
+    const jobs = await bodies.pendingBodies(accountId, 20);
+    expect(jobs).toHaveLength(12);
+    for (const job of jobs) {
+      expect((await bodies.fetchBody(session, accountId, job)).state).toBe("fetched");
+    }
+    const bodyRows = await db.select().from(bodiesTable);
+    // Ordered by part path so the positional pairing with the known parts
+    // below never depends on the database's scan order.
+    const partRows = await db.select().from(attachments).orderBy(attachments.partPath);
+    expect(JSON.stringify({ bodyRows, partRows })).not.toContain("\\u0000");
+
+    const bySubject = (needle: string) => rows.find((row) => row.subject?.includes(needle))!;
+
+    // The base64-encoded NUL reaches derived body text as the replacement
+    // character, in the snippet and the search derivative alike.
+    const base64 = (await db.select().from(messages).where(eq(messages.messageId, "<base64-nul@example.com>")))[0]!;
+    expect(base64.snippet).toContain("x�y");
+    expect(base64.bodyIndexText).toContain("x�y");
+
+    // A missing subject is absence, not a failure: the message imported and
+    // its body work completed.
+    const noSubject = (await db.select().from(messages).where(eq(messages.messageId, "<present-id@example.com>")))[0]!;
+    expect(noSubject.subject).toBeNull();
+    expect(noSubject.subjectText).toBe("");
+    expect(noSubject.snippet).toContain("Body of the message");
+
+    // Attachment metadata edges: filenames decode (both RFC 2231 shapes),
+    // a nameless part stores none, and hashes cover the decoded bytes.
+    const edges = (await db.select().from(messages).where(eq(messages.messageId, "<attachment-edges@example.com>")))[0]!;
+    const edgeParts = partRows.filter((part) => part.messageId === edges.id);
+    expect(edgeParts.map((part) => part.filename)).toEqual(
+      ATTACHMENT_EDGE_PARTS.map((part) => part.filename),
+    );
+    for (const [index, expected] of ATTACHMENT_EDGE_PARTS.entries()) {
+      const part = edgeParts[index]!;
+      const bytes = new TextEncoder().encode(expected.marker);
+      expect(part.sizeBytes).toBe(bytes.byteLength);
+      expect(part.decodedSha256).toBe(createHash("sha256").update(bytes).digest("hex"));
+    }
+
+    // Valid Unicode survives the whole pipeline byte-for-byte, and the
+    // normalized search derivative keeps every character. Read the row
+    // fresh: the body fetch fills the body derivatives after import.
+    const unicodeId = bySubject("Zusammenfassung").id;
+    const unicode = (await db.select().from(messages).where(eq(messages.id, unicodeId)))[0]!;
+    expect(unicode.subject).toBe("Zusammenfassung — Prüfung");
+    expect(unicode.subjectText).toBe("zusammenfassung — prüfung");
+    expect(unicode.bodyIndexText).toContain("café 日本語 🌊 stays as written");
+
+    // Thread reconciliation links through folded references and through
+    // sanitized NUL identifiers alike.
+    await new ThreadService(db).reconcileAccount(accountId);
+    const folded = (await db.select().from(messages).where(eq(messages.messageId, "<folded-reply@example.com>")))[0]!;
+    const foldedParent = (await db.select().from(messages).where(eq(messages.messageId, "<folded-parent@example.com>")))[0]!;
+    expect(folded.threadLinkState).toBe("linked");
+    expect(folded.parentMessageId).toBe(foldedParent.id);
+    expect(folded.threadId).toBe(foldedParent.threadId);
+
+    // Group members from the nested-address fixture stay visible in the
+    // stored recipients, NUL in the display name replaced.
+    const nested = bySubject("Nested address metadata");
+    expect(nested.recipients).toEqual({
+      to: [
+        { address: "alice@example.com", name: null },
+        { address: "member@example.com", name: "Team�" + "Member" },
+      ],
+      cc: [
+        { address: "ed@example.com", name: "Ed" },
+        { address: "carol@example.com", name: null },
+      ],
+    });
+
+    // A replayed window imports nothing and duplicates no row.
+    await drain(backfill, session, accountId, folder);
+    expect(await countMessages(accountId)).toBe(12);
+    expect(await occurrenceTuples(accountId, folder.id)).toHaveLength(12);
   });
 
   it("rolls back a window that fails mid-transaction, then imports on retry", async () => {

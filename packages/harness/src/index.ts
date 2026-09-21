@@ -54,3 +54,20 @@ export {
   type AttachmentSpec,
   type MessageSpec,
 } from "./fixtures.ts";
+export {
+  ATTACHMENT_EDGE_PARTS,
+  attachmentEdgeMetadata,
+  base64NulBody,
+  foldedReferencesParent,
+  foldedReferencesReply,
+  malformedHeaderLines,
+  malformedMailBytes,
+  missingHeader,
+  nestedAddressMetadata,
+  nulAddressNeighbor,
+  nulEverywhere,
+  nulParent,
+  plainValidNeighbor,
+  validUnicodeNeighbor,
+  type MalformedMail,
+} from "./malformed.ts";

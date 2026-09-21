@@ -60,17 +60,24 @@ export function toEmailAddress(entry: { address?: string | null; name?: string |
 }
 
 /**
- * Valid addresses from one parsed header, in order. A header that yields no
- * valid address was absent, invalid, or empty; callers tell those apart from
- * the raw header.
+ * Valid addresses from one parsed header, in order. RFC 2822 group members
+ * flatten in place: the parser hands a group back as one node whose members
+ * sit under `group`, and dropping that node would drop real recipients
+ * silently. A header that yields no valid address was absent, invalid, or
+ * empty; callers tell those apart from the raw header.
  */
 export function toEmailAddresses(header: AddressHeader): EmailAddress[] {
   const headers = Array.isArray(header) ? header : [header];
   const addresses: EmailAddress[] = [];
   for (const entry of headers.flatMap((object) => object?.value ?? [])) {
-    const address = toEmailAddress(entry);
-    if (address !== null) {
-      addresses.push(address);
+    // A group node holds its members under `group` and has no address of
+    // its own; an empty group (`undisclosed-recipients:;`) holds none.
+    const candidates = Array.isArray(entry.group) ? entry.group : [entry];
+    for (const candidate of candidates) {
+      const address = toEmailAddress(candidate);
+      if (address !== null) {
+        addresses.push(address);
+      }
     }
   }
   return addresses;
