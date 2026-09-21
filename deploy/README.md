@@ -293,10 +293,9 @@ The workflow holds no secrets. Pull requests never see deployment
 credentials. The webhook secret stays in the GitHub webhook and Coolify
 resource settings, and deployment runs only on `main` pushes.
 
-Measured durations, 2026-09-21: the full local gate runs 258 seconds;
-one focused admin suite runs 6 seconds; one focused gate suite runs
-6 seconds. The first runner measurement lands with the first pull request
-that carries this workflow.
+Measured durations, 2026-09-21: the full local gate runs 258 seconds and
+the runner gate runs 301 seconds, 355 with setup (pull request #1); one
+focused admin suite runs 6 seconds; one focused gate suite runs 6 seconds.
 
 ## Environment reference
 
