@@ -545,9 +545,13 @@ test.describe("settings", () => {
       await expect(dialog.getByRole("heading", { name, exact: true })).toBeVisible();
     }
 
-    // The per-account status and the queue counters come from one read.
+    // The per-account status and the queue counters come from one read. The
+    // states are distinct: normal body sync never reads as a failure, and a
+    // contained folder failure shows beside the account's backfill progress.
+    await expect(dialog.getByText("Sync in progress")).toBeVisible();
     await expect(dialog.getByText("Last cycle 2 min ago")).toBeVisible();
     await expect(dialog.getByText(/3 bodies pending/u)).toBeVisible();
+    await expect(dialog.getByText("Sync failed for 1 folders (system_etimedout)")).toBeVisible();
     await expect(dialog.getByText("2 folders still backfilling")).toBeVisible();
     await expect(dialog.getByText("2 jobs waiting")).toBeVisible();
     await expect(dialog.getByText(/1 queued/u)).toBeVisible();

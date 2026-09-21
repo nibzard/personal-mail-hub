@@ -21,12 +21,35 @@ export interface HealthRoutesOptions {
 
 const SYNC_SCHEMA = {
   type: "object",
-  required: ["lastCycleAt", "cycleAgeSeconds", "backfillPendingFolders", "pendingBodies"],
+  required: [
+    "lastCycleAt",
+    "cycleAgeSeconds",
+    "backfillPendingFolders",
+    "pendingBodies",
+    "state",
+    "folderErrors",
+    "bodyErrors",
+    "threadErrors",
+    "folderFailureKinds",
+    "bodyFailureKinds",
+    "threadFailureKinds",
+    "pendingThreads",
+  ],
   properties: {
     lastCycleAt: { type: ["string", "null"] },
     cycleAgeSeconds: { type: ["integer", "null"], minimum: 0 },
     backfillPendingFolders: { type: ["integer", "null"], minimum: 0 },
     pendingBodies: { type: "integer", minimum: 0 },
+    state: { enum: ["ok", "syncing", "degraded", "stale", "unknown"] },
+    folderErrors: { type: ["integer", "null"], minimum: 0 },
+    bodyErrors: { type: ["integer", "null"], minimum: 0 },
+    threadErrors: { type: ["integer", "null"], minimum: 0 },
+    // Approved failure codes only: no folder names, no mail text, no error
+    // detail reaches this public response.
+    folderFailureKinds: { type: ["array", "null"], items: { type: "string" } },
+    bodyFailureKinds: { type: ["array", "null"], items: { type: "string" } },
+    threadFailureKinds: { type: ["array", "null"], items: { type: "string" } },
+    pendingThreads: { type: ["integer", "null"], minimum: 0 },
   },
 } as const;
 

@@ -6,6 +6,7 @@ import type {
   FolderSummary,
   FolderRole,
   HealthzAccount,
+  HealthzSyncLag,
 } from "@mail-hub/contracts";
 import { apiDelete, apiPatch, apiPut, toApiError, type ApiError } from "@/lib/api";
 import { formatAge, formatCount } from "@/lib/format";
@@ -398,8 +399,9 @@ function AccountSyncLines({ sync }: { sync: HealthzAccount | null }) {
     );
   }
   const parts = [
+    syncStateLine(sync.sync),
     sync.sync.lastCycleAt === null
-      ? "No sync cycle yet"
+      ? null
       : `Last cycle ${formatAge(sync.sync.cycleAgeSeconds)} ago`,
     `${formatCount(sync.sync.pendingBodies)} bodies pending`,
     sync.sync.backfillPendingFolders === null
@@ -407,7 +409,7 @@ function AccountSyncLines({ sync }: { sync: HealthzAccount | null }) {
       : sync.sync.backfillPendingFolders === 0
         ? "Backfill complete"
         : `${formatCount(sync.sync.backfillPendingFolders)} folders still backfilling`,
-  ];
+  ].filter((part) => part !== null);
   return (
     <p className="mt-1.5 text-muted-foreground">
       {parts.join(" · ")}
@@ -416,4 +418,38 @@ function AccountSyncLines({ sync }: { sync: HealthzAccount | null }) {
       {formatCount(sync.metrics.bodiesFetched)} bodies fetched
     </p>
   );
+}
+
+/**
+ * One line for the derived sync state. Pending work is normal progress; a
+ * degraded cycle names what failed and the approved failure codes, never
+ * folder names or mail text.
+ */
+function syncStateLine(sync: HealthzSyncLag): string {
+  switch (sync.state) {
+    case "degraded": {
+      const failed = [
+        sync.folderErrors ? `${formatCount(sync.folderErrors)} folders` : null,
+        sync.bodyErrors ? `${formatCount(sync.bodyErrors)} bodies` : null,
+        sync.threadErrors ? `${formatCount(sync.threadErrors)} threads` : null,
+      ].filter((part) => part !== null);
+      const kinds = [
+        ...(sync.folderFailureKinds ?? []),
+        ...(sync.bodyFailureKinds ?? []),
+        ...(sync.threadFailureKinds ?? []),
+      ];
+      const kindsText = kinds.length > 0 ? ` (${kinds.join(", ")})` : "";
+      return failed.length > 0
+        ? `Sync failed for ${failed.join(", ")}${kindsText}`
+        : `Sync reported failures${kindsText}`;
+    }
+    case "stale":
+      return "No sync cycle recently";
+    case "syncing":
+      return "Sync in progress";
+    case "ok":
+      return "Sync up to date";
+    default:
+      return sync.lastCycleAt === null ? "No sync cycle yet" : "Sync state unknown";
+  }
 }

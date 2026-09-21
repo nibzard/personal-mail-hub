@@ -80,7 +80,16 @@ export interface HealthzSends {
   outcomeUnknown: number;
 }
 
-/** Synchronization lag of one account. */
+/**
+ * The synchronization state of one account, derived from its newest cycle
+ * record. `syncing` is normal progress, never a failure. `degraded` means the
+ * newest cycle recorded contained failures, however recent it is. `stale`
+ * means the newest record is old. `unknown` means no record exists, or the
+ * record predates the failure counters, which proves nothing about health.
+ */
+export type HealthzSyncState = "ok" | "syncing" | "degraded" | "stale" | "unknown";
+
+/** Synchronization lag and cycle state of one account. */
 export interface HealthzSyncLag {
   /** When the account's newest sync cycle ended, or `null` when none ran. */
   lastCycleAt: string | null;
@@ -90,6 +99,28 @@ export interface HealthzSyncLag {
   backfillPendingFolders: number | null;
   /** Messages whose body has not been fetched yet. */
   pendingBodies: number;
+  /** The derived state of the newest cycle record. */
+  state: HealthzSyncState;
+  /**
+   * Contained folder failures the newest cycle recorded, or `null` when the
+   * record predates the counters and the count is unknown.
+   */
+  folderErrors: number | null;
+  /** Contained body-fetch failures, or `null` when unknown. */
+  bodyErrors: number | null;
+  /** Contained thread-reconciliation failures, or `null` when unknown. */
+  threadErrors: number | null;
+  /**
+   * The approved failure codes of the contained folder failures, or `null`
+   * when unknown. Codes only: never folder names or error text.
+   */
+  folderFailureKinds: string[] | null;
+  /** The approved failure codes of the body-fetch failures, or `null`. */
+  bodyFailureKinds: string[] | null;
+  /** The approved failure codes of the thread failures, or `null`. */
+  threadFailureKinds: string[] | null;
+  /** Messages still waiting for thread reconciliation, or `null` when unknown. */
+  pendingThreads: number | null;
 }
 
 /** The per-account metrics `GET /healthz` tracks (SPEC section 11). */

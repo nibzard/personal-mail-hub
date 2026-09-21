@@ -50,6 +50,42 @@ const DEGRADED_REPORT: HealthzResponse = {
   },
 };
 
+/**
+ * One account whose newest cycle contained failures. The response schema
+ * serializes field by field, so this report also proves the cycle state and
+ * its codes fit the public shape an unauthenticated caller receives.
+ */
+const CYCLE_FAILURE_REPORT: HealthzResponse = {
+  ...READY_REPORT,
+  status: "degraded",
+  accounts: [
+    {
+      accountId: "9d0a6d15-2a6e-4bb5-9f5e-0f0a9a1b2c3d",
+      sync: {
+        lastCycleAt: "2026-09-19T11:59:30.000Z",
+        cycleAgeSeconds: 30,
+        backfillPendingFolders: 2,
+        pendingBodies: 0,
+        state: "degraded",
+        folderErrors: 1,
+        bodyErrors: 2,
+        threadErrors: 0,
+        folderFailureKinds: ["system_etimedout"],
+        bodyFailureKinds: ["database_22021"],
+        threadFailureKinds: [],
+        pendingThreads: 0,
+      },
+      metrics: {
+        messagesSynced: 10,
+        bodiesFetched: 8,
+        lastFullReconciliationAt: null,
+        jevCalls: 0,
+        jevErrors: 0,
+      },
+    },
+  ],
+};
+
 const UNAVAILABLE: HealthReport = {
   available: false,
   database: { state: "unavailable", roundTripMs: null },
@@ -78,6 +114,26 @@ describe("health routes", () => {
     const response = await app.inject({ method: "GET", url: "/healthz" });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual(DEGRADED_REPORT);
+    await app.close();
+  });
+
+  it("carries the cycle state and failure codes of an account with 200", async () => {
+    const app = buildApp();
+    await registerHealthRoutes(app, {
+      service: fakeService({ available: true, report: CYCLE_FAILURE_REPORT }),
+    });
+
+    const response = await app.inject({ method: "GET", url: "/healthz" });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as HealthzResponse;
+    expect(body.status).toBe("degraded");
+    expect(body.accounts[0]!.sync).toMatchObject({
+      state: "degraded",
+      folderErrors: 1,
+      bodyErrors: 2,
+      folderFailureKinds: ["system_etimedout"],
+      bodyFailureKinds: ["database_22021"],
+    });
     await app.close();
   });
 

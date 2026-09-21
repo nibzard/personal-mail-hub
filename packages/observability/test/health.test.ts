@@ -17,7 +17,7 @@ import {
   type MailHubDatabase,
 } from "@mail-hub/database";
 import { RecoveryControls } from "@mail-hub/recovery";
-import { HealthService, type HealthReport } from "../src/index.ts";
+import { HealthService, SYNC_STALE_AFTER_SECONDS, type HealthReport } from "../src/index.ts";
 
 /**
  * Health reporting against a real PostgreSQL (SPEC sections 10 and 11). Set
@@ -30,6 +30,10 @@ const suite = testDatabaseUrl === undefined ? describe.skip : describe;
 
 const GENERATION = "33333333-3333-4333-8333-333333333333";
 const ACCOUNT_ID = "9d0a6d15-2a6e-4bb5-9f5e-0f0a9a1b2c3d";
+const FAILING_ACCOUNT_ID = "0e1b7c26-3d5f-4a68-9b0c-1d2e3f4a5b6c";
+const STALE_ACCOUNT_ID = "1f2c8d37-4e6a-4b79-8c1d-2e3f4a5b6c7d";
+const OLD_RECORD_ACCOUNT_ID = "2a3d9e48-5f7b-4c8a-9d2e-3f4a5b6c7d8e";
+const QUIET_ACCOUNT_ID = "3b4eaf59-6a8c-4d9b-8e3f-4a5b6c7d8e9f";
 const OLD_ACTION_AT = new Date(Date.now() - 90_000);
 
 suite("health service", () => {
@@ -123,6 +127,17 @@ suite("health service", () => {
     expect(account.sync.cycleAgeSeconds).toBeGreaterThanOrEqual(0);
     expect(account.sync.backfillPendingFolders).toBe(2);
     expect(account.sync.pendingBodies).toBe(1);
+    // Pending backfill and bodies are normal progress, never a failure, so
+    // the account reads as syncing and the report stays ok.
+    expect(account.sync.state).toBe("syncing");
+    expect(account.sync.folderErrors).toBe(0);
+    expect(account.sync.bodyErrors).toBe(0);
+    expect(account.sync.threadErrors).toBe(0);
+    expect(account.sync.folderFailureKinds).toEqual([]);
+    expect(account.sync.bodyFailureKinds).toEqual([]);
+    expect(account.sync.threadFailureKinds).toEqual([]);
+    expect(account.sync.pendingThreads).toBe(0);
+    expect(report.status).toBe("ok");
     expect(account.metrics).toEqual({
       messagesSynced: 3,
       bodiesFetched: 2,
@@ -137,6 +152,106 @@ suite("health service", () => {
     // The queued action is older than the queued send, so it holds the age.
     expect(report.queue.oldestPendingWorkAt).toBe(OLD_ACTION_AT.toISOString());
     expect(report.queue.oldestPendingWorkAgeSeconds).toBeGreaterThanOrEqual(90);
+  });
+
+  it("degrades a cycle that contained failures beside a healthy account, then clears after a clean cycle", async () => {
+    // The failing cycle is recent and its account has no pending work: only
+    // the contained failures distinguish it from the healthy account above.
+    await insertAccount(db, FAILING_ACCOUNT_ID, "Failing");
+    await insertCycle(db, FAILING_ACCOUNT_ID, new Date(Date.now() - 10_000), {
+      ...cleanCyclePayload(),
+      folderErrors: 2,
+      bodyErrors: 1,
+      folderFailureKinds: ["database_22021", "system_etimedout"],
+      // More codes than one record may expose, to pin the read bound.
+      bodyFailureKinds: Array.from({ length: 10 }, (_, index) => `kind_${index}`),
+    });
+
+    const failing = await service.readHealth();
+    expect(failing.available).toBe(true);
+    if (!failing.available) {
+      return;
+    }
+    const account = failing.report.accounts.find((entry) => entry.accountId === FAILING_ACCOUNT_ID)!;
+    expect(account.sync.state).toBe("degraded");
+    expect(account.sync.folderErrors).toBe(2);
+    expect(account.sync.bodyErrors).toBe(1);
+    expect(account.sync.threadErrors).toBe(0);
+    expect(account.sync.folderFailureKinds).toEqual(["database_22021", "system_etimedout"]);
+    expect(account.sync.bodyFailureKinds).toHaveLength(8);
+    expect(account.sync.cycleAgeSeconds).toBeLessThan(60);
+    expect(failing.report.status).toBe("degraded");
+    // The failures stay contained: the healthy sibling account in the same
+    // read keeps its own state, so one failing account cannot mark all of
+    // them degraded.
+    const sibling = failing.report.accounts.find((entry) => entry.accountId === ACCOUNT_ID)!;
+    expect(sibling.sync.state).toBe("syncing");
+
+    // A later clean cycle clears the account and the report with it.
+    await insertCycle(db, FAILING_ACCOUNT_ID, new Date(Date.now() - 5_000), cleanCyclePayload());
+    const recovered = await service.readHealth();
+    expect(recovered.available).toBe(true);
+    if (!recovered.available) {
+      return;
+    }
+    const cleared = recovered.report.accounts.find(
+      (entry) => entry.accountId === FAILING_ACCOUNT_ID,
+    )!;
+    expect(cleared.sync.state).toBe("ok");
+    expect(cleared.sync.folderErrors).toBe(0);
+    expect(recovered.report.status).toBe("ok");
+  });
+
+  it("reads a clean cycle older than the staleness bound as stale, not failed", async () => {
+    await insertAccount(db, STALE_ACCOUNT_ID, "Stale");
+    await insertCycle(
+      db,
+      STALE_ACCOUNT_ID,
+      new Date(Date.now() - (SYNC_STALE_AFTER_SECONDS + 60) * 1000),
+      cleanCyclePayload(),
+    );
+
+    const health = await service.readHealth();
+    expect(health.available).toBe(true);
+    if (!health.available) {
+      return;
+    }
+    const stale = health.report.accounts.find((entry) => entry.accountId === STALE_ACCOUNT_ID)!;
+    expect(stale.sync.state).toBe("stale");
+    expect(stale.sync.cycleAgeSeconds).toBeGreaterThan(SYNC_STALE_AFTER_SECONDS);
+    expect(stale.sync.folderErrors).toBe(0);
+    // Staleness is visible per account; it does not fail the whole report.
+    expect(health.report.status).toBe("ok");
+  });
+
+  it("reads records that predate the failure counters as unknown, not healthy", async () => {
+    // The shape the worker wrote before it recorded failure counters.
+    await insertAccount(db, OLD_RECORD_ACCOUNT_ID, "Old record");
+    await insertCycle(db, OLD_RECORD_ACCOUNT_ID, new Date(Date.now() - 30_000), {
+      backfillPendingFolders: 0,
+      pendingBodies: 0,
+    });
+    // An enrolled account that never finished a cycle.
+    await insertAccount(db, QUIET_ACCOUNT_ID, "Quiet");
+
+    const health = await service.readHealth();
+    expect(health.available).toBe(true);
+    if (!health.available) {
+      return;
+    }
+    const byId = new Map(health.report.accounts.map((entry) => [entry.accountId, entry]));
+    const oldRecord = byId.get(OLD_RECORD_ACCOUNT_ID)!;
+    expect(oldRecord.sync.state).toBe("unknown");
+    expect(oldRecord.sync.folderErrors).toBeNull();
+    expect(oldRecord.sync.bodyErrors).toBeNull();
+    expect(oldRecord.sync.threadErrors).toBeNull();
+    expect(oldRecord.sync.folderFailureKinds).toBeNull();
+    expect(oldRecord.sync.pendingThreads).toBeNull();
+    const quiet = byId.get(QUIET_ACCOUNT_ID)!;
+    expect(quiet.sync.state).toBe("unknown");
+    expect(quiet.sync.lastCycleAt).toBeNull();
+    // Unknown proves nothing, so it never fails the report either.
+    expect(health.report.status).toBe("ok");
   });
 
   it("merges the circuit state the injected classification reader reports", async () => {
@@ -254,6 +369,49 @@ interface Fixtures {
   inventoryAt: Date;
 }
 
+/** One clean cycle payload, the shape the runner records (T104). */
+function cleanCyclePayload(): Record<string, unknown> {
+  return {
+    folderErrors: 0,
+    bodyErrors: 0,
+    threadErrors: 0,
+    folderFailureKinds: [],
+    bodyFailureKinds: [],
+    threadFailureKinds: [],
+    backfillPendingFolders: 0,
+    pendingBodies: 0,
+    pendingThreads: 0,
+  };
+}
+
+/** One enrolled account, distinct from the fixture account. */
+async function insertAccount(db: MailHubDatabase, id: string, label: string): Promise<void> {
+  await db.insert(accounts).values({
+    id,
+    label,
+    color: "#111111",
+    username: `owner-${id.slice(0, 8)}@example.test`,
+    passwordEnc: "ciphertext",
+  });
+}
+
+/** One account cycle record at a controlled time. */
+async function insertCycle(
+  db: MailHubDatabase,
+  accountId: string,
+  at: Date,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  await db.insert(events).values({
+    actor: "system",
+    type: "sync.status",
+    entityType: "account",
+    entityId: accountId,
+    at,
+    payload: { accountId, ...payload },
+  });
+}
+
 /**
  * One account with three messages (two bodies fetched), a newest and an
  * older sync cycle, two inventories, one Jev decision, one Jev failure, an
@@ -313,7 +471,12 @@ async function insertFixtures(db: MailHubDatabase): Promise<Fixtures> {
       entityType: "account",
       entityId: ACCOUNT_ID,
       at: cycleAt,
-      payload: { accountId: ACCOUNT_ID, backfillPendingFolders: 2, pendingBodies: 1 },
+      payload: {
+        accountId: ACCOUNT_ID,
+        ...cleanCyclePayload(),
+        backfillPendingFolders: 2,
+        pendingBodies: 1,
+      },
     },
     {
       actor: "system",
