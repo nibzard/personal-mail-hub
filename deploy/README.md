@@ -334,10 +334,12 @@ deployment webhook. Branch protection enforces the path.
    check, so an outdated green check cannot authorize a different tree.
 3. Merge only a green and current pull request. The merge push triggers
    the deployment webhook; nothing else deploys.
-4. Check the webhook delivery for the merge push under the repository's
-   **Settings → Webhooks**, then verify the deployment and its revision
-   with `npm run deploy:verify` (it reads containers, the health endpoint,
-   and the database — not the delivery).
+4. Check the webhook delivery for the merge push with `npm run
+   webhook:audit` (see [The webhook deployment
+   path](#the-webhook-deployment-path); the delivery log also sits under
+   the repository's **Settings → Webhooks**), then verify the deployment
+   and its revision with `npm run deploy:verify` (it reads containers,
+   the health endpoint, and the database — not the delivery).
 
 Branch protection on `main` requires a pull request, requires the
 `release-gate` check, requires branches to be up to date before merging,
@@ -356,6 +358,93 @@ resource settings, and deployment runs only on `main` pushes.
 Measured durations, 2026-09-21: the full local gate runs 258 seconds and
 the runner gate runs 301 seconds, 355 with setup (pull request #1); one
 focused admin suite runs 6 seconds; one focused gate suite runs 6 seconds.
+
+## The webhook deployment path
+
+The merge of a green pull request fires the only deployment trigger: a
+signed `push` webhook from GitHub to the Coolify resource. Audit the whole
+path with one read-only command:
+
+```sh
+npm run webhook:audit
+```
+
+The command checks the GitHub side live and reports one line per fact:
+the hook (one active hook, `push` event, https destination, TLS
+verification on), recent deliveries (acceptance and the ref of the latest
+push), and the destination host. It masks the hook URL path — the path is
+a capability — and never prints the secret or any token value. Add
+`-- --json` for machine-readable output.
+
+Two facts the audit states instead of guessing:
+
+- A 2xx delivery response records that the destination accepted the
+  request. It does not record a deployment. Only the Coolify side — its
+  API or `npm run deploy:verify` against the running stack — closes that
+  gap, so the audit prints a `coolify` line: `ok` when configured, or
+  `not_configured` naming `DEPLOY_COOLIFY_URL` and `COOLIFY_TOKEN` from
+  `deploy/access.env`.
+- GitHub never returns the webhook secret. The `secret` line reports
+  `unknown` and names the two ways to prove it: a signed redelivery during
+  an authorized window, or inspection of the Coolify resource.
+
+### Test modes
+
+Both modes are opt-in on the command line. The audit is read-only without
+them.
+
+- `npm run webhook:audit -- --send-test` asks GitHub to send a ping. A
+  ping proves the destination answers with the shared secret. It never
+  starts a deployment.
+- `npm run webhook:audit -- --redeliver <delivery-id>` asks GitHub to
+  replay one recorded delivery. When its ref is `main`, the replay starts
+  a real deployment. The command refuses without `--allow-deployment`;
+  identify the commit first (the delivery log under the repository's
+  **Settings → Webhooks** shows the ref and the request payload) and
+  confirm the deployment window before you allow it.
+
+### Secret ownership and rotation
+
+The secret exists in exactly two places: the repository webhook settings
+on GitHub and the Coolify resource configuration. It never lives in this
+repository, in `deploy/.env`, or in `deploy/access.env`. Rotate it only
+for a reason, for example a suspected exposure:
+
+1. Generate a new secret: `openssl rand -hex 24`.
+2. Set it in the Coolify resource configuration first, then in the
+   repository webhook settings on GitHub.
+3. Prove the pair with `--send-test`, then watch the next delivery.
+4. The old secret stops working the moment GitHub saves the new one; no
+   revocation step exists on the Coolify side beyond the saved value.
+
+### Where the records live
+
+- GitHub: the repository's **Settings → Webhooks** page. Each delivery
+  shows its event, status code, response, and payload, and offers a
+  redelivery button. The audit's delivery facts come from this API.
+- Coolify: the resource's deployment list, which names the commit each
+  deployment built and its outcome. Correlate it with `npm run
+  deploy:verify`, which reads the running stack itself.
+
+### Isolated coverage
+
+`apps/admin/test/webhook-audit.test.ts` pins the audit's contracts
+without touching the network: signature verification over raw request
+bytes (including the re-serialized-JSON failure), branch selection,
+duplicate delivery handling, the redelivery guard, and the
+classifiers that keep acceptance and deployment distinct. The receiver
+harness runs on an ephemeral loopback port inside the test process.
+
+### Current state, 2026-09-21
+
+The GitHub side is verified live: one active `push` hook with a https
+destination, every recent delivery accepted, the latest push delivery
+carrying its ref and commit. The Coolify side is not configured on this
+workstation (`deploy/access.env` is absent and the deploy host is
+unreachable), so acceptance-to-deployment correlation is unproven. The
+audit reports this state itself: its `coolify` line reads
+`not_configured` and its verdict says acceptance is proven, not
+deployment.
 
 ## Environment reference
 
@@ -592,6 +681,10 @@ was.
 
 - `npm run deploy:access` passes from the operator workstation (see
   [Operator access](#operator-access)).
+- `npm run webhook:audit` reports the hook, deliveries, and destination
+  healthy, and its `coolify` line reads `ok` once the Coolify keys are
+  configured (see [The webhook deployment
+  path](#the-webhook-deployment-path)).
 - `npm run deploy:verify` reports `VERIFIED` (see
   [Verify a deployment](#verify-a-deployment)); with accounts enrolled,
   run it with `--sample-interval` so stalled sync cannot hide behind
