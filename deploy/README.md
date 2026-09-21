@@ -225,6 +225,8 @@ keys.
    `BASE_URL`. For a local trial without TLS, set
    `BASE_URL=http://localhost:8080` and `PREFLIGHT_ALLOW_HTTP=1`.
 3. Start the stack: `docker compose -f deploy/docker-compose.yml up -d --build`.
+   When a build fails to resolve names, add the build-networking override
+   from [Build networking](#build-networking) to the same command.
 4. Wait for the API to report health:
    `curl http://localhost:8080/api/healthz`.
 5. Follow [First installation](#first-installation).
@@ -259,6 +261,64 @@ To manage the pieces as separate Coolify resources instead:
    `APP_ROLE` is `all` or `api`.
 6. Add a scheduled task on the app resource that runs `npm run backup`
    nightly (see [Backups](#backups)).
+
+## Build networking
+
+A build fails on some hosts while `RUN` steps resolve names: the container
+asks the resolver it was given and every query times out. The diagnosis
+below is from the developer workstation, 2026-09-21, Docker 29.1.3.
+
+### Root cause on the developer workstation
+
+Docker writes each container's resolver from the host's
+`/run/systemd/resolve/resolv.conf`, skipping the `127.0.0.53` stub. That
+file names exactly one uplink, `10.77.0.1`, and the host reaches it only
+through the Tailscale interface with policy routing
+(`ip route get 10.77.0.1` shows `dev tailscale0 table 52`). Container
+traffic leaves through the default bridge and never matches that route,
+so the resolver is unreachable from inside any bridge container:
+
+```sh
+docker run --rm alpine:3.20 getent hosts registry.npmjs.org   # exit 2
+docker run --rm --dns 10.77.0.1 alpine:3.20 nslookup registry.npmjs.org  # timeout
+docker run --rm --dns 8.8.8.8 alpine:3.20 getent hosts registry.npmjs.org  # resolves
+```
+
+Host networking works because the container shares the host namespace and
+the policy routing. Plain internet resolvers work from the bridge. A
+`docker build` with the default network fails at the first `RUN` that
+resolves a name; a BuildKit daemon configured with `[dns] nameservers`
+does not help, because the builder container itself cannot resolve the
+base image.
+
+### Verified workarounds
+
+- Plain builds: `docker build --network=host --target app -t mail-hub-app .`
+- Compose builds: merge the opt-in override
+  `deploy/docker-compose.host-build.yml`, which sets `build.network: host`
+  for the `api`, `worker`, and `web` services:
+
+  ```sh
+  docker compose -f deploy/docker-compose.yml \
+    -f deploy/docker-compose.host-build.yml build
+  ```
+
+Limits: the flag changes only `RUN` steps during the build. Those steps
+then see the host's network, so a Dockerfile step that binds a port would
+collide with host services. Neither this repository's Dockerfile nor its
+dependencies bind ports while building. The override stays out of the
+default files: hosts with working container DNS keep hermetic bridge
+builds.
+
+The host-side fix is to give systemd-resolved an uplink that bridge
+traffic can reach — then the generated container resolver works and no
+override is needed. That changes host configuration for every container
+on the machine, so it is the host administrator's call.
+
+The Coolify builder is a separate Docker host; run the three probe
+commands above there before its first build. Its result was not
+verifiable from the workstation on 2026-09-21 because the deploy host
+was unreachable.
 
 ## Gate main before deployment
 

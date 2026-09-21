@@ -2963,7 +2963,7 @@
       "id": "T113",
       "title": "Diagnose and document Docker build networking",
       "priority": 3,
-      "status": "todo",
+      "status": "done",
       "details": "Plan: docs/development-deployment-plan.md#t113-diagnose-and-document-docker-build-networking\n\nA local build failed DNS resolution on the default Docker network. Host networking succeeded locally; the cause and portability remain unverified.\n\nAcceptance: The root cause is documented with evidence, or explicitly remains unresolved with a verified workaround. Supported builds resolve dependencies without manual trial and error.",
       "steps": [
         "Compare host and build-container DNS, registry access, proxy configuration, and BuildKit networking using commands that expose no credentials.",
@@ -2978,15 +2978,16 @@
       ],
       "files": [
         "docs/development-deployment-plan.md",
-        "Dockerfile",
+        "deploy/docker-compose.host-build.yml",
         "deploy/README.md",
-        "deploy/docker-compose.coolify.yml"
+        "to-do.json"
       ],
       "depends_on": [
         "T110"
       ],
       "created_at": "2026-09-20T21:51:56Z",
-      "updated_at": "2026-09-20T21:51:56Z"
+      "updated_at": "2026-09-21T14:20:00Z",
+      "notes": "Diagnosed on the developer workstation (Docker 29.1.3) with a three-command probe: default-bridge containers receive nameserver 10.77.0.1 from /run/systemd/resolve/resolv.conf (Docker skips the 127.0.0.53 stub), and that uplink routes through the Tailscale interface with policy routing (ip route get 10.77.0.1 shows dev tailscale0 table 52), so bridge-NAT traffic cannot reach it; queries time out while plain internet resolvers answer from the bridge, and host networking works because it shares the host namespace. A default-network docker build fails at the first resolving RUN (apk add, exit 1 after 10s of timeouts); a BuildKit builder configured with [dns] nameservers does not help because the builder container itself cannot resolve the base image. Verified workarounds: docker build --network=host, and an opt-in compose override deploy/docker-compose.host-build.yml that sets build.network: host for api, worker, and web (merged with -f; the default files keep hermetic bridge builds). Both targets rebuilt --no-cache under host networking in 21s total (the failing apk step completed in 1s; zero DNS errors; images written). The host-side alternative — give systemd-resolved a bridge-reachable uplink — is the administrator's call and documented. The Coolify builder is a separate host; the README names the probe commands to run there, unverifiable from the workstation on 2026-09-21 because the deploy host was unreachable."
     },
     {
       "id": "T114",
