@@ -59,6 +59,14 @@ const SYNC_REPORT: SyncStatusResponse = {
         cycleAgeSeconds: 120,
         backfillPendingFolders: 1,
         pendingBodies: 3,
+        state: "syncing",
+        folderErrors: 0,
+        bodyErrors: 0,
+        threadErrors: 0,
+        folderFailureKinds: [],
+        bodyFailureKinds: [],
+        threadFailureKinds: [],
+        pendingThreads: 2,
       },
       metrics: {
         messagesSynced: 100,
@@ -285,6 +293,10 @@ describe("the settings routes", () => {
     const body = response.json() as SyncStatusResponse;
     expect(body).toEqual(SYNC_REPORT);
     expect(body.accounts[0]!.sync.pendingBodies).toBe(3);
+    // The derived cycle state and its failure counters reach the settings
+    // screen; a session gates them, unlike the public health check.
+    expect(body.accounts[0]!.sync.state).toBe("syncing");
+    expect(body.accounts[0]!.sync.pendingThreads).toBe(2);
   });
 
   it("answers 503 when the database round trip behind the sync status fails", async () => {

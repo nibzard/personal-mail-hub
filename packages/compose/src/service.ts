@@ -420,13 +420,13 @@ export class ComposeService {
     } catch (cause) {
       if (cause instanceof StorageError && cause.code === "insufficient_space") {
         // The pause is a system state, not a client fault (SPEC section 10):
-        // record it, then let the route answer 507 with the same detail.
+        // record it by code, then let the route answer 507 with its detail.
         await this.db
           .insert(events)
           .values({
             actor: "system",
             type: "storage.paused",
-            payload: { kind: "upload", detail: cause.message },
+            payload: { kind: "upload", code: cause.code },
           })
           .catch(() => undefined);
       }

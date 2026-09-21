@@ -1,5 +1,14 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import {
+  ATTACHMENT_EDGE_PARTS,
+  attachmentEdgeMetadata,
+  base64NulBody,
+  foldedReferencesReply,
+  malformedMailBytes,
+  nestedAddressMetadata,
+  validUnicodeNeighbor,
+} from "@mail-hub/harness";
 import { parseMime } from "../src/parse.ts";
 import {
   DECODED_FOOBAR,
@@ -7,6 +16,7 @@ import {
   duplicateContentIdMessage,
   mime,
   nestedMessage,
+  nulMessage,
   singlePartPdf,
   standardMessage,
 } from "./fixtures.ts";
@@ -115,5 +125,148 @@ describe("parseMime", () => {
     );
     expect(parsed.sender).toBeNull();
     expect(parsed.recipients).toEqual({ to: [{ address: "good@example.com", name: null }] });
+  });
+
+  it("replaces NUL in every derived value and keeps the decoded bytes", async () => {
+    const parsed = await parseMime(nulMessage());
+
+    // Every value the database stores carries the replacement character
+    // exactly where the NUL stood, and no NUL anywhere (T105).
+    expect(parsed.subject).toBe("raw\uFFFDnul and encoded\uFFFDnul");
+    expect(parsed.messageId).toBe("<msg\uFFFDid@example.com>");
+    expect(parsed.inReplyTo).toBe("<parent\uFFFDref@example.com>");
+    expect(parsed.referenceIds).toEqual(["<root@example.com>", "<parent\uFFFDref@example.com>"]);
+    expect(parsed.sender).toEqual({ address: "nul@example.com", name: "Name\uFFFDX" });
+    expect(parsed.textPlain).toContain("body\uFFFDnul");
+    expect(parsed.attachments).toHaveLength(1);
+    const part = parsed.attachments[0]!;
+    expect(part.filename).toBe("file\uFFFDname.pdf");
+    expect(part.decodedSha256).toBe(sha256Hex(DECODED_FOOBAR));
+    expect(JSON.stringify(parsed)).not.toContain("\\u0000");
+  });
+
+  it("keeps an address with a decoded NUL invalid instead of sanitizing it valid", async () => {
+    // The encoded word decodes after address tokenization, so the NUL
+    // survives inside the address token itself. Validation must reject it —
+    // never strip a byte and turn an invalid address into a valid one — so
+    // the message imports without a sender (T105).
+    const parsed = await parseMime(
+      mime([
+        "From: =?utf-8?Q?a=00b@example.com?=",
+        "To: Bob <bob@example.com>",
+        "Subject: Poisoned address",
+        "Date: Mon, 07 Sep 2026 15:00:00 +0000",
+        "Message-ID: <poisoned-address@example.com>",
+        "",
+        "body",
+      ]),
+    );
+
+    expect(parsed.sender).toBeNull();
+    expect(parsed.recipients).toEqual({ to: [{ address: "bob@example.com", name: "Bob" }] });
+    expect(parsed.subject).toBe("Poisoned address");
+    expect(JSON.stringify(parsed.sender)).not.toContain("\\u0000");
+  });
+
+  it("keeps valid Unicode unchanged while replacing the NUL beside it", async () => {
+    const nul = String.fromCharCode(0);
+    const replacement = String.fromCharCode(0xfffd);
+    const parsed = await parseMime(
+      mime([
+        "From: Grüße <g@example.com>",
+        "Subject: Gemüse" + nul + "tag",
+        "Date: Mon, 07 Sep 2026 15:05:00 +0000",
+        "Message-ID: <unicode@example.com>",
+        "",
+        "Sehr gut.",
+      ]),
+    );
+
+    expect(parsed.subject).toBe("Gemüse" + replacement + "tag");
+    expect(parsed.sender).toEqual({ address: "g@example.com", name: "Grüße" });
+    expect(parsed.textPlain).toBe("Sehr gut.\n");
+  });
+});
+
+describe("parseMime over the malformed corpus", () => {
+  it("replaces the NUL that arrives base64-encoded in a body", async () => {
+    const parsed = await parseMime(malformedMailBytes(base64NulBody()));
+
+    // The third encoding path for a NUL: base64. Derived body text carries
+    // the replacement character where the decoded byte stood.
+    expect(parsed.textPlain).toBe("x�y");
+    expect(JSON.stringify(parsed)).not.toContain("\\u0000");
+  });
+
+  it("decodes RFC 2231 filenames and hashes the decoded attachment bytes", async () => {
+    const parsed = await parseMime(malformedMailBytes(attachmentEdgeMetadata()));
+
+    // Filenames decode from both RFC 2231 shapes; a part may carry none.
+    expect(parsed.attachments.map((part) => part.filename)).toEqual(
+      ATTACHMENT_EDGE_PARTS.map((part) => part.filename),
+    );
+
+    for (const [index, expected] of ATTACHMENT_EDGE_PARTS.entries()) {
+      const part = parsed.attachments[index]!;
+      const bytes = new TextEncoder().encode(expected.marker);
+      // Hashes and sizes cover the decoded bytes, whatever the filename or
+      // the transfer encoding; the empty part stores size zero and the hash
+      // of no bytes.
+      expect(part.sizeBytes).toBe(bytes.byteLength);
+      expect(part.decodedSha256).toBe(sha256Hex(bytes));
+      expect(part.contentType).not.toContain("\\u0000");
+    }
+
+    // The inline part keeps its disposition and carries no Content-ID.
+    const inline = parsed.attachments[4]!;
+    expect(inline.disposition).toBe("inline");
+    expect(inline.contentId).toBeNull();
+  });
+
+  it("unfolds folded references exactly as header import does", async () => {
+    const parsed = await parseMime(malformedMailBytes(foldedReferencesReply()));
+
+    expect(parsed.inReplyTo).toBe("<folded-parent@example.com>");
+    expect(parsed.referenceIds).toEqual([
+      "<folded-root@example.com>",
+      "<folded-mid@example.com>",
+      "<folded-parent@example.com>",
+    ]);
+  });
+
+  it("keeps group members, comments, and quoted names through flattening", async () => {
+    const parsed = await parseMime(malformedMailBytes(nestedAddressMetadata()));
+
+    expect(parsed.sender).toEqual({ address: "quoted@example.com", name: 'Quoted "Name"' });
+    expect(parsed.recipients).toEqual({
+      to: [
+        { address: "alice@example.com", name: null },
+        { address: "member@example.com", name: "Team�Member" },
+      ],
+      cc: [
+        { address: "ed@example.com", name: "Ed" },
+        { address: "carol@example.com", name: null },
+      ],
+    });
+    expect(parsed.replyTo).toEqual([
+      { address: "r1@example.com", name: null },
+      { address: "r2@example.com", name: null },
+    ]);
+    expect(JSON.stringify(parsed)).not.toContain("\\u0000");
+  });
+
+  it("keeps every valid Unicode character byte-for-byte", async () => {
+    const parsed = await parseMime(malformedMailBytes(validUnicodeNeighbor()));
+
+    // Nothing in this message is malformed, so no replacement character may
+    // appear anywhere: accents, CJK, and the emoji survive intact.
+    expect(parsed.subject).toBe("Zusammenfassung — Prüfung");
+    expect(parsed.sender).toEqual({ address: "gruesse@example.com", name: "Grüße" });
+    expect(parsed.recipients).toEqual({
+      to: [{ address: "nihongo@example.com", name: "日本語" }],
+    });
+    expect(parsed.textPlain).toBe("Café 日本語 🌊 stays as written.");
+    expect(JSON.stringify(parsed)).not.toContain("\\u0000");
+    expect(JSON.stringify(parsed)).not.toContain("�");
   });
 });

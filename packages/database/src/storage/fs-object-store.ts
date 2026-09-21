@@ -330,7 +330,11 @@ export async function sweepTempFiles(
       }
       try {
         const fileStat = await stat(entryPath);
-        if (Date.now() - fileStat.mtimeMs < olderThanMs) {
+        // Date.now() truncates to whole milliseconds while mtimeMs keeps
+        // fractions, so a file stamped this instant can read a hair under
+        // zero years old; clamp the age so a zero bound still collects it.
+        const ageMs = Math.max(0, Date.now() - fileStat.mtimeMs);
+        if (ageMs < olderThanMs) {
           continue;
         }
         await unlink(entryPath);

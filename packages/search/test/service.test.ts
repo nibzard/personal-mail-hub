@@ -647,4 +647,29 @@ suite("SearchService", () => {
     const none = await service.search({ query: "from:ghost@nowhere.example", limit: 3, offset: 30 });
     expect(none.total).toBe(0);
   });
+
+  it("matches derived text that carries the NUL replacement character", async () => {
+    // The malformed corpus and the backfill suite prove the pipeline derives
+    // exactly these strings from the NUL incident message; this pins the
+    // query side (T109). The tokenizer splits on U+FFFD, so the words
+    // beside it stay searchable, and the stored text never carries the NUL.
+    const id = await seedMessage({
+      accountId: accountA,
+      subject: "raw�nul and encoded�nul",
+      subjectText: "raw�nul and encoded�nul",
+      senderText: "name�x nul@example.com",
+      sender: { address: "nul@example.com", name: "Name�X" },
+      bodyIndexText: "body�nul in the plain part",
+      fetchedBody: true,
+      sentAt: new Date("2026-09-12T12:00:00Z"),
+    });
+    await seedOccurrence(id, accountA, inboxA, "2026-09-12T12:01:00Z", {});
+
+    const bySubject = await service.search({ query: "encoded nul" });
+    expect(bySubject.results.map((hit) => hit.messageId)).toContain(id);
+    const byBody = await service.search({ query: "plain part" });
+    expect(byBody.results.map((hit) => hit.messageId)).toContain(id);
+    const bySender = await service.search({ query: "nul@example.com" });
+    expect(bySender.results.map((hit) => hit.messageId)).toContain(id);
+  });
 });

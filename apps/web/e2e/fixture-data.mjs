@@ -574,7 +574,8 @@ export const settingsSchema = {
 
 /**
  * The per-account synchronization and queue status (SPEC section 11): one
- * account fully caught up, one still backfilling with bodies pending.
+ * account syncing bodies normally, one whose newest cycle contained a folder
+ * failure beside its backfill progress.
  */
 export const syncStatus = {
   checkedAt: "2026-09-17T09:31:00Z",
@@ -601,6 +602,14 @@ export const syncStatus = {
         cycleAgeSeconds: 120,
         backfillPendingFolders: 0,
         pendingBodies: 3,
+        state: "syncing",
+        folderErrors: 0,
+        bodyErrors: 0,
+        threadErrors: 0,
+        folderFailureKinds: [],
+        bodyFailureKinds: [],
+        threadFailureKinds: [],
+        pendingThreads: 0,
       },
       metrics: {
         messagesSynced: 48210,
@@ -617,6 +626,14 @@ export const syncStatus = {
         cycleAgeSeconds: 60,
         backfillPendingFolders: 2,
         pendingBodies: 0,
+        state: "degraded",
+        folderErrors: 1,
+        bodyErrors: 0,
+        threadErrors: 0,
+        folderFailureKinds: ["system_etimedout"],
+        bodyFailureKinds: [],
+        threadFailureKinds: [],
+        pendingThreads: 0,
       },
       metrics: {
         messagesSynced: 51790,

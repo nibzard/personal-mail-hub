@@ -11,3 +11,7 @@ test-results/
 # backups/; neither belongs in history.
 data/
 backups/
+# deploy/access.env holds operator tokens; only the example belongs in history.
+deploy/access.env
+# .claude/ holds local agent-loop state; it never belongs in history.
+.claude/

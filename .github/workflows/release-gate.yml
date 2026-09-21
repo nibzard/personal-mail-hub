@@ -1,0 +1,76 @@
+# Continuous integration for every pull request into main (T116).
+#
+# The job runs the strict release gate — the same command an operator runs
+# locally (`npm run release:gate -- --strict`) — against a scratch
+# PostgreSQL service container and a real Chromium. The task-files check
+# inside the gate covers `npm run validate:tasks`, so this workflow needs
+# no separate validation step.
+#
+# Merge-result coverage: `pull_request` runs against GitHub's merge ref
+# (the pull request head merged into the current main), and branch
+# protection requires branches to be up to date before merging — so a
+# green check always describes the exact tree a merge would create.
+#
+# The workflow holds no secrets: the PostgreSQL password below guards a
+# throwaway service container that lives for one job, and deployment
+# stays with the main-push webhook, which never runs for pull requests.
+name: release-gate
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# A superseded pull-request run is worthless; a superseded main run is
+# still evidence about what deployed, so only pull requests cancel.
+concurrency:
+  group: release-gate-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  release-gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    services:
+      postgres:
+        # The same major version the deployment pins (deploy/docker-compose.yml).
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: gate
+          POSTGRES_PASSWORD: gate
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gate"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      # The gate creates and drops scratch databases through this URL, so
+      # the user only needs to own the maintenance database.
+      TEST_DATABASE_URL: postgres://gate:gate@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Cache the Chromium build
+        uses: actions/cache@v4
+        with:
+          # The browser cache keys on the lockfile, because the Playwright
+          # version in it decides which Chromium build the suites need.
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        run: npm ci
+      - name: Install the Playwright browser
+        run: npx playwright install --with-deps chromium
+      - name: Strict release gate
+        run: npm run release:gate -- --strict

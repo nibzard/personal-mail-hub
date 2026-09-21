@@ -23,6 +23,21 @@ const MAX_YEAR = 2100;
 const ADDRESS_PATTERN = /^[^\s@,;<>"()\\]+@[^\s@,;<>"()\\]+$/;
 
 /**
+ * Replace NUL with the Unicode replacement character at the derived-data
+ * boundary (docs/sync-repair-plan.md T105). PostgreSQL rejects `\0` in any
+ * text or JSON value, and a NUL carries nothing readable. Derived text
+ * replaces it; stored originals keep their raw bytes and hashes.
+ */
+export function replaceNul(input: string): string {
+  return input.includes("\u0000") ? input.replaceAll("\u0000", "\uFFFD") : input;
+}
+
+/** `replaceNul` for one optional header value; `null` passes through. */
+export function replaceNulOption(input: string | null | undefined): string | null {
+  return input === null || input === undefined ? null : replaceNul(input);
+}
+
+/**
  * One index-text normalization for senders, recipients, subjects, and bodies:
  * compatibility-form case folding, then whitespace collapsing. `pg_trgm`
  * prefix queries run against the result, so ingestion and queries must
@@ -38,22 +53,31 @@ export function toEmailAddress(entry: { address?: string | null; name?: string |
   if (!isValidAddress(address)) {
     return null;
   }
-  const name = entry.name?.trim() ?? "";
+  // A display name can carry a NUL that the parser kept; the address cannot
+  // pass `isValidAddress` with one inside.
+  const name = replaceNul(entry.name?.trim() ?? "");
   return { address, name: name.length > 0 ? name : null };
 }
 
 /**
- * Valid addresses from one parsed header, in order. A header that yields no
- * valid address was absent, invalid, or empty; callers tell those apart from
- * the raw header.
+ * Valid addresses from one parsed header, in order. RFC 2822 group members
+ * flatten in place: the parser hands a group back as one node whose members
+ * sit under `group`, and dropping that node would drop real recipients
+ * silently. A header that yields no valid address was absent, invalid, or
+ * empty; callers tell those apart from the raw header.
  */
 export function toEmailAddresses(header: AddressHeader): EmailAddress[] {
   const headers = Array.isArray(header) ? header : [header];
   const addresses: EmailAddress[] = [];
   for (const entry of headers.flatMap((object) => object?.value ?? [])) {
-    const address = toEmailAddress(entry);
-    if (address !== null) {
-      addresses.push(address);
+    // A group node holds its members under `group` and has no address of
+    // its own; an empty group (`undisclosed-recipients:;`) holds none.
+    const candidates = Array.isArray(entry.group) ? entry.group : [entry];
+    for (const candidate of candidates) {
+      const address = toEmailAddress(candidate);
+      if (address !== null) {
+        addresses.push(address);
+      }
     }
   }
   return addresses;
@@ -61,7 +85,12 @@ export function toEmailAddresses(header: AddressHeader): EmailAddress[] {
 
 /** Reject addresses without one `@` inside, with whitespace, or with header syntax inside. */
 export function isValidAddress(address: string): boolean {
-  return address.length > 0 && !address.includes(" ") && ADDRESS_PATTERN.test(address);
+  return (
+    address.length > 0 &&
+    !address.includes(" ") &&
+    !address.includes("\u0000") &&
+    ADDRESS_PATTERN.test(address)
+  );
 }
 
 /**

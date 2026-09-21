@@ -8,7 +8,8 @@
     "check": "tsc --noEmit --pretty false",
     "test": "vitest run",
     "eval:classify": "tsx src/eval-classify.ts",
-    "eval:home": "tsx src/eval-home.ts"
+    "eval:home": "tsx src/eval-home.ts",
+    "verify:classify": "tsx src/verify-classify.ts"
   },
   "dependencies": {
     "@mail-hub/actions": "0.1.0",

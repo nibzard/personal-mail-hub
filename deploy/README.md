@@ -25,6 +25,195 @@ One HTTPS origin serves both the client and the API. Session cookies are
 same-origin, and the API rejects requests whose `Origin` differs from
 `BASE_URL`, so do not split the client and the API across domains.
 
+## Operator access
+
+Deployment work happens over SSH from an authorized workstation. Confirm the
+access with one command before any procedure in this runbook:
+
+```sh
+npm run deploy:access
+```
+
+The command is read-only. It prints one line per capability and names the
+missing capability on failure. It never prints token values, environment
+variables, or key material, and it generates no credentials. It checks the
+operator side; `deploy/preflight.mjs` stays the check for the container
+environment.
+
+### Access facts
+
+| Fact | Value |
+| --- | --- |
+| Repository | `https://github.com/nibzard/personal-mail-hub` |
+| Branch | `main` |
+| Compose file | `deploy/docker-compose.yml`; the Coolify variant is `deploy/docker-compose.coolify.yml` |
+| Pilot host | SSH alias `awc-pilot` in `~/.ssh/config`: user `debian`, address `192.168.1.144` on the LAN |
+| Dedicated identity | `~/.ssh/id_ed25519_awc_pilot` |
+| Application URL | Fill in: the public domain assigned in the Coolify console to the `web` service. Record it as `DEPLOY_APP_URL` in `deploy/access.env`. |
+| Coolify base URL | Fill in: the console origin, for example `https://coolify.example.com`. Record it as `DEPLOY_COOLIFY_URL`. |
+| Coolify resource | Fill in: open the resource in the console and copy the UUID from its URL. |
+| Tailnet host | Fill in: run `tailscale status`. If the pilot joined the tailnet, its name and `100.x` address appear there; use them as the `HostName` when the LAN route is down. On 2026-09-20 the tailnet listed no peer for the pilot, so the LAN address is the only known route. |
+
+Record the application URL and the Coolify URL in `deploy/access.env` (copy
+`deploy/access.env.example`); git ignores that file. Keep the Coolify
+resource UUID in your deployment records; the check does not need it.
+
+### Set up a fresh workstation
+
+1. Create the SSH entry in `~/.ssh/config`:
+
+   ```ssh-config
+   Host awc-pilot
+       HostName 192.168.1.144
+       User debian
+       IdentityFile ~/.ssh/id_ed25519_awc_pilot
+       IdentitiesOnly yes
+       StrictHostKeyChecking accept-new
+       ConnectTimeout 8
+       ServerAliveInterval 30
+   ```
+
+2. Transfer the dedicated identity from its secret store and lock it down:
+   `install -m 600 <key-file> ~/.ssh/id_ed25519_awc_pilot`. The private key
+   never lives in this repository.
+3. Copy `deploy/access.env.example` to `deploy/access.env` and fill in the
+   Coolify and application URL lines.
+4. Run `npm run deploy:access`. Every required line reads `ok`.
+
+### What the check confirms
+
+| Line | Confirms | Required | Failure categories |
+| --- | --- | --- | --- |
+| `identity` | The identity file exists and is readable | yes | `identity_unreadable` |
+| `ssh` | Route, host key, and key authentication | yes | `hostname_unresolved`, `host_key_mismatch`, `network_unreachable`, `connection_refused`, `identity_unreadable`, `ssh_auth_denied`, `ssh_failed` (unmapped; read the detail line) |
+| `docker` | Docker control over SSH | yes | `docker_missing`, `docker_forbidden`, `docker_daemon_unreachable`, `docker_unavailable` (unmapped) |
+| `coolify` | The configured Coolify API token works | when configured | `coolify_token_rejected`, `coolify_unexpected_status`, `coolify_unreachable` |
+| `app` | The deployed health endpoint answers | when configured | `app_database_unavailable`, `app_unhealthy`, `app_unreachable` |
+
+The exit code is `0` only when the required lines and every configured
+optional line pass. An unconfigured optional line reports `not configured`
+and never fails the run. For machine-readable output, run
+`npm run deploy:access -- --json`; npm needs the `--` so the flag reaches
+the script instead of npm. A configured value that starts with `-` fails
+the run as `unsafe_operand` before anything connects.
+
+### Host-key verification
+
+`accept-new` trusts the first connection. Verify the host key beyond that:
+
+1. From the workstation, read the fingerprint the network path presents
+   (the scan itself runs over the same untrusted path, so it proves nothing
+   alone):
+
+   ```sh
+   ssh-keyscan -t ed25519 192.168.1.144 | ssh-keygen -lf -
+   ```
+
+2. On a channel you already trust — the pilot console — compare it with the
+   fingerprint the pilot reports
+   (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on the pilot).
+3. Pin the verified key as the only entry for the host. Remove whatever the
+   first `accept-new` connection wrote, then append:
+
+   ```sh
+   ssh-keygen -R 192.168.1.144
+   ssh-keyscan -t ed25519 -H 192.168.1.144 >> ~/.ssh/known_hosts
+   ```
+
+   Set `StrictHostKeyChecking yes` for the host. An impostor key that
+   `accept-new` already recorded stays trusted until you remove it, because
+   ssh accepts a key that matches any known entry.
+
+A later `host_key_mismatch` failure means the key changed. Confirm the host
+was rebuilt or replaced on purpose before you remove the old entry with
+`ssh-keygen -R 192.168.1.144` and re-enroll. An unexplained change means
+possible interception; stop and investigate.
+
+### Public-key enrollment
+
+1. Print the public key of the dedicated identity:
+   `ssh-keygen -y -f ~/.ssh/id_ed25519_awc_pilot`.
+2. On the pilot, append that one line to
+   `/home/debian/.ssh/authorized_keys` (mode `600`, owned by `debian`).
+3. Re-run `npm run deploy:access`; the `ssh` line reads `ok`.
+
+### Rotation
+
+Rotate only for a reason: a lost workstation, a suspected compromise, or an
+operator change. Do not rotate working credentials during a routine deploy.
+
+1. Generate a new pair:
+   `ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_awc_pilot_2 -C "mail-hub deploy"`.
+2. Enroll the new public key beside the old one (see above), then point the
+   SSH entry's `IdentityFile` at the new file.
+3. Confirm `npm run deploy:access` passes, store the new private key in the
+   secret store, then revoke the old key (below).
+
+### Revocation
+
+1. On the pilot, remove the old public-key line from
+   `/home/debian/.ssh/authorized_keys`.
+2. Remove the workstation copy: `rm ~/.ssh/id_ed25519_awc_pilot`.
+3. Run `npm run deploy:access` from a workstation that still carried the old
+   key. It must fail with `ssh_auth_denied`; that failure proves the
+   revocation works.
+
+## Verify a deployment
+
+One read-only command answers whether the deployment works, not just
+whether its containers are healthy:
+
+```sh
+npm run deploy:verify
+```
+
+The command reads three evidence sources, each optional and classified
+when unavailable: Docker (locally, or over SSH when `DEPLOY_SSH_HOST` is
+set) for containers, restarts, and the deployed revision; the public
+health endpoint at `DEPLOY_APP_URL` for recovery state, per-account sync
+states, and send counters; and narrow aggregate queries through psql in
+the database container for folder-backfill and classification progress.
+It never sends or mutates mail. Output holds states, counts, timestamps,
+UUIDs, and image names only — never folder names, addresses, message
+content, raw logs, or secrets.
+
+The verdict is one of:
+
+- `VERIFIED` — every required check ran and passed. Untested areas are
+  listed, for example sync workflows when no account is enrolled.
+- `FAILED` — a check proved a problem: pending work that did not move
+  between two samples, an account reporting sync failures or a stale sync
+  record, a wrong revision, a container that is not running, unhealthy,
+  paused, or restart-looping, or a failed
+  database round trip.
+- `UNVERIFIED` — a required check could not run: no Docker access,
+  missing privileges, no containers found, or an observation timeout. A
+  partial picture is never reported as verified.
+
+Progress needs two samples. Pass an interval in seconds; the command then
+decides per account whether pending work is moving, idle, or stalled:
+
+```sh
+npm run deploy:verify -- --sample-interval 30 --expect-revision <tag-or-sha>
+```
+
+An idle mailbox is never a failure: progress is judged only where work is
+pending. `--expect-revision` fails the run when the deployed image does
+not match; it accepts a tag, a digest (`sha256:...`), or a revision label,
+and without it the revision is reported but not judged. `-- --json` prints
+the machine-readable result (npm needs the `--`; add `--silent` or call
+`node deploy/verify-deployment.mjs --json` when you pipe stdout into
+another tool, because npm writes its banner there too).
+
+Containers are resolved by the compose project and service labels, never
+by hard-coded names, so any suffix scheme works. Set
+`DEPLOY_COMPOSE_PROJECT` when the deployment runs under another project
+name, and `DEPLOY_DB_CONTAINER` when the database is not the `db` service
+of the compose project. A separate PostgreSQL resource also carries its
+own credentials, so set `DEPLOY_DB_USER` and `DEPLOY_DB_NAME` to match it.
+All of these keys can live in `deploy/access.env` alongside the access
+keys.
+
 ## Deploy with docker compose
 
 1. Install Docker Engine with the compose plugin, clone this repository, and
@@ -36,6 +225,8 @@ same-origin, and the API rejects requests whose `Origin` differs from
    `BASE_URL`. For a local trial without TLS, set
    `BASE_URL=http://localhost:8080` and `PREFLIGHT_ALLOW_HTTP=1`.
 3. Start the stack: `docker compose -f deploy/docker-compose.yml up -d --build`.
+   When a build fails to resolve names, add the build-networking override
+   from [Build networking](#build-networking) to the same command.
 4. Wait for the API to report health:
    `curl http://localhost:8080/api/healthz`.
 5. Follow [First installation](#first-installation).
@@ -70,6 +261,190 @@ To manage the pieces as separate Coolify resources instead:
    `APP_ROLE` is `all` or `api`.
 6. Add a scheduled task on the app resource that runs `npm run backup`
    nightly (see [Backups](#backups)).
+
+## Build networking
+
+A build fails on some hosts while `RUN` steps resolve names: the container
+asks the resolver it was given and every query times out. The diagnosis
+below is from the developer workstation, 2026-09-21, Docker 29.1.3.
+
+### Root cause on the developer workstation
+
+Docker writes each container's resolver from the host's
+`/run/systemd/resolve/resolv.conf`, skipping the `127.0.0.53` stub. That
+file names exactly one uplink, `10.77.0.1`, and the host reaches it only
+through the Tailscale interface with policy routing
+(`ip route get 10.77.0.1` shows `dev tailscale0 table 52`). Container
+traffic leaves through the default bridge and never matches that route,
+so the resolver is unreachable from inside any bridge container:
+
+```sh
+docker run --rm alpine:3.20 getent hosts registry.npmjs.org   # exit 2
+docker run --rm --dns 10.77.0.1 alpine:3.20 nslookup registry.npmjs.org  # timeout
+docker run --rm --dns 8.8.8.8 alpine:3.20 getent hosts registry.npmjs.org  # resolves
+```
+
+Host networking works because the container shares the host namespace and
+the policy routing. Plain internet resolvers work from the bridge. A
+`docker build` with the default network fails at the first `RUN` that
+resolves a name; a BuildKit daemon configured with `[dns] nameservers`
+does not help, because the builder container itself cannot resolve the
+base image.
+
+### Verified workarounds
+
+- Plain builds: `docker build --network=host --target app -t mail-hub-app .`
+- Compose builds: merge the opt-in override
+  `deploy/docker-compose.host-build.yml`, which sets `build.network: host`
+  for the `api`, `worker`, and `web` services:
+
+  ```sh
+  docker compose -f deploy/docker-compose.yml \
+    -f deploy/docker-compose.host-build.yml build
+  ```
+
+Limits: the flag changes only `RUN` steps during the build. Those steps
+then see the host's network, so a Dockerfile step that binds a port would
+collide with host services. Neither this repository's Dockerfile nor its
+dependencies bind ports while building. The override stays out of the
+default files: hosts with working container DNS keep hermetic bridge
+builds.
+
+The host-side fix is to give systemd-resolved an uplink that bridge
+traffic can reach — then the generated container resolver works and no
+override is needed. That changes host configuration for every container
+on the machine, so it is the host administrator's call.
+
+The Coolify builder is a separate Docker host; run the three probe
+commands above there before its first build. Its result was not
+verifiable from the workstation on 2026-09-21 because the deploy host
+was unreachable.
+
+## Gate main before deployment
+
+Every change reaches production through one path: a pull request into
+`main` that passes the `release-gate` check, then a merge, which fires the
+deployment webhook. Branch protection enforces the path.
+
+1. Push a branch and open a pull request into `main`.
+2. The `release-gate` workflow (`.github/workflows/release-gate.yml`) runs
+   the strict release gate on a scratch PostgreSQL service and on Chromium.
+   The check runs against the merge result. When `main` moves, protection
+   blocks the merge until you update the branch. That update reruns the
+   check, so an outdated green check cannot authorize a different tree.
+3. Merge only a green and current pull request. The merge push triggers
+   the deployment webhook; nothing else deploys.
+4. Check the webhook delivery for the merge push with `npm run
+   webhook:audit` (see [The webhook deployment
+   path](#the-webhook-deployment-path); the delivery log also sits under
+   the repository's **Settings → Webhooks**), then verify the deployment
+   and its revision with `npm run deploy:verify` (it reads containers,
+   the health endpoint, and the database — not the delivery).
+
+Branch protection on `main` requires a pull request, requires the
+`release-gate` check, requires branches to be up to date before merging,
+and blocks force pushes and deletion. The rule includes administrators,
+so the owner merges through pull requests like anyone else. Inspect it
+under the repository's **Settings → Branches**.
+
+Emergency bypass: an owner disables the branch protection in the
+repository settings, merges or pushes directly, and re-enables it
+immediately. Record every bypass with its reason.
+
+The workflow holds no secrets. Pull requests never see deployment
+credentials. The webhook secret stays in the GitHub webhook and Coolify
+resource settings, and deployment runs only on `main` pushes.
+
+Measured durations, 2026-09-21: the full local gate runs 258 seconds and
+the runner gate runs 301 seconds, 355 with setup (pull request #1); one
+focused admin suite runs 6 seconds; one focused gate suite runs 6 seconds.
+
+## The webhook deployment path
+
+The merge of a green pull request fires the only deployment trigger: a
+signed `push` webhook from GitHub to the Coolify resource. Audit the whole
+path with one read-only command:
+
+```sh
+npm run webhook:audit
+```
+
+The command checks the GitHub side live and reports one line per fact:
+the hook (one active hook, `push` event, https destination, TLS
+verification on), recent deliveries (acceptance and the ref of the latest
+push), and the destination host. It masks the hook URL path — the path is
+a capability — and never prints the secret or any token value. Add
+`-- --json` for machine-readable output.
+
+Two facts the audit states instead of guessing:
+
+- A 2xx delivery response records that the destination accepted the
+  request. It does not record a deployment. Only the Coolify side — its
+  API or `npm run deploy:verify` against the running stack — closes that
+  gap, so the audit prints a `coolify` line: `ok` when configured, or
+  `not_configured` naming `DEPLOY_COOLIFY_URL` and `COOLIFY_TOKEN` from
+  `deploy/access.env`.
+- GitHub never returns the webhook secret. The `secret` line reports
+  `unknown` and names the two ways to prove it: a signed redelivery during
+  an authorized window, or inspection of the Coolify resource.
+
+### Test modes
+
+Both modes are opt-in on the command line. The audit is read-only without
+them.
+
+- `npm run webhook:audit -- --send-test` asks GitHub to send a ping. A
+  ping proves the destination answers with the shared secret. It never
+  starts a deployment.
+- `npm run webhook:audit -- --redeliver <delivery-id>` asks GitHub to
+  replay one recorded delivery. When its ref is `main`, the replay starts
+  a real deployment. The command refuses without `--allow-deployment`;
+  identify the commit first (the delivery log under the repository's
+  **Settings → Webhooks** shows the ref and the request payload) and
+  confirm the deployment window before you allow it.
+
+### Secret ownership and rotation
+
+The secret exists in exactly two places: the repository webhook settings
+on GitHub and the Coolify resource configuration. It never lives in this
+repository, in `deploy/.env`, or in `deploy/access.env`. Rotate it only
+for a reason, for example a suspected exposure:
+
+1. Generate a new secret: `openssl rand -hex 24`.
+2. Set it in the Coolify resource configuration first, then in the
+   repository webhook settings on GitHub.
+3. Prove the pair with `--send-test`, then watch the next delivery.
+4. The old secret stops working the moment GitHub saves the new one; no
+   revocation step exists on the Coolify side beyond the saved value.
+
+### Where the records live
+
+- GitHub: the repository's **Settings → Webhooks** page. Each delivery
+  shows its event, status code, response, and payload, and offers a
+  redelivery button. The audit's delivery facts come from this API.
+- Coolify: the resource's deployment list, which names the commit each
+  deployment built and its outcome. Correlate it with `npm run
+  deploy:verify`, which reads the running stack itself.
+
+### Isolated coverage
+
+`apps/admin/test/webhook-audit.test.ts` pins the audit's contracts
+without touching the network: signature verification over raw request
+bytes (including the re-serialized-JSON failure), branch selection,
+duplicate delivery handling, the redelivery guard, and the
+classifiers that keep acceptance and deployment distinct. The receiver
+harness runs on an ephemeral loopback port inside the test process.
+
+### Current state, 2026-09-21
+
+The GitHub side is verified live: one active `push` hook with a https
+destination, every recent delivery accepted, the latest push delivery
+carrying its ref and commit. The Coolify side is not configured on this
+workstation (`deploy/access.env` is absent and the deploy host is
+unreachable), so acceptance-to-deployment correlation is unproven. The
+audit reports this state itself: its `coolify` line reads
+`not_configured` and its verdict says acceptance is proven, not
+deployment.
 
 ## Environment reference
 
@@ -156,6 +531,24 @@ section 12). Suggestions never route mail before that.
    negatives. The command records the verdict durably; a later failing run
    returns classification to shadow mode. The exit code is 0 only when the
    gate passes.
+
+### Adapter smoke check
+
+After a deployment, and whenever the adapter, the question set, the pinned
+model, or the endpoint changes, run one synthetic call against the
+configured service:
+
+```sh
+npm run verify:classify
+```
+
+The command sends invented text — no mail, no database writes — and prints
+approved fields only: model, question set version, answers, latency, and
+token count. It never prints the API key. A missing `TYPE_SAFE_API_KEY`
+prints an explicit unverified result; the exit code is 0 only when the
+service answers the documented contract. Offline contract fixtures in
+`packages/classification/test/fixtures/typesafe-contract.ts` pin the same
+wire shape, so drift fails the test suite before it reaches a deployment.
 
 ## Backups
 
@@ -271,8 +664,10 @@ was.
    the server starts.
 2. Keep `RECOVERY_GENERATION` and `CREDENTIALS_KEY` unchanged across ordinary
    releases. Only a restore changes the generation.
-3. Run `npm run release:gate` with `TEST_DATABASE_URL` set before cutting a
-   release, and pass `--strict` for the release mode.
+3. Cut a release only through a green `release-gate` check on the merged
+   pull request (see [Gate main before deployment](#gate-main-before-deployment)).
+   Run `npm run release:gate -- --strict` locally first; it is the same
+   command the runner executes.
 
 ## Resource sizing
 
@@ -284,6 +679,19 @@ was.
 
 ## Verification checklist
 
+- `npm run deploy:access` passes from the operator workstation (see
+  [Operator access](#operator-access)).
+- `npm run webhook:audit` reports the hook, deliveries, and destination
+  healthy, and its `coolify` line reads `ok` once the Coolify keys are
+  configured (see [The webhook deployment
+  path](#the-webhook-deployment-path)).
+- `npm run deploy:verify` reports `VERIFIED` (see
+  [Verify a deployment](#verify-a-deployment)); with accounts enrolled,
+  run it with `--sample-interval` so stalled sync cannot hide behind
+  healthy containers.
+- With `TYPE_SAFE_API_KEY` configured, `npm run verify:classify` reports
+  `VERIFIED` against the configured service (see
+  [Adapter smoke check](#adapter-smoke-check)).
 - `docker compose -f deploy/docker-compose.yml ps` reports `db`, `api`,
   `worker`, and `web` healthy or running.
 - `curl https://mail.example.com/api/healthz` answers `200` with the recovery

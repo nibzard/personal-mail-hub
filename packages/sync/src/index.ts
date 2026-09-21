@@ -15,6 +15,10 @@
  */
 export { SyncError, type SyncErrorCode } from "./errors.ts";
 export {
+  classifyFailure,
+  UNKNOWN_FAILURE_KIND,
+} from "./diagnostics.ts";
+export {
   BackfillService,
   DEFAULT_BACKFILL_WINDOW,
   type BackfillBatchOutcome,

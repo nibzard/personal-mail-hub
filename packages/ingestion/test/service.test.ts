@@ -22,7 +22,7 @@ import {
   dropTestDatabase,
 } from "@mail-hub/database";
 import { IngestionService, MAX_MESSAGE_BYTES, parseMime } from "../src/index.ts";
-import { DECODED_FOOBAR, nestedMessage, standardMessage } from "./fixtures.ts";
+import { DECODED_FOOBAR, nestedMessage, nulMessage, standardMessage } from "./fixtures.ts";
 
 /**
  * Ingestion acceptance against a real PostgreSQL and the filesystem store.
@@ -159,6 +159,34 @@ suite("IngestionService", () => {
     // The generated search vector sees header and body terms together.
     const hit = await pool.query(`select id from messages where id = $1 and search @@ plainto_tsquery('simple', 'great')`, [message.id]);
     expect(hit.rows).toHaveLength(1);
+  });
+
+  it("ingests an original whose derived text carries NUL bytes", async () => {
+    const { account, message } = await provisionalMessage();
+    const bytes = nulMessage();
+    const result = await service.ingestOriginal({ accountId: account.id, messageId: message.id, bytes });
+    expect(result.result).toBe("ingested");
+
+    // Every derived column carries the replacement character where the NUL
+    // stood, so PostgreSQL accepts the rows (T105).
+    const db = createDatabase(pool);
+    const row = (await db.select().from(messages).where(eq(messages.id, message.id)))[0]!;
+    expect(row.subject).toBe("raw\uFFFDnul and encoded\uFFFDnul");
+    expect(row.messageId).toBe("<msg\uFFFDid@example.com>");
+    expect(row.inReplyTo).toBe("<parent\uFFFDref@example.com>");
+    expect(row.referenceIds).toEqual(["<root@example.com>", "<parent\uFFFDref@example.com>"]);
+    expect(row.sender).toEqual({ address: "nul@example.com", name: "Name\uFFFDX" });
+    expect(row.snippet).toContain("body\uFFFDnul");
+    const body = (await db.select().from(bodies).where(eq(bodies.messageId, message.id)))[0]!;
+    expect(body.textPlain).toContain("body\uFFFDnul");
+    const parts = await db.select().from(attachments).where(eq(attachments.messageId, message.id));
+    expect(parts.map((part) => part.filename)).toEqual(["file\uFFFDname.pdf"]);
+    expect(JSON.stringify({ row, body, parts })).not.toContain("\\u0000");
+
+    // The stored original keeps its raw NUL bytes and its recorded hash.
+    const original = await storage.durable.get(row.originalStorageKey!);
+    expect(new TextDecoder().decode(original)).toContain("\u0000");
+    expect(await storage.durable.verify(row.originalStorageKey!, row.originalSha256!)).toBe(true);
   });
 
   it("persists verified attachment locators and reuses part rows on repeat parsing", async () => {

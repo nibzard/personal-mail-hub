@@ -13,7 +13,9 @@
     "research/research-1.md",
     "research/research-2.md",
     "research/research-3.md",
-    "research/research.md"
+    "research/research.md",
+    "docs/sync-repair-plan.md",
+    "docs/development-deployment-plan.md"
   ],
   "tasks": [
     {
@@ -330,7 +332,7 @@
       "title": "Implement logical-message merging and thread reconciliation",
       "priority": 1,
       "status": "done",
-      "details": "Logical-message threading per SPEC F2. Messages carry a durable thread_dirty job mark; every import, body reparse, and byte-identical merge marks the rows whose parent links depend on the changed identifiers, in the same transaction (markThreadJobsDirty in packages/ingestion). ThreadService reconciles marked rows in bounded newest-first passes, one transaction per row: parent from the single valid In-Reply-To identifier or the last valid References identifier, one holder links, none stays pending, and conflicting identifiers, self-links, duplicate holders, and cycles stay unlinked and ambiguous; subject and participant similarity never links, and holders in another account never parent a message. Membership recomputes with each link: the row and its descendants move to the chain root thread, a detached row starts a fresh thread, and old thread records remain for drafts and snapshots. SyncRunner resolves a bounded number of thread jobs per cycle after body jobs and reports threadsResolved, threadLinksChanged, and pendingThreads in sync.status. Implemented and committed in 6fd3fcf. Two later passes (2026-09-19) re-verified workspace type checks and the full suite with TEST_DATABASE_URL set \u2014 all nine workspaces green, 221 tests, the sync suite running all five files including both thread suites \u2014 so no code changes were needed and no commit was made.",
+      "details": "Logical-message threading per SPEC F2. Messages carry a durable thread_dirty job mark; every import, body reparse, and byte-identical merge marks the rows whose parent links depend on the changed identifiers, in the same transaction (markThreadJobsDirty in packages/ingestion). ThreadService reconciles marked rows in bounded newest-first passes, one transaction per row: parent from the single valid In-Reply-To identifier or the last valid References identifier, one holder links, none stays pending, and conflicting identifiers, self-links, duplicate holders, and cycles stay unlinked and ambiguous; subject and participant similarity never links, and holders in another account never parent a message. Membership recomputes with each link: the row and its descendants move to the chain root thread, a detached row starts a fresh thread, and old thread records remain for drafts and snapshots. SyncRunner resolves a bounded number of thread jobs per cycle after body jobs and reports threadsResolved, threadLinksChanged, and pendingThreads in sync.status. Implemented and committed in 6fd3fcf. Two later passes (2026-09-19) re-verified workspace type checks and the full suite with TEST_DATABASE_URL set — all nine workspaces green, 221 tests, the sync suite running all five files including both thread suites — so no code changes were needed and no commit was made.",
       "depends_on": [
         "T007",
         "T008"
@@ -810,7 +812,7 @@
       "title": "Implement PWA offline data and replay controls",
       "priority": 2,
       "status": "done",
-      "details": "PWA offline data and replay controls per SPEC F9 and section 10. New @mail-hub/offline package: a Dexie store for recent mail (rows plus sanitized details, pruned to the newest 500), local drafts with their base revision, upload bytes held until the server acknowledges them, and a queue that deep-freezes every payload \u2014 occurrence targets, modseq conditions, and idempotency keys never expand on replay. The replay controller stamps each record with the recovery generation observed at creation, replays pending actions oldest first through an injected port, and stops the pass when an item predates the stored generation. The session probe now exposes the current generation (GET /accounts returns recoveryGeneration from the control status), so a restore is detected at sign-in: earlier-generation work moves to review with the SPEC message, local text and files are retained, a draft rebases only after an explicit comparison onto the shown server revision, and an uncertain send replays only after the acknowledged duplicate warning, with a new idempotency key. The web app caches downloaded rows and details and serves them with an offline notice when the service is unreachable; the header shows one sync line (offline, N waiting on this device, syncing) and the review dialog resolves each item. Verified 2026-09-19: release gate PASS \u2014 every workspace type-checks, 7 migrations re-run clean on a scratch database, 552 workspace tests and 100 action/api permission tests, none failed or skipped (the two known T033 deferrals aside).",
+      "details": "PWA offline data and replay controls per SPEC F9 and section 10. New @mail-hub/offline package: a Dexie store for recent mail (rows plus sanitized details, pruned to the newest 500), local drafts with their base revision, upload bytes held until the server acknowledges them, and a queue that deep-freezes every payload — occurrence targets, modseq conditions, and idempotency keys never expand on replay. The replay controller stamps each record with the recovery generation observed at creation, replays pending actions oldest first through an injected port, and stops the pass when an item predates the stored generation. The session probe now exposes the current generation (GET /accounts returns recoveryGeneration from the control status), so a restore is detected at sign-in: earlier-generation work moves to review with the SPEC message, local text and files are retained, a draft rebases only after an explicit comparison onto the shown server revision, and an uncertain send replays only after the acknowledged duplicate warning, with a new idempotency key. The web app caches downloaded rows and details and serves them with an offline notice when the service is unreachable; the header shows one sync line (offline, N waiting on this device, syncing) and the review dialog resolves each item. Verified 2026-09-19: release gate PASS — every workspace type-checks, 7 migrations re-run clean on a scratch database, 552 workspace tests and 100 action/api permission tests, none failed or skipped (the two known T033 deferrals aside).",
       "depends_on": [
         "T003",
         "T012",
@@ -1102,7 +1104,7 @@
       "title": "Add authentication, transport, and recovery tests",
       "priority": 1,
       "status": "done",
-      "details": "Done: two new suites. packages/harness/test/transport-acceptance.test.ts consolidates the encrypted-transport failure cases onto the shared T029 harness, driving the production testImapConnection and testSmtpConnection against the scripted servers: IMAP implicit TLS inspection (capabilities, folders, counts, zero writes), self-signed, expired, and wrong-host certificates, refused STARTTLS, failed upgrades, and wrong credentials \u2014 with the recorded command lines proving no credential or mail content leaves before a verified encrypted channel. apps/api/test/restore-acceptance.test.ts runs one integrated story against real PostgreSQL and the scripted SMTP server: console bootstrap enrollment and mail work under generation A, an off-box backup (CREATE DATABASE TEMPLATE), one send accepted after the backup with the acknowledgement lost, the live database lost, and the backup restored under generation B. It verifies workers and every mutation blocked (409 replay before idempotency, 503 with missing configuration), the restored session verifies but grants no mutation and startLogin is blocked, recovery begin revokes restored auth exactly once and resumes without re-revoking, complete refuses over undispositioned work (pending_operations) then owner_missing, the hold dispositions the restored action (conflicted, reason restored_generation, nothing executed), the recovery grant enrolls a replacement passkey (inspection session) while the old passkey fails, mail survives unread, complete succeeds, the old-generation replay still answers 409 after resume with zero additional SMTP submissions, and a new-generation send alone submits again. Enrollment races, second passkeys, last-credential protection, and concurrent revocations stay covered by packages/auth/test/service.test.ts. Verified: npm run check clean in every workspace and the full suite with TEST_DATABASE_URL passes 415 tests across 13 workspaces, nothing skipped.",
+      "details": "Done: two new suites. packages/harness/test/transport-acceptance.test.ts consolidates the encrypted-transport failure cases onto the shared T029 harness, driving the production testImapConnection and testSmtpConnection against the scripted servers: IMAP implicit TLS inspection (capabilities, folders, counts, zero writes), self-signed, expired, and wrong-host certificates, refused STARTTLS, failed upgrades, and wrong credentials — with the recorded command lines proving no credential or mail content leaves before a verified encrypted channel. apps/api/test/restore-acceptance.test.ts runs one integrated story against real PostgreSQL and the scripted SMTP server: console bootstrap enrollment and mail work under generation A, an off-box backup (CREATE DATABASE TEMPLATE), one send accepted after the backup with the acknowledgement lost, the live database lost, and the backup restored under generation B. It verifies workers and every mutation blocked (409 replay before idempotency, 503 with missing configuration), the restored session verifies but grants no mutation and startLogin is blocked, recovery begin revokes restored auth exactly once and resumes without re-revoking, complete refuses over undispositioned work (pending_operations) then owner_missing, the hold dispositions the restored action (conflicted, reason restored_generation, nothing executed), the recovery grant enrolls a replacement passkey (inspection session) while the old passkey fails, mail survives unread, complete succeeds, the old-generation replay still answers 409 after resume with zero additional SMTP submissions, and a new-generation send alone submits again. Enrollment races, second passkeys, last-credential protection, and concurrent revocations stay covered by packages/auth/test/service.test.ts. Verified: npm run check clean in every workspace and the full suite with TEST_DATABASE_URL passes 415 tests across 13 workspaces, nothing skipped.",
       "depends_on": [
         "T003",
         "T004",
@@ -1641,7 +1643,7 @@
       "title": "Raise browser-test fidelity and missing coverage",
       "priority": 3,
       "status": "done",
-      "details": "The fixture server accepts settings and account mutations without the recovery-generation header and Origin check the real API enforces, and no route can return 401 (apps/web/e2e/fixture-server.mjs:230-238, 241-326, 348-351), so a client regression that drops the generation header, a path that exists in apps/web/src/settings/settings-context.tsx:121-123 when the generation is unknown, passes the whole browser suite while every production save fails; make the fixture enforce both guards and add a signed-out mode that exercises the sign-in path. The axe exclusion selector matches nothing because the reader iframe has no identifier (apps/web/e2e/helpers.ts:68); give the frame the identifier or fix the selector. The palette-latency check fails on the maximum of five samples against a hard 100 ms with no retries (apps/web/e2e/flows.browser.ts:452-475), stricter than the SPEC p95 target and a known intermittent-failure shape on a loaded runner; use a warm-up and a p95 aggregate. And add the missing SPEC section 12 coverage: failure and pending interaction states (the fixture always succeeds) and visual regression snapshots for the shared components and main flows. Completed: the fixture now runs the deployed guards on every mutation (origin 403, session 401, malformed generation 400, stale generation 409 with currentGeneration), exposes POST /api/fixture/session to flip a context signed-out, and serves the passkey login ceremony; the reader frame carries id message-body-frame so the axe exclusion matches; the latency check warms up once and asserts nearest-rank p95 over 20 samples; new coverage covers the sign-in path, settings and list failure retries, skeleton and saving pending states, and visual baselines for shell, reader, palette, settings, compose, dark theme, and sign-in. Re-verified 2026-09-19 after the loop reset the status to doing: the verification run exposed one more intermittent shape the baselines carried \u2014 the compose shot left the drafts list's wall-clock edit time unmasked, so any run outside the baseline's minute failed on a two-digit pixel region; the row time now renders in a time element with the mask covering it beside the footer, the compose baseline was regenerated, and both browser suites pass (35 flows; 15 interface checks twice across a minute boundary) with the web type check and the 83 unit tests green. Re-checked once more 2026-09-19T23:38:44Z after another loop reset: the committed tree needed no code changes \u2014 the web type check, the 83 unit tests, the 35 flows, and the 15 interface checks all pass \u2014 so only the status returns to done. Re-checked 2026-09-19T23:42:09Z: type check, 83 unit tests, 35 flows, and 15 interface checks all pass on the committed tree; no code changes needed, so only the status returns to done.",
+      "details": "The fixture server accepts settings and account mutations without the recovery-generation header and Origin check the real API enforces, and no route can return 401 (apps/web/e2e/fixture-server.mjs:230-238, 241-326, 348-351), so a client regression that drops the generation header, a path that exists in apps/web/src/settings/settings-context.tsx:121-123 when the generation is unknown, passes the whole browser suite while every production save fails; make the fixture enforce both guards and add a signed-out mode that exercises the sign-in path. The axe exclusion selector matches nothing because the reader iframe has no identifier (apps/web/e2e/helpers.ts:68); give the frame the identifier or fix the selector. The palette-latency check fails on the maximum of five samples against a hard 100 ms with no retries (apps/web/e2e/flows.browser.ts:452-475), stricter than the SPEC p95 target and a known intermittent-failure shape on a loaded runner; use a warm-up and a p95 aggregate. And add the missing SPEC section 12 coverage: failure and pending interaction states (the fixture always succeeds) and visual regression snapshots for the shared components and main flows. Completed: the fixture now runs the deployed guards on every mutation (origin 403, session 401, malformed generation 400, stale generation 409 with currentGeneration), exposes POST /api/fixture/session to flip a context signed-out, and serves the passkey login ceremony; the reader frame carries id message-body-frame so the axe exclusion matches; the latency check warms up once and asserts nearest-rank p95 over 20 samples; new coverage covers the sign-in path, settings and list failure retries, skeleton and saving pending states, and visual baselines for shell, reader, palette, settings, compose, dark theme, and sign-in. Re-verified 2026-09-19 after the loop reset the status to doing: the verification run exposed one more intermittent shape the baselines carried — the compose shot left the drafts list's wall-clock edit time unmasked, so any run outside the baseline's minute failed on a two-digit pixel region; the row time now renders in a time element with the mask covering it beside the footer, the compose baseline was regenerated, and both browser suites pass (35 flows; 15 interface checks twice across a minute boundary) with the web type check and the 83 unit tests green. Re-checked once more 2026-09-19T23:38:44Z after another loop reset: the committed tree needed no code changes — the web type check, the 83 unit tests, the 35 flows, and the 15 interface checks all pass — so only the status returns to done. Re-checked 2026-09-19T23:42:09Z: type check, 83 unit tests, 35 flows, and 15 interface checks all pass on the committed tree; no code changes needed, so only the status returns to done.",
       "tags": [
         "testing",
         "ui"
@@ -2050,7 +2052,7 @@
         "apps/web/test/sync-context.test.tsx",
         "packages/offline/src/index.ts"
       ],
-      "notes": "Fixed 2026-09-20. Re-entrancy: OfflineSync.sync now serializes passes through a private pass promise \u2014 a caller that arrives while a pass runs chains behind it and then runs a fresh pass \u2014 so resolve and retry can no longer double-run port calls and land a good edit in review on a false draft_stale (the context itself needed no change; its resolve and retry call controller.sync). Mid-pass generation: refresh records the newest generation handed over in a ref and the running pass loops until it consumed it, so a generation that arrives during a pass is observed when the pass can take it instead of being dropped by the early return and replayed item-by-item into recovery_required refusals later. Refresh failures: the pass body sits in a catch, so a Dexie failure keeps the last good snapshot and leaves syncing false instead of an unhandled rejection. Atomic caches: cacheMessageRow and cacheMessageDetail read and write inside one rw transaction, so a row cache and a detail cache that overlap can no longer read the same base record and each drop the other's half. Pruning: pruneSettledLocalRecords runs at the end of every pass and drops non-dirty draft copies and attached uploads older than SETTLED_RECORD_RETENTION_MS (7 days); dirty drafts and unacknowledged or unlinked uploads stay because the review surface and the send gate read them. Fail-pre-fix proofs: with sync.ts stashed, the serialization test fails with a second save:d1 port call while the first hangs in flight; with sync-context.tsx stashed, both new provider tests fail \u2014 the generation test observes only the first generation and the failure test records the unhandled rejection; with store.ts stashed, 24 tests fail on the missing prune API, and with only the two cache transactions reverted, the concurrency test fails on the lost half. Context tests render the real provider through createRoot and act over a mocked offlineSync singleton in a new file, apps/web/test/sync-context.test.tsx."
+      "notes": "Fixed 2026-09-20. Re-entrancy: OfflineSync.sync now serializes passes through a private pass promise — a caller that arrives while a pass runs chains behind it and then runs a fresh pass — so resolve and retry can no longer double-run port calls and land a good edit in review on a false draft_stale (the context itself needed no change; its resolve and retry call controller.sync). Mid-pass generation: refresh records the newest generation handed over in a ref and the running pass loops until it consumed it, so a generation that arrives during a pass is observed when the pass can take it instead of being dropped by the early return and replayed item-by-item into recovery_required refusals later. Refresh failures: the pass body sits in a catch, so a Dexie failure keeps the last good snapshot and leaves syncing false instead of an unhandled rejection. Atomic caches: cacheMessageRow and cacheMessageDetail read and write inside one rw transaction, so a row cache and a detail cache that overlap can no longer read the same base record and each drop the other's half. Pruning: pruneSettledLocalRecords runs at the end of every pass and drops non-dirty draft copies and attached uploads older than SETTLED_RECORD_RETENTION_MS (7 days); dirty drafts and unacknowledged or unlinked uploads stay because the review surface and the send gate read them. Fail-pre-fix proofs: with sync.ts stashed, the serialization test fails with a second save:d1 port call while the first hangs in flight; with sync-context.tsx stashed, both new provider tests fail — the generation test observes only the first generation and the failure test records the unhandled rejection; with store.ts stashed, 24 tests fail on the missing prune API, and with only the two cache transactions reverted, the concurrency test fails on the lost half. Context tests render the real provider through createRoot and act over a mocked offlineSync singleton in a new file, apps/web/test/sync-context.test.tsx."
     },
     {
       "id": "T068",
@@ -2132,7 +2134,7 @@
         "packages/sync/src/threads.ts",
         "packages/sync/test/threads.test.ts"
       ],
-      "notes": "Fixed 2026-09-20. Containment: runAccountCycle now wraps the thread pass like folders and bodies \u2014 a throw increments threadErrors, logs one warn through the runner logger, and the sync.status event still lands; the event payload carries threadErrors and pendingThreads. Serialization: reconcileRow takes pg_advisory_xact_lock(hashtext('threads.<account>')) as the first statement of its transaction, before any row lock, so every link decision for one account queues behind the previous commit and a later pass reads committed links; the advisory-first order keeps two passes from deadlocking on advisory-plus-row locks. Fail-pre-fix proofs: with runner.ts stashed, the containment test fails because the SyncError escapes runAccountCycle (no status event); with threads.ts stashed, the race test fails with a raw 40P01 deadlock \u2014 the two passes block each other on the parent-message foreign-key KEY SHARE while each holds the other row, so the error escapes reconcileAccount uncontained; the same missing serialization is what lets both directions commit and form the A<->B parent cycle the schema cannot see (only self-parents are forbidden). Race test makes the interleave deterministic: A resolves alone first (own thread, no parent), B imports and is the only dirty row, a trigger stalls exactly the write that sets B.parent=A for 2 s, A is re-dirtied mid-flight, and a second pass (A first on newer sentAt) decides against B's uncommitted link. Post-fix the second pass waits on the advisory lock, then flags A ambiguous on the committed B->A link; exactly one direction links and both rows settle. Note: same-order batches are already safe on the row locks; the defect needs divergent batch order between concurrent passes, which sentAt ties make realistic (the fixture Date header ties, so batch order is physical order). Full sync suite 72/72, tsc clean in sync and worker."
+      "notes": "Fixed 2026-09-20. Containment: runAccountCycle now wraps the thread pass like folders and bodies — a throw increments threadErrors, logs one warn through the runner logger, and the sync.status event still lands; the event payload carries threadErrors and pendingThreads. Serialization: reconcileRow takes pg_advisory_xact_lock(hashtext('threads.<account>')) as the first statement of its transaction, before any row lock, so every link decision for one account queues behind the previous commit and a later pass reads committed links; the advisory-first order keeps two passes from deadlocking on advisory-plus-row locks. Fail-pre-fix proofs: with runner.ts stashed, the containment test fails because the SyncError escapes runAccountCycle (no status event); with threads.ts stashed, the race test fails with a raw 40P01 deadlock — the two passes block each other on the parent-message foreign-key KEY SHARE while each holds the other row, so the error escapes reconcileAccount uncontained; the same missing serialization is what lets both directions commit and form the A<->B parent cycle the schema cannot see (only self-parents are forbidden). Race test makes the interleave deterministic: A resolves alone first (own thread, no parent), B imports and is the only dirty row, a trigger stalls exactly the write that sets B.parent=A for 2 s, A is re-dirtied mid-flight, and a second pass (A first on newer sentAt) decides against B's uncommitted link. Post-fix the second pass waits on the advisory lock, then flags A ambiguous on the committed B->A link; exactly one direction links and both rows settle. Note: same-order batches are already safe on the row locks; the defect needs divergent batch order between concurrent passes, which sentAt ties make realistic (the fixture Date header ties, so batch order is physical order). Full sync suite 72/72, tsc clean in sync and worker."
     },
     {
       "id": "T072",
@@ -2386,7 +2388,7 @@
       "title": "Re-mark thread jobs whose stored reference text differs from the extracted identifier",
       "priority": 2,
       "status": "done",
-      "details": "markThreadJobsDirty re-marks children with exact equality on in_reply_to, but resolveParentReference extracts identifiers from the raw stored text and tolerates folded comments such as '<(note) <a@example.com>>' (packages/ingestion/src/thread-jobs.ts:71). A child stored with a folded In-Reply-To and empty reference_ids is never re-marked when its parent's holder set changes, so its pending or ambiguous link is permanent because reconcileAccount resolves only dirty rows. Fix: mark rows whose raw in_reply_to or reference_ids contain one of the identifiers, as extraction does, or normalize the stored reference columns to their extracted identifiers at import and parse time.\n\nFixed 2026-09-20. markThreadJobsDirty keeps its two index-backed exact arms and adds two containment arms in the same UPDATE: in_reply_to LIKE ANY over the escaped identifiers, and a correlated EXISTS over jsonb_array_elements_text(reference_ids) with the same match \u2014 the shape extraction itself uses for folded comments. LIKE wildcards inside an identifier are escaped, and a database-backed suite proves the folded child flips dirty both through direct marking and the real ingestOriginal path.",
+      "details": "markThreadJobsDirty re-marks children with exact equality on in_reply_to, but resolveParentReference extracts identifiers from the raw stored text and tolerates folded comments such as '<(note) <a@example.com>>' (packages/ingestion/src/thread-jobs.ts:71). A child stored with a folded In-Reply-To and empty reference_ids is never re-marked when its parent's holder set changes, so its pending or ambiguous link is permanent because reconcileAccount resolves only dirty rows. Fix: mark rows whose raw in_reply_to or reference_ids contain one of the identifiers, as extraction does, or normalize the stored reference columns to their extracted identifiers at import and parse time.\n\nFixed 2026-09-20. markThreadJobsDirty keeps its two index-backed exact arms and adds two containment arms in the same UPDATE: in_reply_to LIKE ANY over the escaped identifiers, and a correlated EXISTS over jsonb_array_elements_text(reference_ids) with the same match — the shape extraction itself uses for folded comments. LIKE wildcards inside an identifier are escaped, and a database-backed suite proves the folded child flips dirty both through direct marking and the real ingestOriginal path.",
       "tags": [
         "audit",
         "ingestion",
@@ -2402,7 +2404,7 @@
       "title": "Clear the draft dirty flag when a queued send finishes its replay",
       "priority": 2,
       "status": "done",
-      "details": "moreEditsPending counts any pending action for the draft, including a queued send, so the local draft keeps its dirty flag after an offline replay finishes (packages/offline/src/sync.ts:604). snapshot.dirtyDrafts stays at 1 forever, which contradicts the records contract ('true while the local edits have no server acknowledgement'), the Dexie record is never pruned, and a later server restore leaves reviewRequired permanently true with no reviewable item. Fix: count only queued draft-saves as unsynchronized edits, and clear the dirty flag in settleSynced when a send of that draft syncs.\n\nFixed 2026-09-20. settleSynced counts only queued draft-saves as unsynchronized edits (hasQueuedDraftSave), and a new send branch clears the local draft's dirty flag \u2014 and restamps its recovery generation \u2014 when a send of that draft syncs and its base revision covers the local base, because the send's revision gate proves the server holds those edits. dirtyDrafts reaches 0, the Dexie record prunes after retention, and a restored generation no longer leaves reviewRequired permanently true.",
+      "details": "moreEditsPending counts any pending action for the draft, including a queued send, so the local draft keeps its dirty flag after an offline replay finishes (packages/offline/src/sync.ts:604). snapshot.dirtyDrafts stays at 1 forever, which contradicts the records contract ('true while the local edits have no server acknowledgement'), the Dexie record is never pruned, and a later server restore leaves reviewRequired permanently true with no reviewable item. Fix: count only queued draft-saves as unsynchronized edits, and clear the dirty flag in settleSynced when a send of that draft syncs.\n\nFixed 2026-09-20. settleSynced counts only queued draft-saves as unsynchronized edits (hasQueuedDraftSave), and a new send branch clears the local draft's dirty flag — and restamps its recovery generation — when a send of that draft syncs and its base revision covers the local base, because the send's revision gate proves the server holds those edits. dirtyDrafts reaches 0, the Dexie record prunes after retention, and a restored generation no longer leaves reviewRequired permanently true.",
       "tags": [
         "audit",
         "offline",
@@ -2418,7 +2420,7 @@
       "title": "Fall back to the stored sanitized body when a refresh fails",
       "priority": 2,
       "status": "done",
-      "details": "currentSanitizedHtml awaits refreshSanitizedBody with no failure handling; the null fallback covers only a null return (packages/reading/src/service.ts:205). When the refresh throws (original missing, hash mismatch, or parse failure after a sanitizer version bump or a partial restore), GET /messages/:id and /clean-view answer a generic 500, so the user loses subject, recipients, and attachments too, even though only htmlSanitized depends on the refresh. Fix: catch refresh failures and fall back to the stored sanitized derivative, or serve every non-HTML field from the row and log the failure server-side.\n\nFixed 2026-09-20. currentSanitizedHtml catches refresh failures, logs one console.warn with the message id and cause, and returns the stored sanitized derivative \u2014 prior sanitizer output, never the original \u2014 so GET /messages/:id and /clean-view serve every field instead of a 500.",
+      "details": "currentSanitizedHtml awaits refreshSanitizedBody with no failure handling; the null fallback covers only a null return (packages/reading/src/service.ts:205). When the refresh throws (original missing, hash mismatch, or parse failure after a sanitizer version bump or a partial restore), GET /messages/:id and /clean-view answer a generic 500, so the user loses subject, recipients, and attachments too, even though only htmlSanitized depends on the refresh. Fix: catch refresh failures and fall back to the stored sanitized derivative, or serve every non-HTML field from the row and log the failure server-side.\n\nFixed 2026-09-20. currentSanitizedHtml catches refresh failures, logs one console.warn with the message id and cause, and returns the stored sanitized derivative — prior sanitizer output, never the original — so GET /messages/:id and /clean-view serve every field instead of a 500.",
       "tags": [
         "audit",
         "reading",
@@ -2515,7 +2517,7 @@
       "title": "Degrade the folder index per account instead of failing every account",
       "priority": 3,
       "status": "done",
-      "details": "useFolderIndex fetches every account's folders with Promise.all, so one transient failure on one account rejects the whole read and the nav pane and unified inbox error everywhere (apps/web/src/mail/data.ts:300). The merge guard 'if (response !== undefined)' is dead code, which shows partial tolerance was intended but never implemented. Fix: use Promise.allSettled, build the index from the fulfilled responses, and surface the rejected accounts separately.\n\nFixed 2026-09-20. useFolderIndex settles every account's read with Promise.allSettled, builds the index from the fulfilled responses, and collects rejected account ids in a new failedAccounts field on FolderIndex; only a total failure rethrows so the existing whole-index error path renders unchanged. No UI renders failedAccounts yet \u2014 a rejected account shows as skeleton rows until a successful reload.",
+      "details": "useFolderIndex fetches every account's folders with Promise.all, so one transient failure on one account rejects the whole read and the nav pane and unified inbox error everywhere (apps/web/src/mail/data.ts:300). The merge guard 'if (response !== undefined)' is dead code, which shows partial tolerance was intended but never implemented. Fix: use Promise.allSettled, build the index from the fulfilled responses, and surface the rejected accounts separately.\n\nFixed 2026-09-20. useFolderIndex settles every account's read with Promise.allSettled, builds the index from the fulfilled responses, and collects rejected account ids in a new failedAccounts field on FolderIndex; only a total failure rethrows so the existing whole-index error path renders unchanged. No UI renders failedAccounts yet — a rejected account shows as skeleton rows until a successful reload.",
       "tags": [
         "audit",
         "ui",
@@ -2596,7 +2598,7 @@
       "title": "Re-validate the WebAuthn counter under the ceremony transaction lock",
       "priority": 3,
       "status": "done",
-      "details": "Assertion counters are validated against a pre-transaction snapshot and never re-checked under the FOR UPDATE lock inside the ceremony transaction (packages/auth/src/service.ts:270). Concurrent ceremonies from a cloned passkey can both pass clone detection, and the unconditional write can regress the stored counter. Fix: inside the transaction, select the credential row for update, reject when the new counter is not greater than the stored one (except for counterless authenticators), and persist the counter only through that guarded update.\n\nFixed 2026-09-20. requireLiveCredential selects the counter in its FOR UPDATE read and rejects with webauthn_invalid when (newCounter > 0 || row.counter > 0) && newCounter <= row.counter \u2014 the library's own rule re-applied under the lock \u2014 with both zero passing for counterless authenticators. The counter persists only through the guarded update in the same transaction, so concurrent ceremonies from a cloned passkey serialize and the loser is rejected.",
+      "details": "Assertion counters are validated against a pre-transaction snapshot and never re-checked under the FOR UPDATE lock inside the ceremony transaction (packages/auth/src/service.ts:270). Concurrent ceremonies from a cloned passkey can both pass clone detection, and the unconditional write can regress the stored counter. Fix: inside the transaction, select the credential row for update, reject when the new counter is not greater than the stored one (except for counterless authenticators), and persist the counter only through that guarded update.\n\nFixed 2026-09-20. requireLiveCredential selects the counter in its FOR UPDATE read and rejects with webauthn_invalid when (newCounter > 0 || row.counter > 0) && newCounter <= row.counter — the library's own rule re-applied under the lock — with both zero passing for counterless authenticators. The counter persists only through the guarded update in the same transaction, so concurrent ceremonies from a cloned passkey serialize and the loser is rejected.",
       "tags": [
         "audit",
         "auth",
@@ -2661,7 +2663,7 @@
       "title": "Stop the Sent-copy sweep from starving on unmapped unknown rows",
       "priority": 3,
       "status": "done",
-      "details": "appendDueSentCopies selects unknown-status rows in accounts that map no Sent folder, but executeSentCopyAppend returns early with attempted false for them, so sentCopyAttempts never increments and the row never reaches the cap or leaves the limit-bounded window (packages/send/src/service.ts:709). With enough such rows, younger due rows are never reached. The method doc states the opposite invariant. Fix: exclude every non-pending row whose account maps no Sent folder, or count the early pass toward the cap so the row records the halt event.\n\nFixed 2026-09-20. appendDueSentCopies excludes every non-pending row whose account maps no Sent folder \u2014 composed like the reconcile sweep's not(missingSentFolder()) \u2014 while pending rows stay due for their single pass that records the unmapped failure. A backdated-rows test proves a one-row window goes to the younger row and a fresh Sent mapping re-dues the stuck row.",
+      "details": "appendDueSentCopies selects unknown-status rows in accounts that map no Sent folder, but executeSentCopyAppend returns early with attempted false for them, so sentCopyAttempts never increments and the row never reaches the cap or leaves the limit-bounded window (packages/send/src/service.ts:709). With enough such rows, younger due rows are never reached. The method doc states the opposite invariant. Fix: exclude every non-pending row whose account maps no Sent folder, or count the early pass toward the cap so the row records the halt event.\n\nFixed 2026-09-20. appendDueSentCopies excludes every non-pending row whose account maps no Sent folder — composed like the reconcile sweep's not(missingSentFolder()) — while pending rows stay due for their single pass that records the unmapped failure. A backdated-rows test proves a one-row window goes to the younger row and a fresh Sent mapping re-dues the stuck row.",
       "tags": [
         "audit",
         "send"
@@ -2670,7 +2672,458 @@
       "files": [
         "packages/send/src/service.ts"
       ]
+    },
+    {
+      "id": "T104",
+      "title": "Remove private data from sync diagnostics",
+      "priority": 1,
+      "status": "done",
+      "details": "Plan: docs/sync-repair-plan.md (section T104).\n\nThe sync runner logs arbitrary error messages and folder names. Database errors can include private mail parameters. Replace raw errors with approved codes and internal identifiers. Test nested causes and arbitrary thrown values with sentinel secrets. Preserve containment and durable error counters.",
+      "steps": [
+        "Follow the T104 procedure and acceptance checks in docs/sync-repair-plan.md.",
+        "Add the required regression coverage and record validation results."
+      ],
+      "tags": [
+        "sync",
+        "privacy",
+        "logging"
+      ],
+      "files": [
+        "docs/sync-repair-plan.md",
+        "packages/sync/src/diagnostics.ts",
+        "packages/sync/src/runner.ts",
+        "packages/sync/src/errors.ts",
+        "packages/sync/src/index.ts",
+        "packages/sync/test/diagnostics.test.ts",
+        "packages/sync/test/steady.test.ts",
+        "apps/worker/src/main.ts",
+        "apps/worker/test/account-cycle.test.ts",
+        "apps/worker/test/storage-diagnostics.test.ts",
+        "packages/compose/src/service.ts"
+      ],
+      "depends_on": [],
+      "created_at": "2026-09-20T21:45:35Z",
+      "updated_at": "2026-09-20T22:45:00Z",
+      "notes": "Done 2026-09-20. New packages/sync/src/diagnostics.ts classifies every contained failure into an approved kind (sync/storage/ingestion codes, database_<sqlstate>, system_<errno>, error_<name>, unknown); the SQLSTATE branch requires a digit so five-letter errnos (EPIPE, EPERM) stay system_*. runner.ts logs folder/body/thread containment with internal ids and the kind only, and adds deduplicated, bounded *FailureKinds arrays to the summary and sync.status payload. Worker main.ts logs classifyFailure kinds for the outer cycle, temp sweep, and durable collection; the full-volume pause emits fixed text and {kind, code}; the pause, sweep, and collection handlers are now exported and tested. compose upload-pause event aligned to {kind, code}. Verification: diagnostics 22, steady 28 (storage_* through the real runner; dedup and 8-kind bound), worker 21; fail-pre-fix proofs for the classifier and mutation proofs for every new log/payload pin; npm run check clean; full suite 99 files / 1067 tests / 0 failed. Plan step 6 (live worker-log review) blocked: awc-pilot SSH unreachable; folds into T107/T110."
+    },
+    {
+      "id": "T105",
+      "title": "Handle NUL characters in imported mail data",
+      "priority": 1,
+      "status": "done",
+      "details": "Plan: docs/sync-repair-plan.md (section T105).\n\nTrash and Deleted Messages repeatedly fail message inserts with PostgreSQL UTF8 error 0x00. The exact field remains unknown. Reproduce with synthetic data and make derived text and nested metadata database-safe. Preserve invalid identifier and address semantics, original bytes, hashes, and atomic checkpoints. Test real PostgreSQL imports, retries, and body ingestion without duplicates or skipped mail.",
+      "steps": [
+        "Follow the T105 procedure and acceptance checks in docs/sync-repair-plan.md.",
+        "Add the required regression coverage and record validation results."
+      ],
+      "tags": [
+        "sync",
+        "ingestion",
+        "database"
+      ],
+      "files": [
+        "docs/sync-repair-plan.md",
+        "packages/sync/src/headers.ts",
+        "packages/sync/src/store.ts",
+        "packages/ingestion/src/parse.ts",
+        "packages/ingestion/src/text.ts",
+        "packages/ingestion/src/service.ts"
+      ],
+      "depends_on": [
+        "T104"
+      ],
+      "created_at": "2026-09-20T21:45:35Z",
+      "updated_at": "2026-09-20T23:59:00Z",
+      "notes": "Done 2026-09-20. Policy: replaceNul/replaceNulOption in packages/ingestion/src/text.ts replace U+0000 with U+FFFD at the derived-data boundary, applied identically in header import (packages/sync/src/headers.ts) and full parse (packages/ingestion/src/parse.ts), so a message looks identical before and after its body fetch and thread linking still matches by string equality. Covered fields: subject (+subjectText and the other index texts), messageId, inReplyTo, referenceIds, sender/replyTo display names, textPlain, html, attachment filename/contentType/contentId/disposition. isValidAddress now rejects a decoded NUL inside an address token (Q-encoded =00 survives address tokenization, unlike raw NUL which mailparser strips): an invalid address stays invalid and the message still imports without a sender. No byte stripping anywhere; stored originals, hashes, and locators untouched. Verification: backfill 16 (poisoned window imports beside a clean neighbor and a NUL-address neighbor; original keeps raw NUL bytes and verifies by hash; a NUL-carrying reply links to a NUL-carrying parent; a corrupted record fails the window mid-transaction and the folders row stays byte-identical, then the retry imports everything once and body jobs resolve once), steady 29 (NUL arrival through the poll), headers 7 (sanitized header import plus full-parse identity), ingestion parse 11 (every derived field, address stays invalid, valid Unicode unchanged beside the NUL), service 14 (ingestOriginal persists sanitized rows while the original keeps its bytes). Fail-pre-fix proof: the backfill NUL test failed pre-fix at insert into messages with SQLSTATE 22021. Mutation proofs: removing the isValidAddress guard fails the address test; NFKD-broadened replaceNul fails the Unicode test; breaking window atomicity fails the rollback test. An adversarial review workflow confirmed four coverage gaps, all fixed before commit: the untested address guard, tautological no-NUL JSON sweeps (single-backslash escape can never match JSON.stringify output), checkpoint proof only on the pre-transaction failure path, and no valid-Unicode fixture. Review found no product-code defects. npm run check clean; full suite 99 files / 1076 tests / 0 failed."
+    },
+    {
+      "id": "T106",
+      "title": "Report partial sync failures in health and settings",
+      "priority": 2,
+      "status": "done",
+      "details": "Plan: docs/sync-repair-plan.md (section T106).\n\nThe health report shows ok while two folders repeatedly fail. Expose durable per-cycle error counters and safe failure state through health, sync status, and account settings. Distinguish normal backfill from partial failure and stale cycles. A clean cycle clears degradation. Preserve query bounds, privacy, and HTTP liveness behavior.",
+      "steps": [
+        "Follow the T106 procedure and acceptance checks in docs/sync-repair-plan.md.",
+        "Add the required regression coverage and record validation results."
+      ],
+      "tags": [
+        "sync",
+        "observability",
+        "web"
+      ],
+      "files": [
+        "docs/sync-repair-plan.md",
+        "packages/observability/src/health.ts",
+        "packages/contracts/src/index.ts",
+        "apps/api/src/settings-routes.ts",
+        "apps/web/src/components/settings/account-settings.tsx"
+      ],
+      "depends_on": [
+        "T104"
+      ],
+      "created_at": "2026-09-20T21:45:35Z",
+      "updated_at": "2026-09-21T00:58:25Z",
+      "notes": "Done 2026-09-21. Derivation: HealthService derives one HealthzSyncState per account from its newest sync.status event (packages/observability/src/health.ts): degraded when folderErrors+bodyErrors+threadErrors > 0 however recent the cycle is, stale when clean but older than SYNC_STALE_AFTER_SECONDS = 900 s (exported), syncing when clean and fresh with pending backfill, bodies, or threads (pending work is never a failure), ok when clean, current, and idle, unknown when no record exists or the record predates the T104 counters (missing fields prove nothing). Precedence: errors before stale before pending. Pure computation over the existing distinct-on sync.status query: no SQL added, the read stays read-only and bounded at the same query count. Whole report status: degraded when recovery is not ready OR any account state is degraded; stale and unknown stay per-account only (a fresh enrollment is unknown; stale can follow an operator cron override). /healthz still answers 200 while degraded, so container liveness never restarts on mail trouble. Contracts: HealthzSyncLag gained state, folderErrors/bodyErrors/threadErrors (number|null), folderFailureKinds/bodyFailureKinds/threadFailureKinds (string[]|null), pendingThreads (number|null). The public /healthz response schema was widened to match (Fastify serialization would otherwise silently strip the fields); a route test pins the passthrough with 200 while degraded. /sync/status serves the same accounts unchanged. Web: AccountSyncLines renders one state line (Sync in progress; Sync failed for N folders, M bodies, K threads with the approved codes; No sync cycle recently; Sync up to date; No sync cycle yet; Sync state unknown) beside the existing progress lines; the settings e2e pins a syncing account beside a degraded one. Privacy: every response carries counts and approved kind codes only; no folder names, mail text, or error text in any public or session-gated response. Coverage: packages/observability/test/health.test.ts adds failed-cycle-beside-healthy (the healthy sibling is asserted), clear-after-clean-cycle, stale-beyond-bound without failing the report, pre-T104 record and never-cycled account read unknown, and pending bodies alone stay syncing with the report ok. apps/api tests pin the /healthz passthrough and the /sync/status state fields. Verification: npm run check clean; full suite 99 files / 1080 tests / 0 failed (4 new); e2e flows and settings a11y pass. Review: a 9-agent adversarial workflow (3 dimensions, per-finding refutation) confirmed one coverage gap, fixed pre-commit: the healthy sibling assertion. Mutation proof: forcing every account degraded when any account fails passed 9/9 before the fix and fails three tests after it. Five findings refuted. One valid follow-up observation recorded: whole-cycle sync.failed events are not consulted, so an account failing before recordStatus keeps state ok for up to 900 s and stale after; that is out of T106 scope by plan step 1 and the no-new-queries bound, and it is no regression against HEAD - a future task could surface sync.failed and storage pauses in health."
+    },
+    {
+      "id": "T107",
+      "title": "Deploy sync fixes and verify complete backfill",
+      "priority": 2,
+      "status": "blocked",
+      "details": "Plan: docs/sync-repair-plan.md (section T107).\n\nRun the strict release gate with PostgreSQL tests enabled. Push to main and verify the single webhook deployment. Confirm both affected folders resume existing checkpoints and complete backfill without NUL errors or duplicate occurrences. Verify at least three clean cycles and drain the expected body backlog. Preserve account, passkey, original mail, and recovery state. Record sanitized deployment evidence.",
+      "steps": [
+        "Follow the deployment and verification procedure in docs/sync-repair-plan.md.",
+        "Record sanitized evidence and remaining limits before marking this task done."
+      ],
+      "tags": [
+        "sync",
+        "deployment",
+        "verification"
+      ],
+      "files": [
+        "docs/sync-repair-plan.md",
+        "deploy/README.md"
+      ],
+      "depends_on": [
+        "T104",
+        "T105",
+        "T106"
+      ],
+      "created_at": "2026-09-20T21:45:35Z",
+      "updated_at": "2026-09-21T15:53:00Z",
+      "notes": "Blocked 2026-09-21 on deploy-host access; every local prerequisite is green. Ready now: T104, T105, and T106 are done (their suites and the full gate pass; the strict release gate ran PASS locally at 258-260 seconds and on the runner at 301 seconds), branch protection is live on main (required release-gate check, strict, administrators included) while the workflow file itself reaches main only with the first merge of the stack — until then the documented emergency bypass (protection off, direct push) would find no workflow on main and run no gate, a bounded window the merge closes, and three stacked pull requests are open and green — merge #3 (webhook-deployment-audit) to carry everything, or #1 (gate-main-before-deploy), #2 (diagnose-docker-build-networking), #3 in order; git merge-base confirms the stacking. The webhook audit tooling from T117 (npm run webhook:audit) is ready to watch the delivery the merge fires. Blocker, probed 2026-09-21 between 15:44 and 15:50 UTC, immediately before recording: 192.168.1.144 answers ping with 100 percent loss, ssh awc-pilot fails with No route to host, the tailnet lists no peer for the pilot, deploy/access.env does not exist so DEPLOY_COOLIFY_URL, COOLIFY_TOKEN, and DEPLOY_APP_URL are unset, and npm run deploy:access fails with ssh network_unreachable. Why the merge is not done autonomously: plan step 3 fires the production webhook deployment, and steps 3 through 7 then require confirming the deployed revision, observing both affected folders resume from their existing checkpoints, three clean cycles, a drained body backlog, and preserved passkey, account, classification, and send state — every one of those needs the host, the app URL, or the Coolify API, and the rollback path needs Coolify too. Merging a production deployment that cannot be watched, verified, or rolled back from this workstation would bypass the plan’s own sequencing; the access restriction is recorded here instead. To unblock: restore the LAN route to 192.168.1.144 or enroll the pilot in the tailnet; fill deploy/access.env with DEPLOY_COOLIFY_URL, COOLIFY_TOKEN, and DEPLOY_APP_URL (copy deploy/access.env.example); confirm npm run deploy:access passes; then merge the stacked pull requests, run npm run webhook:audit, confirm the deployed revision with npm run deploy:verify -- --expect-revision, and follow docs/sync-repair-plan.md T107 steps 4 through 7 for the folder, cycle, backlog, and preservation checks with sanitized evidence."
+    },
+    {
+      "id": "T108",
+      "title": "Verify external API contracts with synthetic requests",
+      "priority": 2,
+      "status": "done",
+      "details": "Plan: docs/development-deployment-plan.md#t108-verify-external-api-contracts-with-synthetic-requests\n\nThe original tests accepted an incorrect TypeSafe endpoint and response shape. The adapter is fixed; this task prevents recurrence.\n\nAcceptance: A deliberately incorrect endpoint or response fixture fails offline checks. An authorized synthetic live check verifies the configured service without real mail, secret output, or database mutations.",
+      "steps": [
+        "Keep offline contract fixtures traceable to official documentation and a reviewed model version. Cover endpoint, authentication, request shape, typed answers, and error responses.",
+        "Add an explicit synthetic smoke command that calls the adapter with invented text. Resolve the API key from the runtime environment and print only approved result fields.",
+        "Set request timeouts and a small call budget. Keep live requests out of default tests and untrusted pull requests. Missing credentials produce an explicit unverified result.",
+        "Run the smoke check when the adapter, question set, model, or endpoint changes. Verify the installed adapter after deployment."
+      ],
+      "tags": [
+        "classification",
+        "integration",
+        "testing"
+      ],
+      "files": [
+        "packages/classification/test/fixtures/typesafe-contract.ts",
+        "packages/classification/test/contract.test.ts",
+        "apps/admin/src/verify-classify.ts",
+        "apps/admin/test/verify-classify.test.ts",
+        "apps/admin/package.json",
+        "package.json",
+        "deploy/README.md"
+      ],
+      "depends_on": [],
+      "created_at": "2026-09-20T21:51:56Z",
+      "updated_at": "2026-09-21T06:09:53Z",
+      "notes": "Done 2026-09-21. Offline half: packages/classification/test/fixtures/typesafe-contract.ts records the TypeSafe System One wire contract with provenance (documentation URL, verifiedAt, reviewedModel pinned to JEV_MODEL) and covers endpoint path, POST method, bearer auth, application/json content type, the closed body key set, the verbatim question set, one success response, and three error responses. test/contract.test.ts (12 tests, no sockets) proves the adapter emits exactly that request and lifts or rejects those responses; five deliberately incorrect fixtures (method, endpoint, model, question set, question typing) must each fail the comparison, so a wrong fixture can never pass. Mutation-checked: an adapter drift to GET fails two tests. Live half: npm run verify:classify (apps/admin/src/verify-classify.ts, exported runVerifyClassify with injectable env/io/factory) sends one synthetic call over invented text that names no real address and carries no personal data. No mail, no database writes, one-call budget, adapter timeout from JEV_TIMEOUT_MS. Output holds approved fields only (model, question set version, answers, confidences, latency, input tokens): never the API key, never the raw response, never real message text; failure paths print the fixed adapter messages. Missing TYPE_SAFE_API_KEY prints an explicit UNVERIFIED result and exits 1 without calling the service. The command re-checks the pinned model itself (model_mismatch) as defense in depth behind the adapter's parse gate. Live requests stay out of default tests and run only on operator invocation. apps/admin/test/verify-classify.test.ts (5 tests) pins the unverified case, approved-fields-only success (sentinel key never prints), the three failure kinds, the model mismatch, and usage on unexpected arguments. Wiring proven live against a local stub service: happy path exits 0 with VERIFIED and approved fields, a wrong-model answer exits 1 with invalid_response, the key never appears in output. deploy/README.md documents the smoke check (when to run it, what it prints, the fixture path) under Classification evaluation and adds it to the verification checklist. Adversarial review (two dimension reviewers plus per-finding refuters) confirmed one docs defect — the smoke-check subsection split the evaluation procedure's numbered steps — fixed by moving the subsection after the procedure; one refuted-but-real gap — method, content type, and body key set unpinned — fixed in the fixture and test. Full suite: 103 files, 1149 tests, 0 unhandled, check clean in both workspaces."
+    },
+    {
+      "id": "T109",
+      "title": "Expand synthetic malformed-mail regression coverage",
+      "priority": 2,
+      "status": "done",
+      "details": "Plan: docs/development-deployment-plan.md#t109-expand-synthetic-malformed-mail-regression-coverage\n\nThe NUL-byte incident showed that clean fixtures omit important incoming-mail cases. T105 owns the incident fix and its essential regression tests.\n\nAcceptance: The corpus detects the known NUL regression and unsafe normalization of addresses or identifiers. Tests prove that adjacent valid mail progresses without silent message loss.",
+      "steps": [
+        "Extend the shared synthetic corpus with raw and decoded NUL characters, missing or malformed headers, folded references, nested address metadata, and attachment metadata.",
+        "Exercise header import, complete-message ingestion, search derivatives, and thread reconciliation through their real boundaries. Use PostgreSQL for database representation cases.",
+        "Check valid Unicode, original and attachment hashes, retry idempotency, and checkpoint atomicity. Assert that each malformed case either imports safely or reports a contained failure.",
+        "Document how to reduce a future incident into a synthetic fixture. Never commit raw provider mail or extract private log parameters as fixtures."
+      ],
+      "tags": [
+        "sync",
+        "ingestion",
+        "testing"
+      ],
+      "files": [
+        "packages/harness/src/malformed.ts",
+        "packages/harness/test/malformed.test.ts",
+        "packages/harness/src/index.ts",
+        "packages/ingestion/src/text.ts",
+        "packages/ingestion/test/parse.test.ts",
+        "packages/ingestion/package.json",
+        "packages/sync/test/headers.test.ts",
+        "packages/sync/test/backfill.test.ts",
+        "packages/sync/package.json",
+        "packages/search/test/service.test.ts",
+        "docs/sync-repair-plan.md",
+        "package-lock.json"
+      ],
+      "depends_on": [
+        "T105"
+      ],
+      "created_at": "2026-09-20T21:51:56Z",
+      "updated_at": "2026-09-21T07:17:50Z",
+      "notes": "Done 2026-09-21. Corpus: packages/harness/src/malformed.ts owns the malformed bytes as builders returning fresh {headers, body} strings (12 builders plus ATTACHMENT_EDGE_PARTS); malformedMailBytes joins them exactly as FakeMessage.completeBytes does, so the fake mailbox, the parser, and the wire all see one byte shape. NUL is spelled String.fromCharCode(0) so no source file carries a control byte; every value is deterministic. Covers raw and decoded NUL (subject, Message-ID, References, quoted-printable body and filename, base64 body), per-field missing headers, garbage header lines, folded References/In-Reply-To, RFC 2822 address groups with encoded-word names, RFC 2231 extended and continued filenames, a nameless part, a zero-byte part, inline parts, and two valid neighbors (one full of non-ASCII). Self-tests (packages/harness/test/malformed.test.ts, 8 tests) pin determinism, the byte round trip, NUL presence exactly where claimed and absence everywhere else (derived from the whole corpus, not a hand list), missing-header exactness, folding and 2231 shapes, parse-without-throw, and no private facts (example.com/example.net only). Real defect found by the corpus: toEmailAddresses in packages/ingestion/src/text.ts dropped RFC 2822 group members silently (mailparser nests them under `group`); it now flattens them in place, keeping valid addresses in order; packages/send/src/view.ts maps stored Recipients rows only, so it inherits the fix upstream. Boundaries: sync/test/headers.test.ts (19 tests) runs parseHeaderBlock over the corpus (folded references, group flattening, per-field missing headers, contained garbage, and F2 identity against parseMime with per-case titles); ingestion/test/parse.test.ts (16 tests) pins base64-NUL body text, 2231 filenames, per-part size and decodedSha256, folded references, group flattening, and byte-for-byte valid Unicode; sync/test/backfill.test.ts (17 tests) loads all 12 corpus messages beside valid neighbors through real BackfillService, BodyFetchService, and ThreadService on PostgreSQL: no silent loss (12 messages, 12 occurrences), nothing stored carries NUL, base64 NUL derives x\\uFFFDy in snippet and bodyIndexText, a missing subject imports as absence, attachment edges keep names and decoded-byte hashes, Unicode survives to the search derivative, folded references link the thread, and replay drains nothing; search/test/service.test.ts (23 tests) proves the stored replacement-character text matches by subject, body, and sender through the real tsquery path. Teeth proven by reverting each fix: replaceNul revert fails 2 header + 4 parse + 3 backfill tests; group-flatten revert fails 1+1+1; a NUL planted in a NUL-free fixture fails the corpus self-test. sync and ingestion dev-depend on @mail-hub/harness for the corpus. docs/sync-repair-plan.md documents how to reduce an incident into a fixture (smallest byte shape, example domains and invented local parts only, deterministic bytes, builder with docblock, register in the self-test, assert at real boundaries, prove teeth); never raw provider mail or private log parameters. Adversarial review (three dimension reviewers plus per-finding refuters): two confirmed findings fixed (the NUL-absence check was a hand-maintained list; it now derives from the corpus; the F2-equivalence it.each rendered four identical titles, now $name-tagged); the refuted attachment-order finding hardened with orderBy(partPath) matching repo convention; three other refutations accepted on the refuters' traces. Full suite with TEST_DATABASE_URL: 104 files, 1176 tests, 0 failures; typechecks clean."
+    },
+    {
+      "id": "T110",
+      "title": "Document and preflight deployment access",
+      "priority": 2,
+      "status": "done",
+      "details": "Plan: docs/development-deployment-plan.md#t110-document-and-preflight-deployment-access\n\nSSH access required host verification and a dedicated authorized key during diagnosis. A local identity path must remain configurable.\n\nAcceptance: A fresh authorized workstation can follow the runbook and confirm required access with one command. Failure output identifies the missing capability without exposing credentials.",
+      "steps": [
+        "Document the application URL, Coolify resource identifier, repository, main branch, compose path, SSH user, and tailnet host in the operator runbook.",
+        "Document the dedicated SSH identity override, host-key verification, public-key enrollment, rotation, and revocation. Store no private key or token in the repository.",
+        "Add a read-only operator access check, separate from the container environment preflight. Distinguish unavailable tailnet routing, host-key mismatch, denied SSH, and unavailable Docker or Coolify access.",
+        "Allow a configured Coolify API token when available. Report missing capabilities clearly; never dump environment variables or generate new credentials silently."
+      ],
+      "tags": [
+        "deployment",
+        "operations"
+      ],
+      "files": [
+        "docs/development-deployment-plan.md",
+        "deploy/README.md",
+        "deploy/preflight.mjs"
+      ],
+      "depends_on": [],
+      "created_at": "2026-09-20T21:51:56Z",
+      "updated_at": "2026-09-21T01:50:00Z",
+      "notes": "Done 2026-09-21. deploy/access-check.mjs (npm run deploy:access): read-only operator access check, separate from the container preflight. Checks identity file, one batch-mode ssh connect, docker over ssh, optional Coolify API (Bearer token on GET /api/v1/teams), optional app health at /api/healthz. Classifies failures: hostname_unresolved, host_key_mismatch, network_unreachable, connection_refused, identity_unreadable, ssh_auth_denied, ssh_failed, docker_missing/forbidden/daemon_unreachable/unavailable, coolify_token_rejected/unexpected_status/unreachable, app_database_unavailable/unhealthy/unreachable, unsafe_operand. Text and --json output; exit 0 only when identity/ssh/docker and every configured optional check pass. Never prints env values, tokens, or key material; generates no credentials; all remote commands read-only. Config from env plus deploy/access.env (whitelisted keys, git-ignored, example shipped). Runbook: deploy/README.md 'Operator access' — facts table (repo/branch/compose/SSH alias-user-host/identity known; app URL, Coolify URL/resource UUID, tailnet name are fill-ins with console/tailscale discovery steps), fresh-workstation setup, identity override, host-key verification (in-band keyscan + trusted-channel compare + ssh-keygen -R before pinning), public-key enrollment, rotation, revocation. Live run today: classifies the pilot's 'No route to host' as network_unreachable, exit 1, names ssh as the missing capability.\n\nAdversarial review (3 reviewers + per-finding refuters, mutation/reproduction proven): 8 confirmed, 2 refuted. Fixed before commit: Coolify Bearer header was never sent (valid tokens always failed; proven with a stub, now unit- and stub-tested); leading-dash DEPLOY_* values reached ssh as options (ProxyCommand execution proven with a marker file; now an unsafe_operand fail-fast, no execution); preflight.mjs echoed the raw DATABASE_URL (live password) and BASE_URL on parse failure — both redacted; README --json needs the npm '--' separator; category table now lists ssh_failed and docker_unavailable; host-key pinning removes the accept-new entry first (an impostor entry otherwise stays trusted) and step 1 no longer calls the in-band scan out-of-band.\n\nAlso fixed while verifying: dropTestDatabase in packages/database/src/testing.ts now settles 150 ms before the force drop; a pool socket still closing emitted a late 57P01 that Vitest counted as an unhandled error and failed whole runs (1 in 5). Full suite now green: 100 files, 1101 tests, 0 unhandled errors."
+    },
+    {
+      "id": "T111",
+      "title": "Add one command for deployment verification",
+      "priority": 2,
+      "status": "done",
+      "details": "Plan: docs/development-deployment-plan.md#t111-add-one-command-for-deployment-verification\n\nManual health queries, container inspection, and database checks made verification slow. Container health alone missed the stalled folders.\n\nAcceptance: One command can reject a healthy-container deployment with broken sync. It records bounded evidence, states uncertainty, and never reports a fully verified result when required checks were unavailable.",
+      "steps": [
+        "Add a read-only command that resolves the current application containers and deployed revision from the configured resource. Avoid hard-coded container suffixes.",
+        "Report deployment state, revision, restarts, recovery readiness, safe sync failures, per-folder checkpoints, body backlog, classification progress, and existing send outcomes.",
+        "Support bounded before-and-after sampling. Evaluate progress only when work is pending; an idle mailbox is not a failure. Separate normal backlog from a stalled or failing operation.",
+        "Use safe API fields or narrow aggregate database queries. Never print raw logs, addresses, folder names, message content, or secrets. Handle partial access as unverified.",
+        "Produce both a machine-readable result and a short report with verified workflows, progressing work, known failures, and untested behavior. Include timestamps and revision.",
+        "Test wrong revisions, partial folder failures, clean idle accounts, unavailable containers, missing privileges, and observation timeouts. Do not send or mutate mail to verify a deployment."
+      ],
+      "tags": [
+        "deployment",
+        "observability"
+      ],
+      "files": [
+        "docs/development-deployment-plan.md",
+        "deploy/verify-deployment.mjs",
+        "deploy/README.md",
+        "apps/admin/test/verify-deployment.test.ts"
+      ],
+      "depends_on": [
+        "T104",
+        "T106",
+        "T110"
+      ],
+      "created_at": "2026-09-20T21:51:56Z",
+      "updated_at": "2026-09-21T03:30:00Z",
+      "notes": "Done 2026-09-21. deploy/verify-deployment.mjs (npm run deploy:verify): one read-only command that judges the deployment, not just container health. Three evidence sources, each optional and classified when unavailable: Docker (local, or over SSH via DEPLOY_SSH_HOST with every remote argument single-quoted for the remote shell) for containers, restarts, and revision; the public health endpoint at DEPLOY_APP_URL/api/healthz for recovery, per-account sync, and send counters; and two constant aggregate psql queries through docker exec in the database container (counts only, no folder names or addresses; DEPLOY_DB_CONTAINER/DEPLOY_DB_USER/DEPLOY_DB_NAME override the defaults). Verdicts verified/failed/unverified; exit 0 only when verified; untested areas listed (no --expect-revision, single sample, no accounts). Containers resolve by compose labels, never hard-coded names. A container fails when it is not running, unhealthy, paused, or restart-looping with a fresh start (RestartCount alone never fails an old stable container); a health check still starting keeps the section unverified. --expect-revision accepts a tag, revision label, or sha256 digest (imageId), and an empty value counts as absent. Accounts fail on degraded or stale sync even without pending work; idle accounts never fail. Sampling (--sample-interval 5..300, NaN rejected) judges per account: any counter change in either direction or folder-checkpoint movement is progressing; pending work without movement is stalled; a missing second sample gates the verdict unverified instead of slipping past; a failed second database read downgrades stalled to unknown. A degraded or stale account also fails the health section on a single-sample run. Privacy: output holds states, counts, timestamps, UUIDs, container and image names, and the transport target only. Read-only: no mail is sent or mutated, no credentials are generated, all docker calls are ps/inspect/exec psql SELECT. Unit tests: apps/admin/test/verify-deployment.test.ts (26 tests) pin the acceptance case (pending work without movement between samples reads stalled and fails the verdict) plus parsers and edge inputs. Verified live against a local compose stack of the current tree: idle healthy stack VERIFIED exit 0 (local and over an SSH loopback alias); wrong revision FAILED exit 1; exact sha256 digest VERIFIED; sampled run with no accounts VERIFIED with untested entries; shell-injection payloads in DEPLOY_COMPOSE_PROJECT and DEPLOY_DB_CONTAINER over SSH create no files and read as literal filters (UNVERIFIED exit 1). Adversarial review (3 reviewers + per-finding refuters, 17 findings, 10 confirmed) drove the fixes: ssh remote-shell quoting (injection plus a broken ssh transport), the ungated second sample, stale sync reading idle, growing backlog reading stalled, the failed second database read, the empty revision expectation, the digest mismatch, never-started/paused containers, the lifetime restart count, first-sample degraded accounts, the Coolify database credentials, and npm banner pollution of piped --json output. Full suite: 101 files, 1132 tests, 0 unhandled errors. Runbook: deploy/README.md 'Verify a deployment'."
+    },
+    {
+      "id": "T112",
+      "title": "Isolate browser fixtures for every test run",
+      "priority": 2,
+      "status": "done",
+      "details": "Plan: docs/development-deployment-plan.md#t112-isolate-browser-fixtures-for-every-test-run\n\nLocal browser tests could reuse a stale server on port 4180. A manually chosen free port worked, but needs automation.\n\nAcceptance: Both concurrent runs test their intended build without shared-server contamination. The unrelated server survives, and failed startup cannot produce a passing result.",
+      "steps": [
+        "Give each browser run its own fixture server, port, and ownership token. Verify a build fingerprint and run identity before tests start.",
+        "Handle port allocation races with bounded retries. Preserve E2E_PORT as an explicit override and report collisions clearly.",
+        "Prevent concurrent runs from overwriting shared build output. Use an isolated output directory or an explicit build lock.",
+        "Terminate only the server owned by the run on success, failure, and interruption. Keep traces for failures.",
+        "Verify behavior with a stale unrelated server on 4180 and with two concurrent runs. Keep release checks from silently reusing any existing server."
+      ],
+      "tags": [
+        "web",
+        "testing",
+        "tooling"
+      ],
+      "files": [
+        "docs/development-deployment-plan.md",
+        "apps/web/playwright.config.ts",
+        "apps/web/e2e/fixture-launch.mjs",
+        "apps/web/e2e/fixture-launch.d.mts",
+        "apps/web/e2e/fixture-global-setup.ts",
+        "apps/web/e2e/fixture-server.mjs",
+        "apps/web/e2e/fixture-server.d.mts",
+        "apps/web/e2e/run-isolation.mjs",
+        "apps/web/e2e/run-isolation.d.mts",
+        "apps/web/scripts/build-fingerprint.mjs",
+        "apps/web/scripts/build-fingerprint.d.mts",
+        "apps/web/scripts/build-sw.mjs",
+        "apps/web/test/fixture-launch.test.ts",
+        ".gitignore"
+      ],
+      "depends_on": [],
+      "created_at": "2026-09-20T21:51:56Z",
+      "updated_at": "2026-09-21T09:27:34Z",
+      "notes": "Done 2026-09-21. Launcher: apps/web/e2e/fixture-launch.mjs gives every run its own fixture — it binds 127.0.0.1 first (503 hold while building), builds with vite --outDir plus build-sw --dist into tmpdir()/mail-hub-e2e-<pid>-<token8>, fingerprints the tree (scripts/build-fingerprint.mjs, sha256 over sorted paths and bytes), then swaps the real fixture handler in behind the bound listener. GET /api/fixture/identity answers {runToken, fingerprint, port}; e2e/fixture-global-setup.ts verifies the token before the first test and the fingerprint at teardown (Playwright 1.63 globalSetup takes a file path, not a closure). E2E_PORT stays an exact override (any value naming no port 1-65535 is rejected); otherwise the config leader allocates an ephemeral port and publishes it through E2E_PORT — every worker reloads the config file, so the port, the E2E_RUN_TOKEN/E2E_RUN_PID pair, and the per-run outputDir test-results/run-<pid>-<token8> all derive from one leader mint. reuseExistingServer stays false and teardown uses gracefulShutdown SIGTERM (the default is a group SIGKILL that skips all cleanup); the launcher registers SIGTERM/SIGINT before any directory or build exists, stops its build children, removes its tree, destroys keep-alive connections, and exits clean in every phase including mid-build and startup failure. e2e/run-isolation.mjs sweeps <prefix><pid>-* directories whose pid is dead — no clock, so a live run keeps its directories however long it runs — for both test-results/run-* and the launcher's tmp trees. fixture-server.mjs became an import-side-effect-free createFixtureHandler factory; static serving answers 404 when a file vanishes or a directory holds no index.html instead of crashing. The release gate needed no change: it runs the workspace scripts, which carry the isolation. Verified: unit 195/195 (27 launcher and isolation tests, three of them subprocess CLI runs: held-port collision leaves no directory and the holder survives, SIGTERM with a live keep-alive socket, SIGTERM mid-build), tsc clean, flows 54/54, interface 20/20, two concurrent suites green on separate ports, builds, and results directories, E2E_PORT=4180 against an unrelated live server fails loudly and the stranger survives, planted dead-pid trees swept on the next run. Adversarial review (5 dimensions, 30 agents, per-finding refuters): 25 findings raised, 14 survived, all fixed above; 11 refutations accepted on the refuters' traces."
+    },
+    {
+      "id": "T113",
+      "title": "Diagnose and document Docker build networking",
+      "priority": 3,
+      "status": "done",
+      "details": "Plan: docs/development-deployment-plan.md#t113-diagnose-and-document-docker-build-networking\n\nA local build failed DNS resolution on the default Docker network. Host networking succeeded locally; the cause and portability remain unverified.\n\nAcceptance: The root cause is documented with evidence, or explicitly remains unresolved with a verified workaround. Supported builds resolve dependencies without manual trial and error.",
+      "steps": [
+        "Compare host and build-container DNS, registry access, proxy configuration, and BuildKit networking using commands that expose no credentials.",
+        "Record whether the failure affects only the developer host or also the Coolify builder. Test each supported environment independently.",
+        "Correct the verified configuration fault at the narrowest scope. Document the host-network workaround and its limits; do not make it an unconditional build default.",
+        "Build both app and web targets with the chosen configuration. Retain exact reproduction commands and safe failure categories."
+      ],
+      "tags": [
+        "deployment",
+        "docker",
+        "tooling"
+      ],
+      "files": [
+        "docs/development-deployment-plan.md",
+        "deploy/docker-compose.host-build.yml",
+        "deploy/README.md",
+        "to-do.json"
+      ],
+      "depends_on": [
+        "T110"
+      ],
+      "created_at": "2026-09-20T21:51:56Z",
+      "updated_at": "2026-09-21T14:20:00Z",
+      "notes": "Diagnosed on the developer workstation (Docker 29.1.3) with a three-command probe: default-bridge containers receive nameserver 10.77.0.1 from /run/systemd/resolve/resolv.conf (Docker skips the 127.0.0.53 stub), and that uplink routes through the Tailscale interface with policy routing (ip route get 10.77.0.1 shows dev tailscale0 table 52), so bridge-NAT traffic cannot reach it; queries time out while plain internet resolvers answer from the bridge, and host networking works because it shares the host namespace. A default-network docker build fails at the first resolving RUN (apk add, exit 1 after 10s of timeouts); a BuildKit builder configured with [dns] nameservers does not help because the builder container itself cannot resolve the base image. Verified workarounds: docker build --network=host, and an opt-in compose override deploy/docker-compose.host-build.yml that sets build.network: host for api, worker, and web (merged with -f; the default files keep hermetic bridge builds). Both targets rebuilt --no-cache under host networking in 21s total (the failing apk step completed in 1s; zero DNS errors; images written). The host-side alternative — give systemd-resolved a bridge-reachable uplink — is the administrator's call and documented. The Coolify builder is a separate host; the README names the probe commands to run there, unverifiable from the workstation on 2026-09-21 because the deploy host was unreachable."
+    },
+    {
+      "id": "T114",
+      "title": "Validate task files automatically",
+      "priority": 3,
+      "status": "done",
+      "details": "Plan: docs/development-deployment-plan.md#t114-validate-task-files-automatically\n\nThe task file contained metadata that its schema rejected. Optional updated_at and notes definitions were added during planning; automated validation is still missing.\n\nAcceptance: A clean checkout validates the current task list. Each malformed fixture fails with a precise task identifier or field path, while historical notes and planned future files remain supported.",
+      "steps": [
+        "Add a repeatable task-validation command using the repository schema and date-time formats. Declare validator dependencies directly if needed.",
+        "Reject duplicate task identifiers, missing dependencies, self-dependencies, dependency cycles, and missing source documents.",
+        "Validate plan links and section anchors for planned work. Distinguish intended future implementation files from existing source documents, so planned files are not rejected.",
+        "Run the command when task files, schema, or referenced plans change. Add focused fixtures for invalid records, broken plan links, and cycles."
+      ],
+      "tags": [
+        "tasks",
+        "schema",
+        "tooling"
+      ],
+      "files": [
+        "docs/development-deployment-plan.md",
+        "scripts/validate-tasks.mjs",
+        "scripts/release-gate.mjs",
+        "apps/admin/test/validate-tasks.test.ts",
+        "package.json",
+        "package-lock.json",
+        "AGENTS.md",
+        "README.md",
+        "to-do.json",
+        "to-do.schema.json"
+      ],
+      "depends_on": [],
+      "created_at": "2026-09-20T21:51:56Z",
+      "updated_at": "2026-09-21T10:15:59Z",
+      "notes": "Done 2026-09-21. scripts/validate-tasks.mjs validates to-do.json in one pass: JSON Schema draft 2020-12 through ajv 2020 plus ajv-formats (default strict mode, so a misspelled schema keyword fails at compile), task-graph checks (duplicate ids, missing and self dependencies, a DFS cycle with its path spelled out), Plan: references (the file exists; the anchor is a GitHub slug through github-slugger — an em dash drops and every space becomes one hyphen, so #f1--account-management resolves against the SPEC heading; the (section Tnnn) form checks heading text; sentence punctuation and backticks around the path are stripped), source_files existence, and repository-relative files entries (planned files allowed; empty, absolute, and climbing paths rejected). Wrong-typed shapes report the schema issue instead of throwing. npm run validate:tasks runs the CLI; its report prints to stdout, which the release gate logs as task-files.log (check 1 of 7). 34 tests in apps/admin/test/validate-tasks.test.ts cover the module API, malformed shapes, and the CLI's exit codes and streams. Adversarial review: 13 findings confirmed and fixed, 9 refuted."
+    },
+    {
+      "id": "T115",
+      "title": "Stream release-gate progress and retain logs",
+      "priority": 3,
+      "status": "done",
+      "details": "Plan: docs/development-deployment-plan.md#t115-stream-release-gate-progress-and-retain-logs\n\nThe gate captures output through spawnSync and prints it only after a step finishes. Long steps appear inactive and complicate diagnosis.\n\nAcceptance: A long-running check shows progress at least every 30 seconds. Failed or skipped checks cannot pass because of output text, and interrupted children do not remain running.",
+      "steps": [
+        "Run each gate step with asynchronous process handling. Stream progress and persist complete stdout and stderr without buffering unbounded output in memory.",
+        "Keep the exit code authoritative. Preserve the current test-inventory, skipped-suite, migration, and strict-mode checks.",
+        "Show elapsed time and a periodic heartbeat for quiet steps. Implement configurable timeouts and interrupt cleanup for the owned process tree.",
+        "Retain failed logs and a concise final summary. Never print environment variables or add commands that echo credentials.",
+        "Test slow output, silent steps, nonzero exit after a passing-looking summary, timeout, signal interruption, and large output."
+      ],
+      "tags": [
+        "testing",
+        "release",
+        "tooling"
+      ],
+      "files": [
+        "docs/development-deployment-plan.md",
+        "scripts/release-gate.mjs",
+        "apps/admin/test/release-gate.test.ts",
+        "AGENTS.md",
+        "to-do.json"
+      ],
+      "depends_on": [],
+      "created_at": "2026-09-20T21:51:56Z",
+      "updated_at": "2026-09-21T11:29:43Z",
+      "notes": "Done 2026-09-21. scripts/release-gate.mjs runs each step through the exported runStep: the command spawns detached in its own process group, every output line streams to the console as it arrives, and the raw bytes land in the step's log files while only the vitest summary lines (capped at 10,000) and an optional capped stdout capture stay in memory. A quiet step heartbeats one quiet period after its last output (30 seconds by default), each step times out after 30 minutes unless RELEASE_GATE_STEP_TIMEOUT_MS says otherwise (0 disables, empty means the default), and a timeout or an interrupt (SIGINT/SIGTERM) tears the whole tree down — SIGTERM first, SIGKILL after the grace period — and the step resolves only once the process group is empty, so no child outlives it. The exit code alone decides the outcome: failure notes name a timeout, an interrupt, a command that never started, or a child killed by an outside signal. An interrupt that lands between steps is carried into the next one, the verdict reads INTERRUPTED with exit 130/143 and kept logs, and the final summary lists every check with the total duration. The module stays import-safe and validates the timeout override before any check runs. 22 tests in apps/admin/test/release-gate.test.ts cover streaming, heartbeat bounds, exit-code precedence, tree teardown and escalation, memory caps, the timeout override, and the CLI's interrupt and refusal exits. Adversarial review: 9 findings confirmed and fixed, 4 refuted."
+    },
+    {
+      "id": "T116",
+      "title": "Gate main before automatic deployment",
+      "priority": 2,
+      "status": "done",
+      "details": "Plan: docs/development-deployment-plan.md#t116-gate-main-before-automatic-deployment\n\nPushes to main now deploy immediately. Checks that start only after that push cannot prevent an unverified deployment.\n\nAcceptance: A failing or outdated pull-request check prevents ordinary integration into main. A verified merge deploys once. Fast local checks remain convenient, while release validation remains complete.",
+      "steps": [
+        "Document a fast local loop: focused regression tests and affected workspace type checks first, then the full required checks before integration. Use a conservative full-run fallback when impact is unclear.",
+        "Add a continuous integration workflow for pull requests with a scratch PostgreSQL service, browser dependencies, task validation, and the strict release gate. Cache dependencies using the lockfile.",
+        "Require the successful check before merging into main through repository rules supported by this repository. Record any plan or permission restriction as a blocker.",
+        "Keep the main-push webhook as the deployment trigger after the verified merge. Do not treat a local hook as the only protection or expose deployment secrets to untrusted code.",
+        "Check merge-result coverage and current-branch requirements so an outdated successful check cannot authorize a different final tree. Document explicit emergency bypass handling.",
+        "Measure focused-check and full-gate durations before and after the changes. Optimize repeated setup without removing required suites."
+      ],
+      "tags": [
+        "ci",
+        "release",
+        "workflow"
+      ],
+      "files": [
+        "docs/development-deployment-plan.md",
+        ".github/workflows/release-gate.yml",
+        "deploy/README.md",
+        "README.md",
+        "AGENTS.md",
+        "packages/database/src/storage/fs-object-store.ts",
+        "to-do.json",
+        "scripts/release-gate.mjs",
+        "apps/admin/test/release-gate.test.ts"
+      ],
+      "depends_on": [
+        "T112",
+        "T114",
+        "T115"
+      ],
+      "created_at": "2026-09-20T21:51:56Z",
+      "updated_at": "2026-09-21T13:15:00Z",
+      "notes": "Done 2026-09-21. .github/workflows/release-gate.yml runs the strict release gate (npm run release:gate -- --strict) on ubuntu-24.04 for every pull request into main, every push to main (evidence), and manual dispatch: a postgres:16-alpine service container supplies TEST_DATABASE_URL (throwaway user and password; the gate builds scratch databases through the maintenance database), setup-node 24 caches npm from the lockfile, actions/cache stores the Chromium build keyed on the lockfile, npm ci, npx playwright install --with-deps chromium, then the gate — whose task-files check already covers validate:tasks. permissions: contents: read; the workflow holds no secrets, so pull requests never see deployment credentials, and the pull_request event runs on the merge ref. Concurrency cancels only superseded pull-request runs. deploy/README.md 'Gate main before deployment' documents the one path to production (green, current pull request → merge → the webhook deploys once), branch protection (require a pull request, require the release-gate check, require branches up to date, block force pushes and deletion, administrators included), the emergency bypass (owner disables the rule, acts, re-enables it, records it), and measured durations (full local gate 258-260s, focused suites 6s). AGENTS.md gains the Integration loop (focused tests and the affected workspace check while editing, full-gate fallback when impact is unclear, strict local gate before integration, pull request, merge green). Classic branch protection with enforce_admins was applied to main live; a direct push attempt was rejected (GH006, protected branch hook declined). Pull request #1 carried the first runner executions: the first failed because CI=true makes vitest color piped summary lines and the gate's plain patterns matched none (commit bbbec7e strips ANSI codes where lines enter the gate), the retry passed in 301 seconds, 355 with setup. Drive-by: sweepTempFiles compared truncated Date.now() with fractional mtimeMs, so a zero-bound sweep could skip a file stamped in the same millisecond — the flake failed the first local strict gate run for this task; the age is clamped at zero now and the suite passed ten consecutive runs. Adversarial review: 6 findings confirmed (3 distinct: the check does not rerun when main moves — protection blocks the merge until the branch update reruns it; missing administrator enforcement; deploy:verify does not read webhook deliveries) and fixed; 4 refuted, including the visual-baseline font risk — the runner image ships DejaVu through its package chain, so the committed baselines render identically."
+    },
+    {
+      "id": "T117",
+      "title": "Verify and document the webhook deployment path",
+      "priority": 2,
+      "status": "doing",
+      "details": "Plan: docs/development-deployment-plan.md#t117-verify-and-document-the-webhook-deployment-path\n\nThe signed GitHub push webhook is already configured and tested. This task makes its verification and maintenance repeatable rather than recreating it.\n\nAcceptance: The audit distinguishes an enabled switch from a working webhook. An explicit signed test can prove the path through a finished deployment and matching revision, with no duplicate manual rollout.",
+      "steps": [
+        "Document the current main-branch deployment path, secret ownership, rotation procedure, and location of GitHub delivery and Coolify deployment records.",
+        "Add a read-only configuration audit for webhook activity, push subscription, destination, signature-secret presence, main branch selection, and auto-deploy setting. Never display the secret.",
+        "Provide an explicit end-to-end test mode that replays a selected GitHub delivery or uses the supported test endpoint. Identify the commit and warn that this mode starts a deployment.",
+        "Correlate delivery outcome, Coolify deployment, installed revision, and verification results. Do not queue a manual deployment while the webhook deployment is running.",
+        "Test invalid signatures, other branches, delivery failure, missing webhook configuration, and duplicate delivery behavior in an isolated setup. Use the live test only during an authorized deployment window."
+      ],
+      "tags": [
+        "deployment",
+        "github",
+        "operations"
+      ],
+      "files": [
+        "docs/development-deployment-plan.md",
+        "deploy/README.md",
+        "scripts"
+      ],
+      "depends_on": [
+        "T110",
+        "T111"
+      ],
+      "created_at": "2026-09-20T21:51:56Z",
+      "updated_at": "2026-09-21T15:53:00Z",
+      "notes": "In progress 2026-09-21; the local half is done, the live half is blocked. Built deploy/webhook-audit.mjs (npm run webhook:audit): a read-only audit of the GitHub side with per-fact lines — one active push hook with a https destination and TLS verification on, recent delivery acceptance with the ref and short SHA of the latest push, destination-host reachability, the secret reported as unknown-from-GitHub with the two proofs that stand in for it, and a Coolify line that reads not_configured and names DEPLOY_COOLIFY_URL and COOLIFY_TOKEN until deploy/access.env supplies them. The verdict never reads a 2xx as a deployment. Output masks the hook URL path (a capability URL; host only) and never prints the secret or token values. Test modes are opt-in: --send-test posts to the GitHub ping endpoint (a ping event, never a deployment), --redeliver <id> refuses without --allow-deployment, and the refusal names the delivery's ref and commit. GitHub delivery ids exceed 2^53 as bare JSON numbers, so JSON.parse rounded them and the delivery-detail call silently 404ed during development; quoteBigIntegers now quotes id-keyed integers before parsing and a regression test pins the exact live id. apps/admin/test/webhook-audit.test.ts (37 tests) covers signature verification over raw request bytes including the re-serialized-JSON failure, wrong-secret and missing-header rejection, branch selection, duplicate delivery ids, receiver status classification, the redelivery guard, the Coolify missing-key plan, the gh outcome mapping (404-from-stderr, empty 204 bodies), and the Coolify response categories; the receiver harness runs on an ephemeral loopback port in-process. deploy/README.md gained 'The webhook deployment path' (path, audit command, test modes with the deployment warning, secret ownership and rotation, record locations on both sides, isolated coverage, current state) plus cross-links from the gating procedure and the verification checklist. Live evidence so far: hook 682447643 active on push, JSON content type, TLS verification on; every recent delivery accepted; latest push delivery carried refs/heads/diagnose-docker-build-networking; the guard refusal was exercised live against a real delivery id and the 404 classification against a nonexistent repo. Adversarial review: 31 agents over 4 dimensions raised 27 findings; 12 verdicts confirmed 7 distinct defects, all fixed — the test mode posted to /tests (which replays the latest push and can deploy) instead of /pings, gh 404s were misclassified because execFile errors carry no status field, a failed delivery-detail fetch was silently swallowed, an older rejected delivery failed the verdict with no category, the Coolify probe POSTed and blamed the token for every non-2xx, empty 204 bodies parsed as failures, and the big-integer quoting could corrupt digit runs inside string values. Blockers to closing: the Coolify side needs DEPLOY_COOLIFY_URL and COOLIFY_TOKEN in deploy/access.env and the deploy host (192.168.1.144) is unreachable from this workstation, so delivery-to-deployment correlation, the signed end-to-end proof, and revision matching are unproven; they need an authorized deployment window. The task stays doing until that proof exists; do not close it on the local half alone. Update 2026-09-21: the work ships as pull request #3 (branch webhook-deployment-audit, commit e6b6e0c), green on the runner; the review git note on the commit carries the full 31-agent panel report. Still doing: the live Coolify-side proof recorded above."
     }
   ],
-  "updated_at": "2026-09-20T18:45:24Z"
+  "updated_at": "2026-09-21T15:53:00Z"
 }

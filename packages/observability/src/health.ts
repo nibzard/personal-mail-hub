@@ -7,6 +7,7 @@ import {
   type HealthzQueue,
   type HealthzRecovery,
   type HealthzResponse,
+  type HealthzSyncState,
 } from "@mail-hub/contracts";
 import type { MailHubDatabase } from "@mail-hub/database";
 import { type ControlStatus } from "@mail-hub/recovery";
@@ -26,6 +27,17 @@ import { type ControlStatus } from "@mail-hub/recovery";
  * writes one per failed Jev call; this report counts them (SPEC section 11).
  */
 export const CLASS_ERROR_EVENT = "class.error";
+
+/**
+ * A cycle record older than this reads as stale. The worker records one
+ * status event per account every cycle, every 30 seconds by default, so this
+ * bound spans dozens of missed cycles and still survives a restart or a slow
+ * cron override.
+ */
+export const SYNC_STALE_AFTER_SECONDS = 900;
+
+/** The most failure codes one cycle records per failure family. */
+const MAX_READ_KINDS = 8;
 
 /** The service surface the health service needs from recovery controls. */
 export type RecoveryControlsForHealth = {
@@ -160,6 +172,7 @@ export class HealthService {
       const lastCycleAt = cycle === undefined ? null : dateColumn(cycle, "at");
       const payload = payloadColumn(cycle);
       const backfillPending = payload === null ? null : wholeNumber(payload.backfillPendingFolders);
+      const pendingBodies = wholeNumber(messageStats.get(accountId)?.pending_bodies) ?? 0;
       return [
         {
           accountId,
@@ -167,7 +180,15 @@ export class HealthService {
             lastCycleAt: isoOrNull(lastCycleAt),
             cycleAgeSeconds: ageSeconds(lastCycleAt, checkedAt),
             backfillPendingFolders: backfillPending,
-            pendingBodies: wholeNumber(messageStats.get(accountId)?.pending_bodies) ?? 0,
+            pendingBodies,
+            state: syncStateOf(lastCycleAt, payload, pendingBodies, checkedAt),
+            folderErrors: payload === null ? null : wholeNumber(payload.folderErrors),
+            bodyErrors: payload === null ? null : wholeNumber(payload.bodyErrors),
+            threadErrors: payload === null ? null : wholeNumber(payload.threadErrors),
+            folderFailureKinds: payload === null ? null : failureKinds(payload.folderFailureKinds),
+            bodyFailureKinds: payload === null ? null : failureKinds(payload.bodyFailureKinds),
+            threadFailureKinds: payload === null ? null : failureKinds(payload.threadFailureKinds),
+            pendingThreads: payload === null ? null : wholeNumber(payload.pendingThreads),
           },
           metrics: {
             messagesSynced: wholeNumber(messageStats.get(accountId)?.messages_synced) ?? 0,
@@ -187,12 +208,16 @@ export class HealthService {
       dateColumn(pendingWork.rows[0] ?? null, "oldest"),
       dateColumn(sends.rows[0] ?? null, "oldest_queued"),
     );
+    // Contained sync failures degrade the report even when the newest cycle
+    // is recent. A later clean cycle clears the state, and the route still
+    // answers 200, so mail trouble never restarts the API.
+    const syncDegraded = accounts.some((account) => account.sync.state === "degraded");
 
     return {
       available: true,
       report: {
         service: "api",
-        status: controlStatus?.state === "ready" ? "ok" : "degraded",
+        status: controlStatus?.state === "ready" && !syncDegraded ? "ok" : "degraded",
         version: API_VERSION,
         checkedAt: checkedAt.toISOString(),
         database,
@@ -373,6 +398,51 @@ function payloadColumn(row: Record<string, unknown> | null | undefined): Record<
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+/**
+ * Derive the sync state of one account from its newest cycle record. A cycle
+ * that recorded contained failures degrades the account however recent it is;
+ * a later clean record clears the state. A record that predates the failure
+ * counters proves nothing, so it reads as unknown, never as healthy. Pending
+ * work is normal progress, never a failure.
+ */
+function syncStateOf(
+  lastCycleAt: Date | null,
+  payload: Record<string, unknown> | null,
+  pendingBodies: number,
+  now: Date,
+): HealthzSyncState {
+  if (lastCycleAt === null || payload === null) {
+    return "unknown";
+  }
+  const folderErrors = wholeNumber(payload.folderErrors);
+  const bodyErrors = wholeNumber(payload.bodyErrors);
+  const threadErrors = wholeNumber(payload.threadErrors);
+  if (folderErrors === null || bodyErrors === null || threadErrors === null) {
+    return "unknown";
+  }
+  if (folderErrors > 0 || bodyErrors > 0 || threadErrors > 0) {
+    return "degraded";
+  }
+  const age = ageSeconds(lastCycleAt, now);
+  if (age !== null && age > SYNC_STALE_AFTER_SECONDS) {
+    return "stale";
+  }
+  const backfillPending = wholeNumber(payload.backfillPendingFolders) ?? 0;
+  const pendingThreads = wholeNumber(payload.pendingThreads) ?? 0;
+  if (pendingBodies > 0 || backfillPending > 0 || pendingThreads > 0) {
+    return "syncing";
+  }
+  return "ok";
+}
+
+/** The approved failure codes one record names, or `null` when absent. */
+function failureKinds(value: unknown): string[] | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  return value.filter((kind): kind is string => typeof kind === "string").slice(0, MAX_READ_KINDS);
 }
 
 function oldestOf(...dates: (Date | null)[]): Date | null {

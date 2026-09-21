@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +7,7 @@ import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   accounts,
+  attachments,
   bodies as bodiesTable,
   createDatabase,
   createStorage,
@@ -18,6 +19,22 @@ import {
   type Storage,
   dropTestDatabase,
 } from "@mail-hub/database";
+import {
+  ATTACHMENT_EDGE_PARTS,
+  attachmentEdgeMetadata,
+  base64NulBody,
+  foldedReferencesParent,
+  foldedReferencesReply,
+  malformedHeaderLines,
+  missingHeader,
+  nestedAddressMetadata,
+  nulAddressNeighbor as nulAddressMail,
+  nulEverywhere,
+  nulParent as corpusNulParent,
+  plainValidNeighbor,
+  validUnicodeNeighbor,
+  type MalformedMail,
+} from "@mail-hub/harness";
 import { IngestionService } from "@mail-hub/ingestion";
 import {
   BackfillService,
@@ -61,6 +78,37 @@ function fixture(uid: number, subject: string, extra: string[] = []): FakeMessag
     flags: uid % 2 === 0 ? ["\\Seen"] : [],
     internalDate: new Date(Date.UTC(2026, 8, 7, 10, 0, 0) + uid * 60_000),
   };
+}
+
+/**
+ * One corpus message loaded into the fake mailbox at a UID. The corpus
+ * (T109) owns the malformed bytes; this helper only assigns the slot. The
+ * incident fixtures it replaces lived here inline until T109 moved them to
+ * `@mail-hub/harness`, so header import, ingestion, and backfill all pin
+ * the same bytes.
+ */
+function corpusMessage(uid: number, mail: MalformedMail): FakeMessage {
+  return {
+    uid,
+    headers: mail.headers,
+    body: mail.body,
+    internalDate: new Date(Date.UTC(2026, 8, 7, 10, 0, 0) + uid * 60_000),
+  };
+}
+
+/** The NUL incident message from the corpus (docs/sync-repair-plan.md T105). */
+function nulFixture(uid: number): FakeMessage {
+  return corpusMessage(uid, nulEverywhere());
+}
+
+/** The parent with the matching raw-NUL Message-ID. */
+function nulParent(uid: number): FakeMessage {
+  return corpusMessage(uid, corpusNulParent());
+}
+
+/** The neighbor whose address tokens carry Q-encoded NUL. */
+function nulAddressNeighbor(uid: number): FakeMessage {
+  return corpusMessage(uid, nulAddressMail());
 }
 
 suite("BackfillService", () => {
@@ -521,6 +569,231 @@ suite("BackfillService", () => {
     const second = await runner.runAccountCycle(session, accountId);
     expect(second).toMatchObject({ folders: 0, batches: 0, imported: 0, bodiesFetched: 0 });
     expect(await countMessages(accountId)).toBe(3);
+    expect(await bodies.pendingBodies(accountId, 10)).toEqual([]);
+  });
+
+  it("imports mail whose derived text carries NUL bytes and keeps the original bytes", async () => {
+    const { accountId, folderIds } = await setupAccount(["INBOX"]);
+    const folder = folderIds.get("INBOX")!;
+    const session = new FakeMailboxSession();
+    session.load("INBOX", [nulParent(1), nulFixture(2), nulAddressNeighbor(3)]);
+
+    const { backfill, bodies, db } = services();
+    await drain(backfill, session, accountId, folder);
+
+    // The poisoned window imported beside a clean neighbor: header-derived
+    // text is NUL-free and keeps a replacement character where the NUL stood.
+    expect(await countMessages(accountId)).toBe(3);
+    const rows = await db.select().from(messages).where(eq(messages.accountId, accountId));
+    const poisoned = rows.find((row) => row.subject?.includes("\uFFFD"))!;
+    expect(poisoned.subject).toBe("raw\uFFFDnul and encoded\uFFFDnul");
+    expect(poisoned.sender).toEqual({ address: "nul@example.com", name: "Name\uFFFDX" });
+    expect(poisoned.messageId).toContain("\uFFFD");
+    expect(poisoned.inReplyTo).toContain("\uFFFD");
+    expect(poisoned.referenceIds.join(" ")).toContain("\uFFFD");
+    for (const row of rows) {
+      expect(JSON.stringify(row)).not.toContain("\\u0000");
+    }
+
+    const neighbor = rows.find((row) => row.subject === "Neighbor with poisoned addresses")!;
+    expect(neighbor.sender).toBeNull();
+    expect(neighbor.recipients).toBeNull();
+    expect(neighbor.senderText).toBe("");
+
+    // Body ingestion derives NUL-free text, snippet, index, and filenames.
+    const jobs = await bodies.pendingBodies(accountId, 10);
+    expect(jobs).toHaveLength(3);
+    for (const job of jobs) {
+      expect((await bodies.fetchBody(session, accountId, job)).state).toBe("fetched");
+    }
+    const refetched = (await db.select().from(messages).where(eq(messages.id, poisoned.id)))[0]!;
+    expect(refetched.snippet).toContain("body\uFFFDnul");
+    expect(refetched.bodyIndexText).toContain("body\uFFFDnul");
+    const bodyRow = (await db.select().from(bodiesTable).where(eq(bodiesTable.messageId, poisoned.id)))[0]!;
+    expect(bodyRow.textPlain).toContain("body\uFFFDnul");
+    const partRows = await db.select().from(attachments).where(eq(attachments.messageId, poisoned.id));
+    expect(partRows.map((part) => part.filename)).toEqual(["file\uFFFDname.pdf"]);
+    expect(JSON.stringify({ refetched, bodyRow, partRows })).not.toContain("\\u0000");
+
+    // The stored original keeps its raw NUL bytes and its recorded hash.
+    const original = await storage.durable.get(refetched.originalStorageKey!);
+    expect(new TextDecoder().decode(original)).toContain("\u0000");
+    expect(await storage.durable.verify(refetched.originalStorageKey!, refetched.originalSha256!)).toBe(true);
+
+    // Thread linking still matches the sanitized identifiers on both sides:
+    // the reply's parent carries the same NUL in its Message-ID.
+    await new ThreadService(db).reconcileAccount(accountId);
+    const relinked = (await db.select().from(messages).where(eq(messages.id, poisoned.id)))[0]!;
+    const parent = (await db.select().from(messages).where(eq(messages.messageId, relinked.inReplyTo!)))[0]!;
+    expect(parent).toBeDefined();
+    expect(relinked).toMatchObject({ threadLinkState: "linked", parentMessageId: parent.id });
+    expect(relinked.threadId).toBe(parent.threadId);
+
+    // A replayed window imports nothing and duplicates no row.
+    await drain(backfill, session, accountId, folder);
+    expect(await countMessages(accountId)).toBe(3);
+  });
+
+  it("imports the malformed corpus beside valid neighbors without silent loss", async () => {
+    const { accountId, folderIds } = await setupAccount(["INBOX"]);
+    const folder = folderIds.get("INBOX")!;
+    const session = new FakeMailboxSession();
+    // One window, malformed fixtures interleaved with valid neighbors: the
+    // acceptance case of T109. Every message must appear — imported with
+    // safe derived values — and no neighbor may stall behind a defect.
+    session.load("INBOX", [
+      corpusMessage(1, plainValidNeighbor()),
+      corpusMessage(2, corpusNulParent()),
+      corpusMessage(3, nulEverywhere()),
+      corpusMessage(4, nulAddressMail()),
+      corpusMessage(5, base64NulBody()),
+      corpusMessage(6, missingHeader("subject")),
+      corpusMessage(7, malformedHeaderLines()),
+      corpusMessage(8, foldedReferencesParent()),
+      corpusMessage(9, foldedReferencesReply()),
+      corpusMessage(10, nestedAddressMetadata()),
+      corpusMessage(11, attachmentEdgeMetadata()),
+      corpusMessage(12, validUnicodeNeighbor()),
+    ]);
+
+    const { backfill, bodies, db } = services();
+    await drain(backfill, session, accountId, folder);
+
+    // No silent message loss: the whole window imported, once each.
+    expect(await countMessages(accountId)).toBe(12);
+    expect(await occurrenceTuples(accountId, folder.id)).toHaveLength(12);
+
+    // Nothing that reaches the database carries a NUL: rows, bodies, parts.
+    const rows = await db.select().from(messages).where(eq(messages.accountId, accountId));
+    expect(JSON.stringify(rows)).not.toContain("\\u0000");
+
+    const jobs = await bodies.pendingBodies(accountId, 20);
+    expect(jobs).toHaveLength(12);
+    for (const job of jobs) {
+      expect((await bodies.fetchBody(session, accountId, job)).state).toBe("fetched");
+    }
+    const bodyRows = await db.select().from(bodiesTable);
+    // Ordered by part path so the positional pairing with the known parts
+    // below never depends on the database's scan order.
+    const partRows = await db.select().from(attachments).orderBy(attachments.partPath);
+    expect(JSON.stringify({ bodyRows, partRows })).not.toContain("\\u0000");
+
+    const bySubject = (needle: string) => rows.find((row) => row.subject?.includes(needle))!;
+
+    // The base64-encoded NUL reaches derived body text as the replacement
+    // character, in the snippet and the search derivative alike.
+    const base64 = (await db.select().from(messages).where(eq(messages.messageId, "<base64-nul@example.com>")))[0]!;
+    expect(base64.snippet).toContain("x�y");
+    expect(base64.bodyIndexText).toContain("x�y");
+
+    // A missing subject is absence, not a failure: the message imported and
+    // its body work completed.
+    const noSubject = (await db.select().from(messages).where(eq(messages.messageId, "<present-id@example.com>")))[0]!;
+    expect(noSubject.subject).toBeNull();
+    expect(noSubject.subjectText).toBe("");
+    expect(noSubject.snippet).toContain("Body of the message");
+
+    // Attachment metadata edges: filenames decode (both RFC 2231 shapes),
+    // a nameless part stores none, and hashes cover the decoded bytes.
+    const edges = (await db.select().from(messages).where(eq(messages.messageId, "<attachment-edges@example.com>")))[0]!;
+    const edgeParts = partRows.filter((part) => part.messageId === edges.id);
+    expect(edgeParts.map((part) => part.filename)).toEqual(
+      ATTACHMENT_EDGE_PARTS.map((part) => part.filename),
+    );
+    for (const [index, expected] of ATTACHMENT_EDGE_PARTS.entries()) {
+      const part = edgeParts[index]!;
+      const bytes = new TextEncoder().encode(expected.marker);
+      expect(part.sizeBytes).toBe(bytes.byteLength);
+      expect(part.decodedSha256).toBe(createHash("sha256").update(bytes).digest("hex"));
+    }
+
+    // Valid Unicode survives the whole pipeline byte-for-byte, and the
+    // normalized search derivative keeps every character. Read the row
+    // fresh: the body fetch fills the body derivatives after import.
+    const unicodeId = bySubject("Zusammenfassung").id;
+    const unicode = (await db.select().from(messages).where(eq(messages.id, unicodeId)))[0]!;
+    expect(unicode.subject).toBe("Zusammenfassung — Prüfung");
+    expect(unicode.subjectText).toBe("zusammenfassung — prüfung");
+    expect(unicode.bodyIndexText).toContain("café 日本語 🌊 stays as written");
+
+    // Thread reconciliation links through folded references and through
+    // sanitized NUL identifiers alike.
+    await new ThreadService(db).reconcileAccount(accountId);
+    const folded = (await db.select().from(messages).where(eq(messages.messageId, "<folded-reply@example.com>")))[0]!;
+    const foldedParent = (await db.select().from(messages).where(eq(messages.messageId, "<folded-parent@example.com>")))[0]!;
+    expect(folded.threadLinkState).toBe("linked");
+    expect(folded.parentMessageId).toBe(foldedParent.id);
+    expect(folded.threadId).toBe(foldedParent.threadId);
+
+    // Group members from the nested-address fixture stay visible in the
+    // stored recipients, NUL in the display name replaced.
+    const nested = bySubject("Nested address metadata");
+    expect(nested.recipients).toEqual({
+      to: [
+        { address: "alice@example.com", name: null },
+        { address: "member@example.com", name: "Team�" + "Member" },
+      ],
+      cc: [
+        { address: "ed@example.com", name: "Ed" },
+        { address: "carol@example.com", name: null },
+      ],
+    });
+
+    // A replayed window imports nothing and duplicates no row.
+    await drain(backfill, session, accountId, folder);
+    expect(await countMessages(accountId)).toBe(12);
+    expect(await occurrenceTuples(accountId, folder.id)).toHaveLength(12);
+  });
+
+  it("rolls back a window that fails mid-transaction, then imports on retry", async () => {
+    const { accountId, folderIds } = await setupAccount(["INBOX"]);
+    const folder = folderIds.get("INBOX")!;
+    const session = new FakeMailboxSession();
+    session.load("INBOX", [fixture(1, "After the poisoned one"), nulFixture(2)]);
+
+    const { backfill, bodies } = services();
+    const folderRow = async () =>
+      (await pool.query("select * from folders where id = $1", [folder.id])).rows[0]!;
+    const initialization = await backfill.runBatch(session, accountId, folder.id);
+    expect(initialization).toMatchObject({ state: "initialized" });
+    const before = await folderRow();
+
+    // The window imports newest first, so corrupting the oldest record's
+    // header block makes the failure land inside the transaction, after the
+    // first import ran its statements — the incident's failure class, not a
+    // fetch failure. One shot only; the retry fetches cleanly.
+    const originalFetchHeaders = session.fetchHeaders.bind(session);
+    let corrupt = true;
+    session.fetchHeaders = async (uids: number[]) => {
+      const records = await originalFetchHeaders(uids);
+      if (!corrupt) {
+        return records;
+      }
+      corrupt = false;
+      return [...records.slice(0, -1), { ...records.at(-1)!, rawHeaders: null as unknown as Uint8Array }];
+    };
+    await expect(backfill.runBatch(session, accountId, folder.id)).rejects.toThrow("byteLength");
+
+    // The transaction rolled back both the imported row and the checkpoint
+    // write, so nothing imported and the folder row is untouched.
+    expect(await folderRow()).toEqual(before);
+    expect(await countMessages(accountId)).toBe(0);
+
+    // The retry of the same batch imports everything exactly once, and its
+    // body jobs resolve once without repeated work.
+    await drain(backfill, session, accountId, folder);
+    expect(await countMessages(accountId)).toBe(2);
+    const occurrences = await pool.query(
+      "select count(*)::int as count from message_occurrences where folder_id = $1",
+      [folder.id],
+    );
+    expect(occurrences.rows[0].count).toBe(2);
+    expect((await folderRow()).backfill_complete).toBe(true);
+    const jobs = await bodies.pendingBodies(accountId, 10);
+    expect(jobs).toHaveLength(2);
+    for (const job of jobs) {
+      expect((await bodies.fetchBody(session, accountId, job)).state).toBe("fetched");
+    }
     expect(await bodies.pendingBodies(accountId, 10)).toEqual([]);
   });
 

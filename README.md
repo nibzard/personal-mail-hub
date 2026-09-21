@@ -289,12 +289,17 @@ the test role may create databases. Those suites silently skip without it.
 | `npm run dev:api` and `npm run dev:worker` | API and worker in watch mode |
 | `npm run check` | TypeScript checks in every workspace |
 | `npm test` | Test suites in every workspace |
+| `npm run validate:tasks` | Check `to-do.json` against its schema, plan links, and source documents |
 | `npm run release:gate` | Migrations on a scratch database, every suite, and the Playwright browser checks; pass `--strict` for a release |
 | `npm run admin -- <command>` | Operator CLI: `recovery status`, `auth bootstrap`, and more |
 
 Before a release, `npm run release:gate` must pass with
 `TEST_DATABASE_URL` set. Record any new browser or device coverage in
-[apps/web/e2e/DEVICE-MATRIX.md](apps/web/e2e/DEVICE-MATRIX.md).
+[apps/web/e2e/DEVICE-MATRIX.md](apps/web/e2e/DEVICE-MATRIX.md). A pull
+request into `main` runs the same gate in the `release-gate` workflow, and
+branch protection requires that check before a merge;
+[deploy/README.md](deploy/README.md#gate-main-before-deployment) describes
+the flow.
 
 ## Project layout
 

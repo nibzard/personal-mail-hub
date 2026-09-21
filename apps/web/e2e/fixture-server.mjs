@@ -52,16 +52,19 @@
  * browser context into that signed-out state, which is how the sign-in
  * screen's path stays covered (SPEC section 12).
  *
- * Usage: `node e2e/fixture-server.mjs [port]` (default 4180, `PORT` also
- * works). The process stays in the foreground; Playwright's `webServer`
- * starts and stops it.
+ * Usage (standalone): `node e2e/fixture-server.mjs [port]` (default 4180,
+ * `PORT` also works), serving `../dist` in the foreground. The browser
+ * checks do not start it this way: `e2e/fixture-launch.mjs` (T112) builds
+ * into an isolated directory, installs this handler on a port it owns,
+ * and serves `/api/fixture/identity` with its run token and build
+ * fingerprint, so a run can prove it tests its own build and no other.
  */
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import { extname, join, normalize } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   accounts,
   ACTION_KINDS,
@@ -86,12 +89,20 @@ import {
   syncStatus,
 } from "./fixture-data.mjs";
 
-const distDir = fileURLToPath(new URL("../dist", import.meta.url));
-const port = Number(process.argv[2] ?? process.env.PORT ?? 4180);
-/** The origin clients must present, the role `BASE_URL` plays in production. */
-const origin = `http://127.0.0.1:${port}`;
-/** The WebAuthn relying party the fixture's origin implies. */
-const rpId = new URL(origin).hostname;
+/**
+ * The fixture handler for one origin (T112): the API routes above plus the
+ * static build, as one async request listener. The launcher and the
+ * standalone CLI below each install it on the server they own. `distDir`
+ * names the build output to serve; `identity` carries the run token and
+ * build fingerprint the launcher reports at `/api/fixture/identity`.
+ */
+export function createFixtureHandler({ port, distDir, identity = null }) {
+  /** The origin clients must present, the role `BASE_URL` plays in production. */
+  const origin = `http://127.0.0.1:${port}`;
+  /** The WebAuthn relying party the fixture's origin implies. */
+  const rpId = new URL(origin).hostname;
+  /** Cookie-keyed session state; one handler instance holds its own. */
+  const sessions = new Map();
 
 const MIME_TYPES = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -336,13 +347,12 @@ function applyMailAction(session, body) {
 }
 
 const SESSION_COOKIE = "fixture-session";
-const sessions = new Map();
 
 /**
  * The session this request belongs to, issuing a cookie for new contexts.
  * Must run before the response writes its headers.
  */
-function sessionFor(request, response) {
+function sessionFor(request, response, sessions) {
   const cookie = request.headers.cookie ?? "";
   const id = /(?:^|;\s*)fixture-session=([^;]+)/u.exec(cookie)?.[1];
   const known = id === undefined ? undefined : sessions.get(id);
@@ -792,13 +802,35 @@ async function serveStatic(request, response, pathname) {
     response.end("Not found");
     return;
   }
-  const file = info.isDirectory() ? join(candidate, "index.html") : candidate;
+  let file = candidate;
+  if (info.isDirectory()) {
+    file = join(candidate, "index.html");
+    try {
+      await stat(file);
+    } catch {
+      response.writeHead(404);
+      response.end("Not found");
+      return;
+    }
+  }
   const type = MIME_TYPES.get(extname(file)) ?? "application/octet-stream";
   response.writeHead(200, { "content-type": type, "cache-control": "no-store" });
-  createReadStream(file).pipe(response);
+  // The tree can change under an open response (this launcher's shutdown
+  // removes the directory). A file that vanishes is a 404 or a cut
+  // response, never a crash of the server.
+  createReadStream(file)
+    .on("error", () => {
+      if (!response.headersSent) {
+        response.writeHead(404);
+        response.end("Not found");
+      } else {
+        response.destroy();
+      }
+    })
+    .pipe(response);
 }
 
-const server = createServer(async (request, response) => {
+  const handler = async (request, response) => {
   const url = new URL(request.url ?? "/", `http://127.0.0.1:${port}`);
   const pathname = decodeURIComponent(url.pathname);
 
@@ -808,7 +840,20 @@ const server = createServer(async (request, response) => {
       return;
     }
 
-    const session = sessionFor(request, response);
+    // The run identity (T112): a browser run verifies, before its tests
+    // start, that the server answering on its port is the one its launcher
+    // built — this token, this build fingerprint — and fails loudly rather
+    // than test against a stale or foreign server. No session applies.
+    if (pathname === "/api/fixture/identity" && request.method === "GET") {
+      sendJson(response, 200, {
+        runToken: identity?.runToken ?? null,
+        fingerprint: identity?.fingerprint ?? null,
+        port,
+      });
+      return;
+    }
+
+    const session = sessionFor(request, response, sessions);
     let match = null;
 
     // The control surface the checks drive directly: it flips this context
@@ -1702,17 +1747,28 @@ const server = createServer(async (request, response) => {
       error instanceof Error ? error.message : String(error),
     );
   }
-});
+  };
 
-// Fail fast when the build is missing: the checks would otherwise chase a
-// blank page.
-try {
-  await readFile(join(distDir, "index.html"));
-} catch {
-  console.error(`fixture server: ${distDir} holds no index.html. Run \`npm run build\` first.`);
-  process.exit(1);
+  return { handler, origin, rpId };
 }
 
-server.listen(port, "127.0.0.1", () => {
-  console.log(`fixture server listening on http://127.0.0.1:${port}`);
-});
+// The standalone CLI: serve the shared `dist` build on one port. The
+// browser checks use the launcher instead; this path stays for manual
+// inspection of the fixture against a build already on disk.
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const port = Number(process.argv[2] ?? process.env.PORT ?? 4180);
+  const distDir = fileURLToPath(new URL("../dist", import.meta.url));
+  // Fail fast when the build is missing: the checks would otherwise chase a
+  // blank page.
+  try {
+    await readFile(join(distDir, "index.html"));
+  } catch {
+    console.error(`fixture server: ${distDir} holds no index.html. Run \`npm run build\` first.`);
+    process.exit(1);
+  }
+  const { handler } = createFixtureHandler({ port, distDir });
+  const server = createServer(handler);
+  server.listen(port, "127.0.0.1", () => {
+    console.log(`fixture server listening on http://127.0.0.1:${port}`);
+  });
+}

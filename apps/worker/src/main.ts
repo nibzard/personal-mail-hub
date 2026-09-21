@@ -36,10 +36,10 @@ import {
 import {
   BackfillService,
   BodyFetchService,
+  classifyFailure,
   ImapMailboxSessionFactory,
   ReconciliationService,
   SteadyStateService,
-  SyncError,
   SyncRunner,
   ThreadService,
 } from "@mail-hub/sync";
@@ -155,45 +155,13 @@ async function main(databaseUrl: string): Promise<void> {
     console.log(`Cleared ${sweptAtStartup} temp file(s) that a crashed write left behind.`);
   }
   const tempSweep = setInterval(() => {
-    void sweepTempFiles(storageRoot).then(
-      (removed) => {
-        if (removed > 0) {
-          console.log(`Cleared ${removed} temp file(s) that a crashed write left behind.`);
-        }
-      },
-      (cause) => {
-        console.error(`Storage temp sweep failed: ${cause instanceof Error ? cause.message : String(cause)}`);
-      },
-    );
+    void sweepStorageTempTree(storageRoot);
   }, TEMP_FILE_STALE_MS);
   tempSweep.unref();
 
-  // Durable-object collection (SPEC section 8): originals stranded by
-  // logical-message merges and uploads left by discarded drafts go only
-  // here, after the grace period, and never while the backup holds the
-  // collection pause marker.
-  const runDurableCollection = async (): Promise<void> => {
-    try {
-      const summary = await collectUnreferencedDurableObjects({ root: storageRoot, db });
-      if (summary.paused) {
-        console.log("Durable collection skipped: the backup holds the collection pause.");
-        return;
-      }
-      if (summary.removed > 0 || summary.retainedByGrace > 0) {
-        console.log(
-          `Durable collection: removed ${summary.removed} unreferenced object(s), freed ` +
-            `${summary.bytesFreed} bytes, kept ${summary.retainedByGrace} inside the grace period.`,
-        );
-      }
-    } catch (cause) {
-      console.error(
-        `Durable collection failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-      );
-    }
-  };
-  await runDurableCollection();
+  await collectDurableObjectsOnce(storageRoot, db);
   const durableCollection = setInterval(() => {
-    void runDurableCollection();
+    void collectDurableObjectsOnce(storageRoot, db);
   }, DURABLE_COLLECTION_INTERVAL_MS);
   durableCollection.unref();
 
@@ -303,14 +271,9 @@ async function main(databaseUrl: string): Promise<void> {
       try {
         await runAccountCycle(db, accounts, runner, actions, sessions, account.id, shutdown.signal);
       } catch (cause) {
-        if (cause instanceof StorageError && cause.code === "insufficient_space") {
-          // A full volume pauses the cycle without failing the job (SPEC
-          // section 10): the next scheduled cycle retries once space returns.
-          console.warn(`Sync cycle paused: ${cause.message}`);
-          await db
-            .insert(events)
-            .values({ actor: "system", type: "storage.paused", payload: { detail: cause.message } })
-            .catch(() => undefined);
+        // A full volume pauses the cycle without failing the job (SPEC
+        // section 10): the next scheduled cycle retries once space returns.
+        if (await recordStoragePause(db, cause)) {
           return;
         }
         throw cause;
@@ -549,9 +512,9 @@ export async function runAccountCycle(
       throw cause;
     }
     // Error messages and stacks can contain query parameters or server
-    // responses with private content. Log only the account and error code;
-    // the audit event uses the same safe fields.
-    const kind = cause instanceof SyncError ? cause.code : "unexpected_failure";
+    // responses with private content. Log only the account and an approved
+    // failure kind; the audit event uses the same safe fields.
+    const kind = classifyFailure(cause);
     console.error(`Sync cycle for account ${accountId} failed: ${kind}`);
     await db
       .insert(events)
@@ -565,6 +528,74 @@ export async function runAccountCycle(
       .catch(() => undefined);
   } finally {
     await session?.logout().catch(() => undefined);
+  }
+}
+
+/**
+ * Record one full-volume pause and tell the caller to stop the account loop
+ * (SPEC section 10). The pause is a known state, not a failure to contain,
+ * so the log line is fixed text and the event names the code — never the
+ * error text, which can repeat storage details (SPEC section 9). Any other
+ * cause answers false and stays the cycle handler's to contain or rethrow.
+ */
+export async function recordStoragePause(db: MailHubDatabase, cause: unknown): Promise<boolean> {
+  if (!(cause instanceof StorageError) || cause.code !== "insufficient_space") {
+    return false;
+  }
+  console.warn("Sync cycle paused: the durable volume is below the free-space threshold.");
+  await db
+    .insert(events)
+    .values({
+      actor: "system",
+      type: "storage.paused",
+      payload: { kind: "sync_cycle", code: cause.code },
+    })
+    .catch(() => undefined);
+  return true;
+}
+
+/**
+ * One crash-recovery sweep of the storage temp tree (SPEC section 8): a
+ * killed write leaves its temp file behind, the durable tree keeps it, and
+ * the nightly backup would copy the debris. The staleness bound protects
+ * temp files the API process may still be filling, so the sweep repeats
+ * hourly and collects whatever a restart found too fresh. A failure logs the
+ * approved kind only, because error text can repeat paths and query
+ * parameters (SPEC section 9).
+ */
+export async function sweepStorageTempTree(root: string): Promise<void> {
+  try {
+    const removed = await sweepTempFiles(root);
+    if (removed > 0) {
+      console.log(`Cleared ${removed} temp file(s) that a crashed write left behind.`);
+    }
+  } catch (cause) {
+    console.error(`Storage temp sweep failed: ${classifyFailure(cause)}`);
+  }
+}
+
+/**
+ * One durable-object collection pass (SPEC section 8): originals stranded by
+ * logical-message merges and uploads left by discarded drafts go only here,
+ * after the grace period, and never while the backup holds the collection
+ * pause marker. A failure logs the approved kind, never the error text (SPEC
+ * section 9).
+ */
+export async function collectDurableObjectsOnce(root: string, db: MailHubDatabase): Promise<void> {
+  try {
+    const summary = await collectUnreferencedDurableObjects({ root, db });
+    if (summary.paused) {
+      console.log("Durable collection skipped: the backup holds the collection pause.");
+      return;
+    }
+    if (summary.removed > 0 || summary.retainedByGrace > 0) {
+      console.log(
+        `Durable collection: removed ${summary.removed} unreferenced object(s), freed ` +
+          `${summary.bytesFreed} bytes, kept ${summary.retainedByGrace} inside the grace period.`,
+      );
+    }
+  } catch (cause) {
+    console.error(`Durable collection failed: ${classifyFailure(cause)}`);
   }
 }
 

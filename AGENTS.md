@@ -176,13 +176,21 @@
 4. Run `npm run db:migrate` with `DATABASE_URL` set to apply migrations. The
    migration test suite needs `TEST_DATABASE_URL` and skips without it.
 5. Run `npm run release:gate` with `TEST_DATABASE_URL` set before a release.
-   The gate runs the workspace type checks, applies every migration to a
-   scratch database through the deployment path, runs the full test suite and
-   the action-permission suites, and fails when any suite skips. It also runs
-   the `apps/web` browser checks: `test:e2e` (keyboard, palette, offline, and
-   latency workflows) and `test:a11y` (axe, focus, reduced motion, reflow,
-   zoom, and touch targets) against the fixture server. Pass `--strict` when
-   cutting a release: it fails on a deferred check.
+   The gate first validates the task files — `to-do.json` against
+   `to-do.schema.json`, plus every plan link and source document, through
+   `npm run validate:tasks` — then runs the workspace type checks, applies
+   every migration to a scratch database through the deployment path, runs
+   the full test suite and the action-permission suites, and fails when any
+   suite skips. It also runs the `apps/web` browser checks: `test:e2e`
+   (keyboard, palette, offline, and latency workflows) and `test:a11y` (axe,
+   focus, reduced motion, reflow, zoom, and touch targets) against the
+   fixture server. Pass `--strict` when cutting a release: it fails on a
+   deferred check. Steps stream their output while they run, and a quiet
+   step prints a heartbeat at least every 30 seconds. Each step times out
+   after 30 minutes unless `RELEASE_GATE_STEP_TIMEOUT_MS` says otherwise
+   (`0` disables it). A timeout or an interrupt tears down the step's whole
+   process tree before the gate moves on. Run `npm run validate:tasks` on
+   its own after you edit `to-do.json`; it needs no database.
 6. Run `npm run admin -- recovery status` to inspect the recovery control
    state. Use `recovery init` on a fresh installation and `recovery begin`
    plus `recovery complete` after a restore. Run `recovery hold-actions`
@@ -203,6 +211,20 @@
    backup, and `npm run restore -- <backup-dir> --yes` to restore one.
    `deploy/README.md` documents the schedule and the recovery runbook a
    restore must continue with.
+
+## Integration loop
+
+1. While you edit, run the focused tests of the code you touch, for
+   example `npx vitest run test/<file>` inside the workspace, plus that
+   workspace's `npm run check`.
+2. When the impact is unclear, fall back to the full local gate (Commands
+   item 5) instead of guessing.
+3. Before integration, run `npm run release:gate -- --strict` with
+   `TEST_DATABASE_URL` set, and fix what it finds.
+4. Push a branch and open a pull request into `main`. The `release-gate`
+   workflow runs the same strict gate on the merge result.
+5. Merge only a green and current pull request. The merge push starts the
+   deployment webhook; no other path deploys.
 
 ## Rules
 
