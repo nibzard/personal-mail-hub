@@ -295,7 +295,11 @@ the test role may create databases. Those suites silently skip without it.
 
 Before a release, `npm run release:gate` must pass with
 `TEST_DATABASE_URL` set. Record any new browser or device coverage in
-[apps/web/e2e/DEVICE-MATRIX.md](apps/web/e2e/DEVICE-MATRIX.md).
+[apps/web/e2e/DEVICE-MATRIX.md](apps/web/e2e/DEVICE-MATRIX.md). A pull
+request into `main` runs the same gate in the `release-gate` workflow, and
+branch protection requires that check before a merge;
+[deploy/README.md](deploy/README.md#gate-main-before-deployment) describes
+the flow.
 
 ## Project layout
 

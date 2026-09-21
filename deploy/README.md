@@ -260,6 +260,44 @@ To manage the pieces as separate Coolify resources instead:
 6. Add a scheduled task on the app resource that runs `npm run backup`
    nightly (see [Backups](#backups)).
 
+## Gate main before deployment
+
+Every change reaches production through one path: a pull request into
+`main` that passes the `release-gate` check, then a merge, which fires the
+deployment webhook. Branch protection enforces the path.
+
+1. Push a branch and open a pull request into `main`.
+2. The `release-gate` workflow (`.github/workflows/release-gate.yml`) runs
+   the strict release gate on a scratch PostgreSQL service and on Chromium.
+   The check runs against the merge result. When `main` moves, protection
+   blocks the merge until you update the branch. That update reruns the
+   check, so an outdated green check cannot authorize a different tree.
+3. Merge only a green and current pull request. The merge push triggers
+   the deployment webhook; nothing else deploys.
+4. Check the webhook delivery for the merge push under the repository's
+   **Settings → Webhooks**, then verify the deployment and its revision
+   with `npm run deploy:verify` (it reads containers, the health endpoint,
+   and the database — not the delivery).
+
+Branch protection on `main` requires a pull request, requires the
+`release-gate` check, requires branches to be up to date before merging,
+and blocks force pushes and deletion. The rule includes administrators,
+so the owner merges through pull requests like anyone else. Inspect it
+under the repository's **Settings → Branches**.
+
+Emergency bypass: an owner disables the branch protection in the
+repository settings, merges or pushes directly, and re-enables it
+immediately. Record every bypass with its reason.
+
+The workflow holds no secrets. Pull requests never see deployment
+credentials. The webhook secret stays in the GitHub webhook and Coolify
+resource settings, and deployment runs only on `main` pushes.
+
+Measured durations, 2026-09-21: the full local gate runs 258 seconds;
+one focused admin suite runs 6 seconds; one focused gate suite runs
+6 seconds. The first runner measurement lands with the first pull request
+that carries this workflow.
+
 ## Environment reference
 
 | Variable | Required | Meaning |
@@ -478,8 +516,10 @@ was.
    the server starts.
 2. Keep `RECOVERY_GENERATION` and `CREDENTIALS_KEY` unchanged across ordinary
    releases. Only a restore changes the generation.
-3. Run `npm run release:gate` with `TEST_DATABASE_URL` set before cutting a
-   release, and pass `--strict` for the release mode.
+3. Cut a release only through a green `release-gate` check on the merged
+   pull request (see [Gate main before deployment](#gate-main-before-deployment)).
+   Run `npm run release:gate -- --strict` locally first; it is the same
+   command the runner executes.
 
 ## Resource sizing
 

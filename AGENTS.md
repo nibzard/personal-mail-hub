@@ -212,6 +212,20 @@
    `deploy/README.md` documents the schedule and the recovery runbook a
    restore must continue with.
 
+## Integration loop
+
+1. While you edit, run the focused tests of the code you touch, for
+   example `npx vitest run test/<file>` inside the workspace, plus that
+   workspace's `npm run check`.
+2. When the impact is unclear, fall back to the full local gate (Commands
+   item 5) instead of guessing.
+3. Before integration, run `npm run release:gate -- --strict` with
+   `TEST_DATABASE_URL` set, and fix what it finds.
+4. Push a branch and open a pull request into `main`. The `release-gate`
+   workflow runs the same strict gate on the merge result.
+5. Merge only a green and current pull request. The merge push starts the
+   deployment webhook; no other path deploys.
+
 ## Rules
 
 - Keep mailbox credentials out of browser code and logs.
