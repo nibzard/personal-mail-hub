@@ -185,8 +185,12 @@
    (keyboard, palette, offline, and latency workflows) and `test:a11y` (axe,
    focus, reduced motion, reflow, zoom, and touch targets) against the
    fixture server. Pass `--strict` when cutting a release: it fails on a
-   deferred check. Run `npm run validate:tasks` on its own after you edit
-   `to-do.json`; it needs no database.
+   deferred check. Steps stream their output while they run, and a quiet
+   step prints a heartbeat at least every 30 seconds. Each step times out
+   after 30 minutes unless `RELEASE_GATE_STEP_TIMEOUT_MS` says otherwise
+   (`0` disables it). A timeout or an interrupt tears down the step's whole
+   process tree before the gate moves on. Run `npm run validate:tasks` on
+   its own after you edit `to-do.json`; it needs no database.
 6. Run `npm run admin -- recovery status` to inspect the recovery control
    state. Use `recovery init` on a fresh installation and `recovery begin`
    plus `recovery complete` after a restore. Run `recovery hold-actions`

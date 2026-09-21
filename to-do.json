@@ -3026,7 +3026,7 @@
       "id": "T115",
       "title": "Stream release-gate progress and retain logs",
       "priority": 3,
-      "status": "todo",
+      "status": "done",
       "details": "Plan: docs/development-deployment-plan.md#t115-stream-release-gate-progress-and-retain-logs\n\nThe gate captures output through spawnSync and prints it only after a step finishes. Long steps appear inactive and complicate diagnosis.\n\nAcceptance: A long-running check shows progress at least every 30 seconds. Failed or skipped checks cannot pass because of output text, and interrupted children do not remain running.",
       "steps": [
         "Run each gate step with asynchronous process handling. Stream progress and persist complete stdout and stderr without buffering unbounded output in memory.",
@@ -3042,11 +3042,15 @@
       ],
       "files": [
         "docs/development-deployment-plan.md",
-        "scripts/release-gate.mjs"
+        "scripts/release-gate.mjs",
+        "apps/admin/test/release-gate.test.ts",
+        "AGENTS.md",
+        "to-do.json"
       ],
       "depends_on": [],
       "created_at": "2026-09-20T21:51:56Z",
-      "updated_at": "2026-09-20T21:51:56Z"
+      "updated_at": "2026-09-21T11:29:43Z",
+      "notes": "Done 2026-09-21. scripts/release-gate.mjs runs each step through the exported runStep: the command spawns detached in its own process group, every output line streams to the console as it arrives, and the raw bytes land in the step's log files while only the vitest summary lines (capped at 10,000) and an optional capped stdout capture stay in memory. A quiet step heartbeats one quiet period after its last output (30 seconds by default), each step times out after 30 minutes unless RELEASE_GATE_STEP_TIMEOUT_MS says otherwise (0 disables, empty means the default), and a timeout or an interrupt (SIGINT/SIGTERM) tears the whole tree down — SIGTERM first, SIGKILL after the grace period — and the step resolves only once the process group is empty, so no child outlives it. The exit code alone decides the outcome: failure notes name a timeout, an interrupt, a command that never started, or a child killed by an outside signal. An interrupt that lands between steps is carried into the next one, the verdict reads INTERRUPTED with exit 130/143 and kept logs, and the final summary lists every check with the total duration. The module stays import-safe and validates the timeout override before any check runs. 22 tests in apps/admin/test/release-gate.test.ts cover streaming, heartbeat bounds, exit-code precedence, tree teardown and escalation, memory caps, the timeout override, and the CLI's interrupt and refusal exits. Adversarial review: 9 findings confirmed and fixed, 4 refuted."
     },
     {
       "id": "T116",
