@@ -7,6 +7,10 @@
 // DATABASE_URL, RECOVERY_GENERATION, CREDENTIALS_KEY, and BASE_URL are
 // required. Set PREFLIGHT_ALLOW_HTTP=1 to accept an http BASE_URL for local
 // compose trials; production origins must be https.
+//
+// This file checks the container environment only. Operator-side access to
+// the pilot host is checked by deploy/access-check.mjs (npm run
+// deploy:access), per the Operator access section of README.md.
 
 import { mkdir, access } from "node:fs/promises";
 import { constants } from "node:fs";
@@ -59,7 +63,7 @@ function checkBaseUrl(raw) {
   try {
     url = new URL(raw);
   } catch {
-    problems.push(`BASE_URL must be a URL (got: ${raw}).`);
+    problems.push("BASE_URL must be a URL. The value was not printed because it may carry credentials.");
     return;
   }
   const host = url.hostname.toLowerCase();
@@ -87,7 +91,10 @@ if (databaseUrl !== null) {
   try {
     parsed = new URL(databaseUrl);
   } catch {
-    problems.push(`DATABASE_URL must be a URL (got: ${databaseUrl}).`);
+    // Never echo the raw string: it carries the database password.
+    problems.push(
+      "DATABASE_URL must be a URL. A password with URI-unsafe characters (for example / from base64) breaks the string; generate one with openssl rand -hex 24.",
+    );
   }
   if (parsed !== undefined && parsed.protocol !== "postgres:" && parsed.protocol !== "postgresql:") {
     problems.push(`DATABASE_URL must use postgres:// or postgresql:// (got: ${parsed.protocol}).`);

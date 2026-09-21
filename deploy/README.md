@@ -25,6 +25,139 @@ One HTTPS origin serves both the client and the API. Session cookies are
 same-origin, and the API rejects requests whose `Origin` differs from
 `BASE_URL`, so do not split the client and the API across domains.
 
+## Operator access
+
+Deployment work happens over SSH from an authorized workstation. Confirm the
+access with one command before any procedure in this runbook:
+
+```sh
+npm run deploy:access
+```
+
+The command is read-only. It prints one line per capability and names the
+missing capability on failure. It never prints token values, environment
+variables, or key material, and it generates no credentials. It checks the
+operator side; `deploy/preflight.mjs` stays the check for the container
+environment.
+
+### Access facts
+
+| Fact | Value |
+| --- | --- |
+| Repository | `https://github.com/nibzard/personal-mail-hub` |
+| Branch | `main` |
+| Compose file | `deploy/docker-compose.yml`; the Coolify variant is `deploy/docker-compose.coolify.yml` |
+| Pilot host | SSH alias `awc-pilot` in `~/.ssh/config`: user `debian`, address `192.168.1.144` on the LAN |
+| Dedicated identity | `~/.ssh/id_ed25519_awc_pilot` |
+| Application URL | Fill in: the public domain assigned in the Coolify console to the `web` service. Record it as `DEPLOY_APP_URL` in `deploy/access.env`. |
+| Coolify base URL | Fill in: the console origin, for example `https://coolify.example.com`. Record it as `DEPLOY_COOLIFY_URL`. |
+| Coolify resource | Fill in: open the resource in the console and copy the UUID from its URL. |
+| Tailnet host | Fill in: run `tailscale status`. If the pilot joined the tailnet, its name and `100.x` address appear there; use them as the `HostName` when the LAN route is down. On 2026-09-20 the tailnet listed no peer for the pilot, so the LAN address is the only known route. |
+
+Record the application URL and the Coolify URL in `deploy/access.env` (copy
+`deploy/access.env.example`); git ignores that file. Keep the Coolify
+resource UUID in your deployment records; the check does not need it.
+
+### Set up a fresh workstation
+
+1. Create the SSH entry in `~/.ssh/config`:
+
+   ```ssh-config
+   Host awc-pilot
+       HostName 192.168.1.144
+       User debian
+       IdentityFile ~/.ssh/id_ed25519_awc_pilot
+       IdentitiesOnly yes
+       StrictHostKeyChecking accept-new
+       ConnectTimeout 8
+       ServerAliveInterval 30
+   ```
+
+2. Transfer the dedicated identity from its secret store and lock it down:
+   `install -m 600 <key-file> ~/.ssh/id_ed25519_awc_pilot`. The private key
+   never lives in this repository.
+3. Copy `deploy/access.env.example` to `deploy/access.env` and fill in the
+   Coolify and application URL lines.
+4. Run `npm run deploy:access`. Every required line reads `ok`.
+
+### What the check confirms
+
+| Line | Confirms | Required | Failure categories |
+| --- | --- | --- | --- |
+| `identity` | The identity file exists and is readable | yes | `identity_unreadable` |
+| `ssh` | Route, host key, and key authentication | yes | `hostname_unresolved`, `host_key_mismatch`, `network_unreachable`, `connection_refused`, `identity_unreadable`, `ssh_auth_denied`, `ssh_failed` (unmapped; read the detail line) |
+| `docker` | Docker control over SSH | yes | `docker_missing`, `docker_forbidden`, `docker_daemon_unreachable`, `docker_unavailable` (unmapped) |
+| `coolify` | The configured Coolify API token works | when configured | `coolify_token_rejected`, `coolify_unexpected_status`, `coolify_unreachable` |
+| `app` | The deployed health endpoint answers | when configured | `app_database_unavailable`, `app_unhealthy`, `app_unreachable` |
+
+The exit code is `0` only when the required lines and every configured
+optional line pass. An unconfigured optional line reports `not configured`
+and never fails the run. For machine-readable output, run
+`npm run deploy:access -- --json`; npm needs the `--` so the flag reaches
+the script instead of npm. A configured value that starts with `-` fails
+the run as `unsafe_operand` before anything connects.
+
+### Host-key verification
+
+`accept-new` trusts the first connection. Verify the host key beyond that:
+
+1. From the workstation, read the fingerprint the network path presents
+   (the scan itself runs over the same untrusted path, so it proves nothing
+   alone):
+
+   ```sh
+   ssh-keyscan -t ed25519 192.168.1.144 | ssh-keygen -lf -
+   ```
+
+2. On a channel you already trust — the pilot console — compare it with the
+   fingerprint the pilot reports
+   (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on the pilot).
+3. Pin the verified key as the only entry for the host. Remove whatever the
+   first `accept-new` connection wrote, then append:
+
+   ```sh
+   ssh-keygen -R 192.168.1.144
+   ssh-keyscan -t ed25519 -H 192.168.1.144 >> ~/.ssh/known_hosts
+   ```
+
+   Set `StrictHostKeyChecking yes` for the host. An impostor key that
+   `accept-new` already recorded stays trusted until you remove it, because
+   ssh accepts a key that matches any known entry.
+
+A later `host_key_mismatch` failure means the key changed. Confirm the host
+was rebuilt or replaced on purpose before you remove the old entry with
+`ssh-keygen -R 192.168.1.144` and re-enroll. An unexplained change means
+possible interception; stop and investigate.
+
+### Public-key enrollment
+
+1. Print the public key of the dedicated identity:
+   `ssh-keygen -y -f ~/.ssh/id_ed25519_awc_pilot`.
+2. On the pilot, append that one line to
+   `/home/debian/.ssh/authorized_keys` (mode `600`, owned by `debian`).
+3. Re-run `npm run deploy:access`; the `ssh` line reads `ok`.
+
+### Rotation
+
+Rotate only for a reason: a lost workstation, a suspected compromise, or an
+operator change. Do not rotate working credentials during a routine deploy.
+
+1. Generate a new pair:
+   `ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_awc_pilot_2 -C "mail-hub deploy"`.
+2. Enroll the new public key beside the old one (see above), then point the
+   SSH entry's `IdentityFile` at the new file.
+3. Confirm `npm run deploy:access` passes, store the new private key in the
+   secret store, then revoke the old key (below).
+
+### Revocation
+
+1. On the pilot, remove the old public-key line from
+   `/home/debian/.ssh/authorized_keys`.
+2. Remove the workstation copy: `rm ~/.ssh/id_ed25519_awc_pilot`.
+3. Run `npm run deploy:access` from a workstation that still carried the old
+   key. It must fail with `ssh_auth_denied`; that failure proves the
+   revocation works.
+
 ## Deploy with docker compose
 
 1. Install Docker Engine with the compose plugin, clone this repository, and
@@ -284,6 +417,8 @@ was.
 
 ## Verification checklist
 
+- `npm run deploy:access` passes from the operator workstation (see
+  [Operator access](#operator-access)).
 - `docker compose -f deploy/docker-compose.yml ps` reports `db`, `api`,
   `worker`, and `web` healthy or running.
 - `curl https://mail.example.com/api/healthz` answers `200` with the recovery

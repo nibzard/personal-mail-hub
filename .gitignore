@@ -11,3 +11,5 @@ test-results/
 # backups/; neither belongs in history.
 data/
 backups/
+# deploy/access.env holds operator tokens; only the example belongs in history.
+deploy/access.env

@@ -5,6 +5,15 @@ const RETRYABLE_DROP_CODES = new Set(["42501", "55006"]);
 const DROP_ATTEMPTS = 20;
 const DROP_RETRY_DELAY_MS = 250;
 
+/**
+ * Grace for client sockets to finish closing. A pool's `end()` can resolve
+ * while a socket close is still in flight; the force drop below then
+ * terminates that backend, and the client emits a late `57P01` error event
+ * after every test already passed. Vitest records it as an unhandled error
+ * and fails the whole run. The settle keeps the drop behind the close.
+ */
+const DROP_SETTLE_MS = 150;
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
@@ -27,6 +36,7 @@ export async function dropTestDatabase(admin: Pool, name: string): Promise<void>
     throw new Error(`Refusing to drop a database with an unsafe name: ${name}`);
   }
   let lastError: unknown;
+  await delay(DROP_SETTLE_MS);
   for (let attempt = 1; attempt <= DROP_ATTEMPTS; attempt += 1) {
     try {
       await admin.query(`drop database if exists ${name} with (force)`);
