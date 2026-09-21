@@ -2924,7 +2924,7 @@
       "id": "T112",
       "title": "Isolate browser fixtures for every test run",
       "priority": 2,
-      "status": "todo",
+      "status": "done",
       "details": "Plan: docs/development-deployment-plan.md#t112-isolate-browser-fixtures-for-every-test-run\n\nLocal browser tests could reuse a stale server on port 4180. A manually chosen free port worked, but needs automation.\n\nAcceptance: Both concurrent runs test their intended build without shared-server contamination. The unrelated server survives, and failed startup cannot produce a passing result.",
       "steps": [
         "Give each browser run its own fixture server, port, and ownership token. Verify a build fingerprint and run identity before tests start.",
@@ -2941,12 +2941,23 @@
       "files": [
         "docs/development-deployment-plan.md",
         "apps/web/playwright.config.ts",
+        "apps/web/e2e/fixture-launch.mjs",
+        "apps/web/e2e/fixture-launch.d.mts",
+        "apps/web/e2e/fixture-global-setup.ts",
         "apps/web/e2e/fixture-server.mjs",
-        "scripts/release-gate.mjs"
+        "apps/web/e2e/fixture-server.d.mts",
+        "apps/web/e2e/run-isolation.mjs",
+        "apps/web/e2e/run-isolation.d.mts",
+        "apps/web/scripts/build-fingerprint.mjs",
+        "apps/web/scripts/build-fingerprint.d.mts",
+        "apps/web/scripts/build-sw.mjs",
+        "apps/web/test/fixture-launch.test.ts",
+        ".gitignore"
       ],
       "depends_on": [],
       "created_at": "2026-09-20T21:51:56Z",
-      "updated_at": "2026-09-20T21:51:56Z"
+      "updated_at": "2026-09-21T09:27:34Z",
+      "notes": "Done 2026-09-21. Launcher: apps/web/e2e/fixture-launch.mjs gives every run its own fixture — it binds 127.0.0.1 first (503 hold while building), builds with vite --outDir plus build-sw --dist into tmpdir()/mail-hub-e2e-<pid>-<token8>, fingerprints the tree (scripts/build-fingerprint.mjs, sha256 over sorted paths and bytes), then swaps the real fixture handler in behind the bound listener. GET /api/fixture/identity answers {runToken, fingerprint, port}; e2e/fixture-global-setup.ts verifies the token before the first test and the fingerprint at teardown (Playwright 1.63 globalSetup takes a file path, not a closure). E2E_PORT stays an exact override (any value naming no port 1-65535 is rejected); otherwise the config leader allocates an ephemeral port and publishes it through E2E_PORT — every worker reloads the config file, so the port, the E2E_RUN_TOKEN/E2E_RUN_PID pair, and the per-run outputDir test-results/run-<pid>-<token8> all derive from one leader mint. reuseExistingServer stays false and teardown uses gracefulShutdown SIGTERM (the default is a group SIGKILL that skips all cleanup); the launcher registers SIGTERM/SIGINT before any directory or build exists, stops its build children, removes its tree, destroys keep-alive connections, and exits clean in every phase including mid-build and startup failure. e2e/run-isolation.mjs sweeps <prefix><pid>-* directories whose pid is dead — no clock, so a live run keeps its directories however long it runs — for both test-results/run-* and the launcher's tmp trees. fixture-server.mjs became an import-side-effect-free createFixtureHandler factory; static serving answers 404 when a file vanishes or a directory holds no index.html instead of crashing. The release gate needed no change: it runs the workspace scripts, which carry the isolation. Verified: unit 195/195 (27 launcher and isolation tests, three of them subprocess CLI runs: held-port collision leaves no directory and the holder survives, SIGTERM with a live keep-alive socket, SIGTERM mid-build), tsc clean, flows 54/54, interface 20/20, two concurrent suites green on separate ports, builds, and results directories, E2E_PORT=4180 against an unrelated live server fails loudly and the stranger survives, planted dead-pid trees swept on the next run. Adversarial review (5 dimensions, 30 agents, per-finding refuters): 25 findings raised, 14 survived, all fixed above; 11 refutations accepted on the refuters' traces."
     },
     {
       "id": "T113",
