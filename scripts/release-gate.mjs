@@ -5,32 +5,35 @@
  *
  * The gate runs, in order:
  *
- * 1. typecheck          `npm run check` in every workspace.
- * 2. migrations         Apply every migration to a scratch database through
+ * 1. task-files         The task list, its schema, and the plan documents
+ *                       it references stay mutually consistent
+ *                       (`npm run validate:tasks`, T114).
+ * 2. typecheck          `npm run check` in every workspace.
+ * 3. migrations         Apply every migration to a scratch database through
  *                       the deployment path (`npm run db:migrate`), verify the
  *                       applied count against the journal, and apply again to
  *                       prove the run is clean when nothing is pending.
- * 3. integration-tests  `npm test` in every workspace with
+ * 4. integration-tests  `npm test` in every workspace with
  *                       `TEST_DATABASE_URL` set, and fail when any workspace
  *                       reports a failed, skipped, or empty run. The skip
  *                       check is what stops a missing test database from
  *                       turning the gate green while the PostgreSQL suites
  *                       quietly skip.
- * 4. action-permissions The action service and API suites, which carry the
+ * 5. action-permissions The action service and API suites, which carry the
  *                       recovery-generation gate, the scope validation, and
  *                       the restore hold.
- * 5. browser-workflows  The `apps/web` end-to-end runner (`test:e2e` or
+ * 6. browser-workflows  The `apps/web` end-to-end runner (`test:e2e` or
  *                       `e2e` script) once the interface milestone ships one.
- * 6. interface-checks   The `apps/web` accessibility and visual runner
+ * 7. interface-checks   The `apps/web` accessibility and visual runner
  *                       (`test:a11y` or `a11y` script) once T033 ships one.
  *
- * Checks 3 and 4 judge a test run by its npm exit status and by the count of
+ * Checks 4 and 5 judge a test run by its npm exit status and by the count of
  * per-run vitest summaries, never by the summary text alone: a run that
  * prints a clean summary but exits non-zero (a global-teardown crash, an
  * out-of-memory kill, a failing posttest step) fails, and so does a
  * workspace that the `--if-present` fan-out skips without a summary.
  *
- * Checks 5 and 6 are deferred until their runner exists, because no interface
+ * Checks 6 and 7 are deferred until their runner exists, because no interface
  * has shipped to validate. A deferred check never passes silently: the verdict
  * lists it, and `--strict` (the mode for cutting a release) fails on it.
  * Exit status: 0 when every applicable check passed, 1 otherwise. The log
@@ -160,13 +163,23 @@ function countUnit(line, unit) {
   return match === null ? 0 : Number(match[1]);
 }
 
-// 1. Type checks in every workspace.
+// 1. Task files: the list, the schema, and the plan links stay consistent.
+{
+  const taskFiles = run("task-files", "node", ["scripts/validate-tasks.mjs"]);
+  record(
+    "task-files",
+    taskFiles.ok ? "pass" : "fail",
+    taskFiles.ok ? "task list, schema, and plan links are consistent" : "see the task-files log",
+  );
+}
+
+// 2. Type checks in every workspace.
 {
   const typecheck = run("typecheck", "npm", ["run", "check"]);
   record("typecheck", typecheck.ok ? "pass" : "fail", typecheck.ok ? "every workspace type-checks" : "see the typecheck log");
 }
 
-// 2. Migrations apply cleanly through the deployment path.
+// 3. Migrations apply cleanly through the deployment path.
 {
   const drizzleFolder = join(repoRoot, "packages", "database", "drizzle");
   const journal = JSON.parse(await readFile(join(drizzleFolder, "meta", "_journal.json"), "utf8"));
@@ -230,7 +243,7 @@ function countUnit(line, unit) {
   record("migrations", ok ? "pass" : "fail", note);
 }
 
-// 3. Integration tests across every workspace, with nothing skipped.
+// 4. Integration tests across every workspace, with nothing skipped.
 {
   // The expected summary count comes from the workspace inventory, because
   // the root `test` script fans out with `--if-present`: a workspace whose
@@ -268,7 +281,7 @@ function countUnit(line, unit) {
   }
 }
 
-// 4. Action-service permission suites.
+// 5. Action-service permission suites.
 {
   const permissionSuites = ["@mail-hub/actions", "@mail-hub/api"];
   const permissions = run(
@@ -283,7 +296,7 @@ function countUnit(line, unit) {
   record("action-permissions", parsed.ok ? "pass" : "fail", parsed.note);
 }
 
-// 5 and 6. Interface checks, once the interface milestone ships a runner.
+// 6 and 7. Interface checks, once the interface milestone ships a runner.
 const webPackage = JSON.parse(await readFile(join(repoRoot, "apps", "web", "package.json"), "utf8"));
 {
   const script = ["test:e2e", "e2e"].find((key) => typeof webPackage.scripts?.[key] === "string");

@@ -29,12 +29,16 @@
     "verify:classify": "npm run verify:classify --workspace=@mail-hub/admin --",
     "preflight": "node deploy/preflight.mjs",
     "release:gate": "node scripts/release-gate.mjs",
+    "validate:tasks": "node scripts/validate-tasks.mjs",
     "restore": "sh deploy/restore.sh",
     "start": "npm run start --workspace=@mail-hub/api",
     "start:worker": "npm run start --workspace=@mail-hub/worker",
     "test": "npm run test --workspaces --if-present"
   },
   "devDependencies": {
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "github-slugger": "2.0.0",
     "typescript": "5.9.3"
   }
 }

@@ -176,13 +176,17 @@
 4. Run `npm run db:migrate` with `DATABASE_URL` set to apply migrations. The
    migration test suite needs `TEST_DATABASE_URL` and skips without it.
 5. Run `npm run release:gate` with `TEST_DATABASE_URL` set before a release.
-   The gate runs the workspace type checks, applies every migration to a
-   scratch database through the deployment path, runs the full test suite and
-   the action-permission suites, and fails when any suite skips. It also runs
-   the `apps/web` browser checks: `test:e2e` (keyboard, palette, offline, and
-   latency workflows) and `test:a11y` (axe, focus, reduced motion, reflow,
-   zoom, and touch targets) against the fixture server. Pass `--strict` when
-   cutting a release: it fails on a deferred check.
+   The gate first validates the task files — `to-do.json` against
+   `to-do.schema.json`, plus every plan link and source document, through
+   `npm run validate:tasks` — then runs the workspace type checks, applies
+   every migration to a scratch database through the deployment path, runs
+   the full test suite and the action-permission suites, and fails when any
+   suite skips. It also runs the `apps/web` browser checks: `test:e2e`
+   (keyboard, palette, offline, and latency workflows) and `test:a11y` (axe,
+   focus, reduced motion, reflow, zoom, and touch targets) against the
+   fixture server. Pass `--strict` when cutting a release: it fails on a
+   deferred check. Run `npm run validate:tasks` on its own after you edit
+   `to-do.json`; it needs no database.
 6. Run `npm run admin -- recovery status` to inspect the recovery control
    state. Use `recovery init` on a fresh installation and `recovery begin`
    plus `recovery complete` after a restore. Run `recovery hold-actions`

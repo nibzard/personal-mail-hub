@@ -2992,7 +2992,7 @@
       "id": "T114",
       "title": "Validate task files automatically",
       "priority": 3,
-      "status": "todo",
+      "status": "done",
       "details": "Plan: docs/development-deployment-plan.md#t114-validate-task-files-automatically\n\nThe task file contained metadata that its schema rejected. Optional updated_at and notes definitions were added during planning; automated validation is still missing.\n\nAcceptance: A clean checkout validates the current task list. Each malformed fixture fails with a precise task identifier or field path, while historical notes and planned future files remain supported.",
       "steps": [
         "Add a repeatable task-validation command using the repository schema and date-time formats. Declare validator dependencies directly if needed.",
@@ -3007,14 +3007,20 @@
       ],
       "files": [
         "docs/development-deployment-plan.md",
-        "to-do.json",
-        "to-do.schema.json",
+        "scripts/validate-tasks.mjs",
+        "scripts/release-gate.mjs",
+        "apps/admin/test/validate-tasks.test.ts",
         "package.json",
-        "scripts"
+        "package-lock.json",
+        "AGENTS.md",
+        "README.md",
+        "to-do.json",
+        "to-do.schema.json"
       ],
       "depends_on": [],
       "created_at": "2026-09-20T21:51:56Z",
-      "updated_at": "2026-09-20T21:51:56Z"
+      "updated_at": "2026-09-21T10:15:59Z",
+      "notes": "Done 2026-09-21. scripts/validate-tasks.mjs validates to-do.json in one pass: JSON Schema draft 2020-12 through ajv 2020 plus ajv-formats (default strict mode, so a misspelled schema keyword fails at compile), task-graph checks (duplicate ids, missing and self dependencies, a DFS cycle with its path spelled out), Plan: references (the file exists; the anchor is a GitHub slug through github-slugger — an em dash drops and every space becomes one hyphen, so #f1--account-management resolves against the SPEC heading; the (section Tnnn) form checks heading text; sentence punctuation and backticks around the path are stripped), source_files existence, and repository-relative files entries (planned files allowed; empty, absolute, and climbing paths rejected). Wrong-typed shapes report the schema issue instead of throwing. npm run validate:tasks runs the CLI; its report prints to stdout, which the release gate logs as task-files.log (check 1 of 7). 34 tests in apps/admin/test/validate-tasks.test.ts cover the module API, malformed shapes, and the CLI's exit codes and streams. Adversarial review: 13 findings confirmed and fixed, 9 refuted."
     },
     {
       "id": "T115",

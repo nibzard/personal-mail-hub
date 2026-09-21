@@ -289,6 +289,7 @@ the test role may create databases. Those suites silently skip without it.
 | `npm run dev:api` and `npm run dev:worker` | API and worker in watch mode |
 | `npm run check` | TypeScript checks in every workspace |
 | `npm test` | Test suites in every workspace |
+| `npm run validate:tasks` | Check `to-do.json` against its schema, plan links, and source documents |
 | `npm run release:gate` | Migrations on a scratch database, every suite, and the Playwright browser checks; pass `--strict` for a release |
 | `npm run admin -- <command>` | Operator CLI: `recovery status`, `auth bootstrap`, and more |
 
