@@ -355,6 +355,14 @@ if (isMain) {
     // A run that cannot start leaves nothing behind: not its listener (it
     // never got one, or launchFixture closed it) and not its directory.
     await rm(distDir, { recursive: true, force: true }).catch(() => undefined);
+    // A signal that already started shutdown() — mid-build, or during
+    // that await — owns the exit. The build child it killed must not be
+    // misread as a start failure, so park and let shutdown() finish its
+    // own cleanup and exit(0). Nothing can start a shutdown between this
+    // check and the exit: that stretch is synchronous.
+    if (shuttingDown) {
+      await new Promise(() => {});
+    }
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
   }
